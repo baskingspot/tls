@@ -5,7 +5,9 @@
 //! Header search: `linkSystemLibrary` on the step resolves include dirs via
 //! pkg-config at translate time — the same resolution the consuming modules
 //! already use at link time, so every backend lane (OpenSSL, AWS-LC,
-//! BoringSSL) translates against the headers PKG_CONFIG_PATH selects.
+//! BoringSSL) translates against the headers PKG_CONFIG_PATH selects. A
+//! non-native target gets no such resolution from the compiler, so
+//! `linkCrypto` spells the includedir out and drops the library there.
 //!
 //! The step's system libs exist only to feed that header search; the created
 //! modules carry no link objects. `createModule` would propagate `-lcrypto`
@@ -17,6 +19,7 @@
 
 const std = @import("std");
 const Build = std.Build;
+const mem = std.mem;
 
 pub const Modules = struct {
     /// libcrypto-family C API — the decls behind `src/crypto/c_openssl.zig`,
@@ -37,14 +40,14 @@ pub fn addModules(b: *Build, opts: struct {
         .target = opts.target,
         .optimize = opts.optimize,
     });
-    openssl_c.linkSystemLibrary("crypto", .{});
+    linkCrypto(b, openssl_c, "crypto");
 
     const openssl_ssl = b.addTranslateC(.{
         .root_source_file = b.path("bench/c_ssl.h"),
         .target = opts.target,
         .optimize = opts.optimize,
     });
-    openssl_ssl.linkSystemLibrary("ssl", .{});
+    linkCrypto(b, openssl_ssl, "ssl");
 
     const pty_c = b.addTranslateC(.{
         .root_source_file = b.path("src/test/pty_c.h"),
@@ -57,6 +60,25 @@ pub fn addModules(b: *Build, opts: struct {
         .openssl_ssl = bareModule(b, openssl_ssl),
         .pty_c = bareModule(b, pty_c),
     };
+}
+
+/// Feed the header search of a libcrypto-family translate step. A native
+/// target resolves headers through linkSystemLibrary's pkg-config path. A
+/// non-native target (a consumer's explicit query, e.g. handoff's chonk
+/// variants) gets no pkg-config resolution from the compiler: the -l would
+/// fail with empty search paths, so spell the includedir out and skip the
+/// library — translation reads headers only.
+fn linkCrypto(b: *Build, tc: *Build.Step.TranslateC, name: []const u8) void {
+    if (tc.target.query.isNative()) {
+        tc.linkSystemLibrary(name, .{});
+        return;
+    }
+    const includedir = mem.trim(
+        u8,
+        b.run(&.{ "pkg-config", "--variable=includedir", b.fmt("lib{s}", .{name}) }),
+        "\n\r ",
+    );
+    tc.addIncludePath(.{ .cwd_relative = includedir });
 }
 
 /// A module over the translated output, without the step's system-lib link
