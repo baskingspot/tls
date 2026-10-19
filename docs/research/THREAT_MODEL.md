@@ -1,48 +1,45 @@
 # Threat model
 
-ztls is a Sans-I/O TLS 1.3 engine. The caller owns transport I/O, buffers,
-trust anchors, private-key storage, connection lifetime, and deployment policy.
-ztls owns TLS record framing, record protection plumbing, handshake state,
+`tls` is a Sans-I/O TLS 1.3 engine. The caller owns transport I/O, buffers, trust
+anchors, private-key storage, connection lifetime, and deployment policy. The
+engine owns record framing, record protection plumbing, handshake state,
 verification gates, KeyUpdate handling, alert emission helpers, and the contract
 between TLS logic and the libcrypto-family backend.
 
-This document names the adversary ztls is designed against, the attack classes
-ztls currently defends, the evidence for those defenses, and the boundaries that
-remain caller responsibility or open project work. The lower-level malformed
-input catalogue lives in `NEGATIVE_SPACE.md`; the normative RFC MUST matrix
-lives in `RFC8446_MUST_MATRIX.md`.
+The adversary is an active network attacker or a malicious TLS peer. What
+follows is the surface the engine implements. The malformed-input catalogue is
+in `NEGATIVE_SPACE.md`, and the RFC MUST matrix is in `RFC8446_MUST_MATRIX.md`.
 
 ## Supported surface covered here
 
-The current threat model covers the implemented TLS 1.3 surface:
-
 - TLS 1.3 only. No TLS 1.2 fallback, no DTLS.
 - X25519, P-256, opt-in P-384, and the three opt-in RFC 10024 hybrid key
-  exchanges. Hybrid composition is ztls-owned; pure ML-KEM is provider-backed.
+  exchanges. Hybrid composition belongs to the engine; pure ML-KEM is
+  provider-backed.
 - The three mandatory TLS 1.3 AEAD suites:
   `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, and
   `TLS_CHACHA20_POLY1305_SHA256`.
-- Server-authenticated 1-RTT handshake and client certificate authentication
-  both directions (formerly #4).
-- HelloRetryRequest in-memory and TLS-Anvil; OpenSSL forced-HRR interop is a
-  remaining gap (formerly #1).
-- PSK/session resumption, ticket storage, and binder verification, with
-  OpenSSL interop CI-gated (formerly #2).
-- 0-RTT early data with EndOfEarlyData both directions and OpenSSL interop
-  CI-gated; anti-replay is caller-owned (formerly #3).
+- Server-authenticated 1-RTT handshake, and client certificate authentication
+  in both directions.
+- HelloRetryRequest in memory and in TLS-Anvil. OpenSSL forced-HRR interop is
+  still a gap.
+- PSK and session resumption, ticket storage, and binder verification, with
+  OpenSSL interop gated in CI.
+- 0-RTT early data with EndOfEarlyData in both directions and OpenSSL interop
+  gated in CI. Anti-replay belongs to the caller.
 - Application data, alerts, `close_notify`, and KeyUpdate in both directions.
 - NewSessionTicket is parsed by clients and emitted explicitly by servers.
-  Clients surface an `early_data` `max_early_data_size`; v1 server issuance does
-  not advertise early data. Ticket identity, persistence, rotation, expiry,
-  replay handling, and client-auth continuity remain caller policy.
+  Clients surface an `early_data` `max_early_data_size`; the v1 server does not
+  advertise early data. Ticket identity, persistence, rotation, expiry, replay
+  handling, and client-auth continuity are caller policy.
 - P-521, FFDHE, and named groups beyond the documented classical and RFC 10024
-  set remain outside the current supported surface. Extension behavior beyond
-  the supported surface is tracked by the feature issue that introduces it.
+  sets are outside the supported surface. Extension behavior beyond that
+  surface is tracked by the feature issue that introduces it.
 
 ## In-scope adversary capabilities
 
-The attacker may be an active network attacker or a malicious TLS peer. In
-particular, assume the attacker can:
+The attacker may be an active network attacker or a malicious TLS peer. Assume
+it can:
 
 - read, inject, modify, truncate, drop, replay, and reorder TLS records;
 - send arbitrary byte sequences at parser and `handleRecord` entry points;
@@ -54,34 +51,35 @@ particular, assume the attacker can:
 - send unbounded streams of post-handshake control messages;
 - close the connection at any point with alerts or transport EOF.
 
-The attacker cannot force ztls to perform transport I/O or allocation in the TLS
-engine, because ztls has neither transport ownership nor ztls-owned heap state.
-Backend-owned libcrypto allocations are outside the engine allocation contract
-and are documented as backend behavior, not ztls buffer ownership.
+The attacker cannot force the engine to perform transport I/O or to allocate
+inside it. The engine has neither transport ownership nor heap state.
+Backend-owned libcrypto allocations are outside that contract and are documented
+as backend behavior, not engine buffer ownership.
 
 ## Defended attack classes
 
 ### Record tampering and replay
 
-ztls authenticates encrypted records with the negotiated AEAD and constructs the
-per-record nonce from the traffic IV XOR the big-endian record sequence number.
-Modified ciphertext, tag, AAD, or replay under the wrong sequence number fails
-AEAD authentication rather than yielding plaintext.
+Encrypted records are authenticated with the negotiated AEAD, and the per-record
+nonce is the traffic IV XOR the big-endian record sequence number. Modified
+ciphertext, tag, AAD, or replay under the wrong sequence number fails AEAD
+authentication instead of yielding plaintext.
 
 Evidence:
 
 - `RecordLayer.zig`: `decrypt: replayed record is rejected`.
 - `RecordLayer.zig`: sequence-overflow and key-usage-limit tests.
-- `aead.zig`: tampered ciphertext/tag/AAD tests.
+- `aead.zig`: tampered ciphertext, tag, and AAD tests.
 - `ClientHandshake.zig`: `handleRecord: corrupted encrypted flight is rejected`.
 - tlsfuzzer corrupted application-data record conversation.
 - `NEGATIVE_SPACE.md` record-framing and record-protection rows.
 
 ### Record-boundary and parser robustness
 
-ztls rejects oversized records, treats incomplete records as incomplete input,
-and fuzzes the major parser and dispatch surfaces. Malformed inputs must produce
-errors or incomplete-input signals, not panics or out-of-bounds access.
+The engine rejects oversized records, treats incomplete records as incomplete
+input, and fuzzes the major parser and dispatch surfaces. A malformed input
+produces an error or an incomplete-input signal, not a panic or an out-of-bounds
+access.
 
 Evidence:
 
@@ -93,16 +91,16 @@ Evidence:
 - `ClientHandshake.zig`: bad-server tests for malformed ServerHello, truncated
   encrypted flight, out-of-order flight messages, and illegal application data.
 - `ServerHandshake.zig`: pre-auth and connected `handleRecord` fuzz targets.
-- `NEGATIVE_SPACE.md` parser/fuzz rows.
+- `NEGATIVE_SPACE.md` parser and fuzz rows.
 
 ### Handshake authentication and key promotion
 
-The client must verify Certificate, CertificateVerify, and server Finished before
-it can send its own Finished and promote to application traffic keys. The server
-must verify client Finished before it promotes to connected/application keys.
-Bad CertificateVerify signatures and bad Finished MACs stop the handshake. The
-server-side bad-Finished rejection path is structurally enforced, but dedicated
-state-machine negative tests are still a gap below.
+The client verifies Certificate, CertificateVerify, and the server Finished
+before it sends its own Finished and promotes to application traffic keys. The
+server verifies the client Finished before it promotes to connected keys. A bad
+CertificateVerify signature or a bad Finished MAC stops the handshake. The
+server-side bad-Finished rejection path is structurally enforced; dedicated
+state-machine negative tests are a gap listed below.
 
 Evidence:
 
@@ -120,24 +118,25 @@ Evidence:
 
 ### Certificate policy failures
 
-ztls can verify server certificate chains against caller-provided trust anchors
-and enforce hostname, KeyUsage, EKU, signature-algorithm policy, and RFC 5280
-name constraints before the client handshake completes. The caller must provide
-the trust bundle and policy; ztls does not load OS roots.
+The engine verifies server certificate chains against caller-provided trust
+anchors and enforces hostname, KeyUsage, EKU, signature-algorithm policy, and
+RFC 5280 name constraints before the client handshake completes. The caller
+supplies the trust bundle and the policy; the engine does not load OS roots.
 
-Important current boundary: chain anchoring only happens when
-`certificate.Policy.bundle` is set. A client policy with neither a bundle nor
-the explicit `insecure_no_chain_anchor` test/demo opt-in rejects the Certificate
-with `error.MissingTrustAnchor`. The insecure opt-in still verifies
-CertificateVerify key possession, applies leaf certificate policy, and lets
-`ClientHandshake.start()` fill `Policy.host_name` from SNI when no explicit
-hostname is set, but it does not authenticate the chain to any trust root. In
-that mode, ztls does not defend against an active MITM presenting a self-signed
-certificate for the target hostname.
+Chain anchoring happens only when `certificate.Policy.bundle` is set. A client
+policy with neither a bundle nor the explicit `insecure_no_chain_anchor`
+test/demo opt-in rejects the Certificate with `error.MissingTrustAnchor`. The
+insecure opt-in still verifies CertificateVerify key possession, applies leaf
+certificate policy, and lets `ClientHandshake.start()` fill `Policy.host_name`
+from SNI when no hostname is set, but it does not authenticate the chain to a
+trust root. In that mode an active MITM can present a self-signed certificate
+for the target hostname and the engine will not stop it.
 
-DNS-ID verification accepts ASCII reference names. The caller validates reference-name syntax and converts internationalized labels to A-labels before verification.
-The engine rejects non-ASCII reference names and compares A-labels with ASCII case folding.
-It does not perform IDNA conversion or Punycode validation. `Parsed.verifyHostName` does not compare IP-ID entries.
+DNS-ID verification accepts ASCII reference names. The caller validates
+reference-name syntax and converts internationalized labels to A-labels before
+verification. The engine rejects non-ASCII reference names and compares A-labels
+with ASCII case folding. It does not perform IDNA conversion or Punycode
+validation. `Parsed.verifyHostName` does not compare IP-ID entries.
 
 Evidence:
 
@@ -145,18 +144,18 @@ Evidence:
   missing intermediates, untrusted leaf, KeyUsage without `digitalSignature`,
   EKU without `serverAuth`, and unsupported signature algorithms.
 - `ClientHandshake.zig` server-flight tests bind CertificateVerify to the leaf
-  public key and transcript.
+  public key and the transcript.
 
 Name-constraints enforcement covers DNS, IP, rfc822Name, and URI GeneralName
-forms in permitted/excluded subtrees. Chain-level fixture tests cover DNS;
+forms in permitted and excluded subtrees. Chain-level fixture tests cover DNS;
 synthetic DER unit tests cover IP, rfc822Name, URI, critical unsupported-subtree
 rejection, and explicit `minimum = 0`. Unsupported GeneralName forms inside a
-critical Name Constraints extension are rejected rather than silently ignored.
+critical Name Constraints extension are rejected, not ignored.
 
 ### Key-exchange invalid-point handling
 
-ztls delegates X25519 arithmetic to libcrypto but rejects identity-element shared
-secrets before they enter the TLS key schedule.
+X25519 arithmetic is delegated to libcrypto, and identity-element shared secrets
+are rejected before they enter the TLS key schedule.
 
 Evidence:
 
@@ -166,9 +165,9 @@ Evidence:
 
 ### Version confusion and downgrade attempts
 
-ztls implements only TLS 1.3. There is no TLS 1.2 fallback path to negotiate.
-ServerHello `supported_versions` must select TLS 1.3, and unsupported versions
-are rejected.
+The engine implements TLS 1.3 only. There is no TLS 1.2 fallback path to
+negotiate. ServerHello `supported_versions` must select TLS 1.3, and unsupported
+versions are rejected.
 
 Evidence:
 
@@ -176,13 +175,14 @@ Evidence:
   downgrade sentinel` and `parse: rejects TLS 1.1 downgrade sentinel` cover
   RFC 8446 §4.1.3 downgraded-connection sentinel detection (R004-020
   `PROVEN`).
-- Client/server handshake tests use TLS 1.3 key schedule and RFC 8448 vectors.
+- Client and server handshake tests use the TLS 1.3 key schedule and RFC 8448
+  vectors.
 
 ### KeyUpdate abuse and post-handshake control traffic
 
-ztls bounds consecutive post-handshake control messages, rejects KeyUpdate when
-it does not end at a record boundary, and handles simultaneous update requests
-without disconnecting or desynchronizing traffic keys.
+The engine bounds consecutive post-handshake control messages, rejects KeyUpdate
+when it does not end at a record boundary, and handles simultaneous update
+requests without disconnecting or desynchronizing traffic keys.
 
 Evidence:
 
@@ -194,79 +194,82 @@ Evidence:
 
 ### Alert and close semantics
 
-`close_notify` is the only clean closure alert. Other peer alerts abort the TLS
-conversation with `error.PeerAlert`. Client-side bad-server tests also verify
+`close_notify` is the only clean closure alert. Any other peer alert aborts the
+TLS conversation with `error.PeerAlert`. Client-side bad-server tests also check
 that callers can emit the RFC-required alert descriptions for the highest-risk
 local error paths.
 
 Evidence:
 
-- `alert.zig`: parse/encode tests and fuzz target.
-- `ClientHandshake.zig`: plaintext/encrypted fatal alert tests and emitted-alert
-  checks for `decode_error`, `decrypt_error`, `unexpected_message`, and
-  `bad_record_mac` paths.
+- `alert.zig`: parse and encode tests plus a fuzz target.
+- `ClientHandshake.zig`: plaintext and encrypted fatal alert tests, and
+  emitted-alert checks for `decode_error`, `decrypt_error`,
+  `unexpected_message`, and `bad_record_mac`.
 - `ServerHandshake.zig`: close_notify and fatal alert tests.
 
 ## Non-goals and caller responsibilities
 
 ### Transport and connection policy
 
-ztls does not own sockets, files, DNS, timers, retries, or connection limits.
-The caller owns transport-level DoS handling, rate limiting beyond the engine's
-KeyUpdate bound, timeout policy, EOF handling, and the decision to close after an
-error.
+The engine does not own sockets, files, DNS, timers, retries, or connection
+limits. The caller owns transport-level DoS handling, rate limiting beyond the
+engine's KeyUpdate bound, timeout policy, EOF handling, and the decision to close
+after an error.
 
 ### Trust-store and private-key lifecycle
 
-ztls does not load system trust stores and does not own private-key storage. The
-caller supplies `certificate.Policy` and server `Signer` implementations. If the
-caller explicitly sets `insecure_no_chain_anchor`, client connections are not
-authenticated to any root and are vulnerable to active MITM certificate
-substitution. ztls cannot protect keys outside its own structs or backend
-handles.
+The engine does not load system trust stores and does not own private-key
+storage. The caller supplies `certificate.Policy` and server `Signer`
+implementations. If the caller sets `insecure_no_chain_anchor`, client
+connections are not authenticated to any root and are open to active MITM
+certificate substitution. The engine cannot protect keys outside its own structs
+or backend handles.
 
 ### Side-channel resistance
 
-ztls does not claim whole-engine constant-time behavior. It uses timing-safe
-comparisons for Finished verify_data and X25519 identity detection, and relies
-on the selected libcrypto-family backend for primitive side-channel posture.
-Cache, power, EM, and backend-internal timing are deployment/backend concerns.
+The engine does not claim whole-engine constant-time behavior. It uses
+timing-safe comparisons for Finished verify_data and X25519 identity detection,
+and relies on the selected libcrypto-family backend for primitive side-channel
+posture. Cache, power, EM, and backend-internal timing are deployment and
+backend concerns.
 
 ### Secret erasure and backend compromise
 
-ztls clears designated owned key and suite-state fields on teardown.
+The engine clears designated owned key and suite-state fields on teardown.
 Compiler-generated copies and Zig HKDF/HMAC scratch can survive those writes.
-The [secret-lifetime audit](security/ZEROIZATION-2026-09.md) records this distinction in optimized binaries.
+The [secret-lifetime audit](security/ZEROIZATION-2026-09.md) records that
+distinction in optimized binaries.
 
-`deinit` releases backend contexts. Providers control erasure of backend-owned memory.
-ztls does not implement fallback primitives. A compromised crypto backend compromises ztls.
+`deinit` releases backend contexts. Providers control erasure of backend-owned
+memory. The engine does not implement fallback primitives. A compromised crypto
+backend compromises the engine.
 
 ### Replay safety for 0-RTT
 
 0-RTT early data is implemented but disabled by default (`offer_early_data=false`).
-Replay protection is a documented contract between ztls and the caller: a
-Sans-I/O library cannot own a global replay cache, so the caller is responsible
-for replay-safe policy (single-use tickets and/or a bounded replay window).
-0-RTT data is not forward-secret and can be replayed by a network attacker.
-RFC 8446 §8.1 idempotency guidance applies: the caller must ensure 0-RTT
-requests are replay-safe or reject 0-RTT.
+Replay protection is a contract between the engine and the caller: a Sans-I/O
+library cannot own a global replay cache, so the caller decides the policy,
+whether single-use tickets or a bounded replay window. 0-RTT data is not
+forward-secret and can be replayed by a network attacker. RFC 8446 §8.1
+idempotency guidance applies: the caller must make 0-RTT requests replay-safe or
+reject 0-RTT.
 
 ### Unsupported TLS features
 
-P-521/FFDHE key exchange, exporters, and broader extension negotiation beyond
-the implemented surface are not defended as implemented features. Exporters
-and unscheduled extensions are not on the timeline.
+P-521 and FFDHE key exchange, exporters, and broader extension negotiation
+beyond the implemented surface are not defended as features. Exporters and
+unscheduled extensions are not on the timeline.
 
 ## Open threat-relevant gaps
 
 | Gap | Boundary | Tracking |
 |---|---|---|
 | directoryName name-constraint forms are unsupported: a critical NameConstraints extension rejects, non-critical instances are ignored (RFC 5280 §4.2) | Certificate policy | out of scope; no expansion issue |
-| BoGo is deferred; TLS-Anvil remains outside PR `just ci` but has dedicated server/client workflows | External conformance breadth | `BOGO_DEFERRED.md`, #50 |
-| Oversized SNI hostnames are accepted on the ClientHello parse path (`parseSni`); the encode path is capped at 253 octets | Parser hardening | `NEGATIVE_SPACE.md` policy difference, #123 |
+| BoGo is deferred; TLS-Anvil stays outside PR `just ci` but has dedicated server and client workflows | External conformance breadth | `BOGO_DEFERRED.md`, #50 |
+| Oversized SNI hostnames are accepted on the ClientHello parse path (`parseSni`); the encode path caps at 253 octets | Parser hardening | `NEGATIVE_SPACE.md` policy difference, #123 |
 | Finished-with-a-trailing-message and non-Finished-in-`wait_client_finished` negative unit tests are absent | Server state-machine evidence | #124 |
 | EncryptedExtensions has no standalone parser fuzz target | Parser fuzz breadth | #124 |
-| Provider matrix lacks runtime FIPS-provider verification and full facade-direct Wycheproof coverage | Backend diversity | `PRODUCTION_READINESS.md` provider residuals |
+| The provider matrix lacks runtime FIPS-provider verification and full facade-direct Wycheproof coverage | Backend diversity | `PRODUCTION_READINESS.md` provider residuals |
 
 ## Boundary diagram
 
@@ -277,7 +280,7 @@ caller / embedder
         |
         | complete TLS records / caller-owned plaintext buffers
         v
-ztls engine
+tls engine
   owns record framing, AEAD nonce/AAD/sequence plumbing, handshake state,
   transcript/key schedule, verification gates, KeyUpdate and alert handling
         |
@@ -288,6 +291,6 @@ libcrypto-family backend
   primitive side-channel posture, and backend allocation/zeroization behavior
 ```
 
-The threat boundary is intentionally narrow: ztls defends the TLS state machine
-and record protocol over caller-provided buffers. Everything below the primitive
-API belongs to the backend; everything around the engine belongs to the caller.
+The boundary is narrow: the engine defends the TLS state machine and the record
+protocol over caller-provided buffers. Everything below the primitive API
+belongs to the backend, and everything around the engine belongs to the caller.

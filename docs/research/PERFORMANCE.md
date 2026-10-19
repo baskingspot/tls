@@ -546,7 +546,7 @@ those into the claim ztls can make.
 
 ### Evidence basis
 
-Two n=10 wall-time captures cover both architectures:
+Three n=10 wall-time captures cover the three platforms:
 
 - **x86_64:**
   `docs/research/perf/20260712-102422-ec2-c7i-2xlarge/benchstat.txt` — a clean
@@ -561,7 +561,7 @@ Two n=10 wall-time captures cover both architectures:
 
 - **aarch64 Linux:**
   `docs/research/perf/20260712-201912-ec2-c7g-2xlarge/benchstat.txt` — a clean
-  `c7g.2xlarge` (AWS Graviton4, aarch64) EC2 host, OpenSSL 3.6.3, rustls 0.23.41,
+  `c7g.2xlarge` (AWS Graviton3, aarch64) EC2 host, OpenSSL 3.6.3, rustls 0.23.41,
   Zig 0.15.2 ReleaseFast, git revision `e39f5a6dd38bbad644a4a2187d51e7370df6caaf`,
   `--count 10 --benchtime 500ms`.
 
@@ -575,9 +575,9 @@ Row-level perf/disassembly evidence for the x86_64 headline AES-GCM row and
 the small-record ChaCha20 row is under
 `docs/research/perf/20260705-215953-ec2-c7i-2xlarge-row-perf/explanations/`.
 
-Both n=10 captures produce formal confidence intervals (`± 0%` to `± 5%`
+All three n=10 captures produce formal confidence intervals (`± 0%` to `± 5%`
 across rows) and p=0.000 for every comparable row. The deltas are large
-(the smallest ztls win on a comparable AES-GCM row is +65% on x86_64; the
+(the smallest ztls win on a comparable AES-GCM row is +69.86% on x86_64; the
 largest is +261%), so the result is decisive, not marginal.
 
 ### The claim
@@ -594,8 +594,8 @@ aarch64 `c7g.2xlarge`, and macOS Apple M1 Max):
 
 2. **ztls is faster than rustls on all AES-GCM rows on all three platforms**
    (30 rows each: AES-128-GCM and AES-256-GCM, all three directions, all five
-   sizes). On x86_64 the delta ranges from +65% to +131%; on aarch64 from
-   +25% to +213%; on macOS from +35% to +244%. ztls executes fewer cycles,
+   sizes). On x86_64 the delta ranges from +69.86% to +131%; on aarch64 from
+   +39.30% to +78%; on macOS from +59.51% to +127%. ztls executes fewer cycles,
    fewer instructions, and fewer branches than rustls on the x86_64 AES-GCM
    ping-pong row (see the row-perf explanation: ztls ~54.8% of rustls
    cycles/op, ~53.6% of rustls instructions/op).
