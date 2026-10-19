@@ -10,11 +10,11 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1792440732,
-        "narHash": "sha256-dU1KIzu9xow7sYZ5P4nYzvUebQ5TwqP0r/aj+Q/WVVQ=",
+        "lastModified": 1792453217,
+        "narHash": "sha256-JJjB7PuefcR1zFV/R3LVApMgYpQ/i9DASe3wM65E86U=",
         "owner": "baskingspot",
         "repo": "nix",
-        "rev": "daf0eaa10833b1050e3e175c6dbc5c826509986c",
+        "rev": "fb0db93c6e91cc13d56ab051b7c9926e24254ae6",
         "type": "github"
       },
       "original": {
