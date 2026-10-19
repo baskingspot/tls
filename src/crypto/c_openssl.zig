@@ -30,7 +30,7 @@ else
 // it the same as AWS-LC — the legacy EC_KEY/EVP_DigestSign path is the only
 // key-construction/signature path. Pub so backend code can comptime-gate
 // provider-parameter features (e.g. the RFC 6979 nonce-type,
-// mattrobenolt/tls#82).
+// baskingspot/tls#82).
 pub const is_boringssl_family = family != .openssl;
 
 pub const openssl = translated;

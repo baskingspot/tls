@@ -1817,7 +1817,7 @@ each passing the same correctness and interop gates.
   lanes (OpenSSL, AWS-LC, BoringSSL × Zig 0.15.2/0.16); the check's Darwin
   build was verified by cross-target semantic analysis only — linking it
   needs a darwin libcrypto, so it has not been executed on macOS. `PrivateKey` also
-  carries a `nonce_mode` option (`NonceMode`, RFC 6979, mattrobenolt/tls#82):
+  carries a `nonce_mode` option (`NonceMode`, RFC 6979, baskingspot/tls#82):
   default `.random`; `.deterministic` makes an ECDSA CertificateVerify
   byte-reproducible. Capability is compiled support only
   (`supportsDeterministicNonce()`: not BoringSSL-family and the nonce-type

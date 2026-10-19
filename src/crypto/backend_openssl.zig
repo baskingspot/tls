@@ -723,10 +723,10 @@ pub const SignatureError = error{
 
 /// signatureSign-only extension: verification and key loading can never
 /// fail this way, so the deterministic-nonce error stays out of their
-/// error sets (mattrobenolt/tls#82).
+/// error sets (baskingspot/tls#82).
 pub const SignError = SignatureError || error{DeterministicNonceUnsupported};
 
-/// ECDSA nonce strategy for the sign seam (mattrobenolt/tls#82):
+/// ECDSA nonce strategy for the sign seam (baskingspot/tls#82):
 /// `.random` (default) or `.deterministic` RFC 6979 deterministic-k.
 pub const NonceMode = enum {
     random,
@@ -925,7 +925,7 @@ pub fn rsaPublicKeyFromDer(pub_key: []const u8) SignatureError!*pkey {
     return key;
 }
 
-// RFC 6979 deterministic ECDSA nonces (mattrobenolt/tls#82). The comptime
+// RFC 6979 deterministic ECDSA nonces (baskingspot/tls#82). The comptime
 // gate prunes the provider-parameter path when the headers lack the macro;
 // the per-key settable-params probe stays because compiled support does not
 // bind the provider, and a silently random nonce is the failure this option

@@ -52,7 +52,7 @@ engine never calls an allocator.
 - **The full TLS feature set.** It supports a bounded TLS 1.3 surface. [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) is the authority on what is proven and what is not.
 - **A stable API.** Signatures move. Pin a commit if you build on it.
 
-If you need a mature, audited TLS stack right now, use rustls or OpenSSL. That is the right answer for most people, and this guide will say so when it changes.
+If you need a mature, audited TLS stack right now, use rustls or OpenSSL. That is the right answer for most people.
 
 ## The performance argument
 
@@ -157,14 +157,15 @@ Then import tls from application code:
 const tls = @import("tls");
 ```
 
-The root package also exposes all three integration modules from the same fetch:
+The root package also exposes the integration modules from the same fetch. The
+import name is yours to choose:
 
-| Dependency module | Import name | Requirement |
-|---|---|---|
-| `tls` | caller-chosen, normally `tls` | Zig 0.16 |
-| `tls_std` | caller-chosen, normally `tls_std` | Zig 0.16 |
-| `tls_xev` | caller-chosen, normally `tls_xev` | Zig 0.16 and the dependency option `.xev = true` |
-| `tls_ktls` | caller-chosen, normally `tls_ktls` | Zig 0.16 on Linux |
+| Module | Requirement |
+|---|---|
+| `tls` | Zig 0.16 |
+| `tls_std` | Zig 0.16 |
+| `tls_xev` | Zig 0.16 and the dependency option `.xev = true` |
+| `tls_ktls` | Zig 0.16 on Linux |
 
 For example, a `tls-std` consumer replaces the import entry above with:
 
@@ -207,9 +208,9 @@ The engine speaks TLS 1.3 only. The supported user-facing path is server-authent
 | TLS versions | TLS 1.3 | TLS 1.2 and DTLS are out of scope. |
 | Cipher suites | `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256` | Suite expansion is provider work. |
 | Key exchange | X25519, P-256, opt-in P-384, and the three opt-in RFC 10024 hybrid groups on both roles | P-384 and the hybrids have bidirectional OpenSSL 3.6 interop on every non-FIPS backend. The hybrids also pass the pinned upstream tlsfuzzer matrix. FIPS backend identities reject hybrid configuration. |
-| Authentication | Server certificate authentication and client certificate authentication (formerly #4) | |
-| Resumption | PSK/session resumption (formerly #2) and 0-RTT with caller-owned anti-replay (formerly #3) | |
-| HRR | In-memory and TLS-Anvil; OpenSSL forced-HRR interop is ungated (formerly #1) | |
+| Authentication | Server certificate authentication and client certificate authentication | |
+| Resumption | PSK/session resumption and 0-RTT with caller-owned anti-replay | |
+| HRR | In-memory and TLS-Anvil; OpenSSL forced-HRR interop is ungated | |
 
 ## Buffer ownership
 
@@ -351,7 +352,7 @@ Rules:
 - Never call two engine send-methods in a row without `completeWrite()` between them.
 - In async code, `completeWrite()` belongs in the write-completion callback.
 
-For blocking transports, keep it simple:
+For blocking transports:
 
 ```zig
 try stream.writeAll(record);
@@ -392,7 +393,7 @@ _ = next_result;
 
 `Outbox` borrows the queued record slice, so the output buffer that produced the
 record must stay alive and unchanged until `outbox.writeBlocked()` is false. The
-writer contract is intentionally tiny: `write(bytes)` returns the number of
+writer contract is small: `write(bytes)` returns the number of
 bytes accepted, and `0` means no progress / would-block. While an outbox owns a
 record, do not call `completeWrite()` manually; the outbox does that after a full
 record drain. The writer must not call back into tls.
@@ -425,7 +426,7 @@ Unlike the client, which only needs a certificate policy, the server must send a
 ```zig
 var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
 defer signer.deinit();
-// RFC 6979 deterministic nonces (mattrobenolt/tls#82): reproducible
+// RFC 6979 deterministic nonces (baskingspot/tls#82): reproducible
 // CertificateVerify bytes for seeded test harnesses; see "Signing and key
 // exchange" for the capability contract.
 // signer.nonce_mode = .deterministic;
@@ -493,9 +494,8 @@ blocks `tls_ktls.Server.activate`; after successful activation,
 
 PSK resumption never implicitly preserves a client-certificate identity. A
 server configured for fresh client authentication declines offered PSKs and
-runs a full authenticated handshake. Applications that intentionally carry an
-identity in a ticket must authenticate and authorize that caller-owned ticket
-state themselves.
+runs a full authenticated handshake. Applications that carry an identity in a ticket must authenticate and authorize
+that caller-owned ticket state themselves.
 
 ## SNI (server name indication)
 
@@ -623,7 +623,7 @@ try stream.writeAll(rec);
 engine.completeWrite();
 ```
 
-When the peer sends `close_notify`, `handleRecord` returns `.closed`. Receiving `.closed` does not automatically send a `close_notify` back — the caller decides whether to half-close, reply in kind, or simply drop the connection.
+When the peer sends `close_notify`, `handleRecord` returns `.closed`. Receiving `.closed` does not automatically send a `close_notify` back — the caller decides whether to half-close, reply in kind, or drop the connection.
 
 Fatal alerts (`decode_error`, `unexpected_message`, etc.) are sent the same way but always at fatal level:
 
@@ -679,11 +679,11 @@ Use the public buffer types unless the application needs custom storage. Smaller
 
 ## Runtime-specific integration notes
 
-The drive loop above is the protocol boundary. What changes by transport model:
+The drive loop is the protocol boundary. What changes by transport model:
 
 ### Blocking `std.net.Stream`
 
-[`examples/tcp_loopback.zig`](https://github.com/baskingspot/tls/blob/main/examples/tcp_loopback.zig) drives a client and a server over loopback TCP. Blocking I/O keeps the ownership rules boring: read into `RecordBuffer.writable()`, feed each complete record to the engine, `writeAll` each emitted record, then call `completeWrite()`. [`tls_std`](https://github.com/baskingspot/tls/blob/main/integrations/tls-std/README.md) packages that shape as a wrapper.
+[`examples/tcp_loopback.zig`](https://github.com/baskingspot/tls/blob/main/examples/tcp_loopback.zig) drives a client and a server over loopback TCP. Read into `RecordBuffer.writable()`, feed each complete record to the engine, `writeAll` each emitted record, then call `completeWrite()`. [`tls_std`](https://github.com/baskingspot/tls/blob/main/integrations/tls-std/README.md) packages that shape as a wrapper.
 
 ### In-memory transport
 
@@ -705,11 +705,10 @@ The drive loop above is the protocol boundary. What changes by transport model:
 
 [`tls_ktls`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/README.md) exports traffic keys for Linux kTLS and drives the kernel data plane after the userspace handshake. [`examples/ktls_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/examples/ktls_pingpong.zig) is the runnable version.
 
-## What is not shown here
+## Not covered by the examples
 
 The engine covers PSK/session resumption, 0-RTT, client certificate authentication,
-and HRR in the supported surface. These features are intentionally out of scope
-for the examples above:
+and HRR in the supported surface. These features are out of scope for the examples:
 
 - Exporters: not implemented, and not planned until someone asks for one.
 - A general io_uring or arbitrary-runtime wrapper. In-tree integration packages
@@ -719,7 +718,7 @@ for the examples above:
 # Stability
 
 The API is not frozen. Signatures move, and there are no release tags yet;
-`main` is the only artifact. Pin a commit and read this guide at that commit.
+`main` is the only artifact. Pin a commit, and read the docs at that commit.
 
 For security reports, see
 [SECURITY.md](https://github.com/baskingspot/tls/blob/main/SECURITY.md).
