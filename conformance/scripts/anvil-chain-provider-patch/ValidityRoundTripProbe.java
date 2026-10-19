@@ -19,7 +19,7 @@ import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 
 /**
- * ztls #91 regression probe: TLS-Anvil's Config.createCopy() and ConfigIO
+ * tls #91 regression probe: TLS-Anvil's Config.createCopy() and ConfigIO
  * (both JAXB round trips) must preserve the configured X.509 validity window
  * — the provider default 2026-01-01..2028-01-01, non-default windows with
  * milliseconds and UTC offsets, and deliberately expired windows — through

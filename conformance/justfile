@@ -69,7 +69,7 @@ ci:
     just anvil-client-test
     just anvil-chain-patch-test
 
-[doc("Run TLS-Anvil server tests against the ztls server harness")]
+[doc("Run TLS-Anvil server tests against the tls server harness")]
 [group("conformance")]
 anvil-server *ARGS: build
     uv run python scripts/anvil_server.py {{ ARGS }}
@@ -136,7 +136,7 @@ anvil-report-skip-list:
     @echo "TODO: real-run skip-list audit not yet automated."
     @echo "Run 'just anvil-report <real-results> --output-dir <run-dir>' and review unmatched_skip_patterns in the summary."
 
-[doc("Run TLS-Anvil client tests against the ztls client harness")]
+[doc("Run TLS-Anvil client tests against the tls client harness")]
 [group("conformance")]
 anvil-client *ARGS: build
     uv run python scripts/anvil_client.py {{ ARGS }}

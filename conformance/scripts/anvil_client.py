@@ -139,7 +139,7 @@ def write_trigger_script(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run TLS-Anvil client tests against the ztls client harness."
+        description="Run TLS-Anvil client tests against the tls client harness."
     )
     parser.add_argument(
         "--port", type=int, default=0, help="local TLS-Anvil server port; 0 picks one"
@@ -193,9 +193,9 @@ def main() -> int:
     env = os.environ.copy()
     env["HOST"] = "127.0.0.1"
     env["PORT"] = str(port)
-    env["ZTLS_HOST_NAME"] = "localhost"
-    env["ZTLS_INSECURE_NO_CHAIN_ANCHOR"] = "1"
-    env["ZTLS_INSECURE_NO_HOST_NAME"] = "1"
+    env["TLS_HOST_NAME"] = "localhost"
+    env["TLS_INSECURE_NO_CHAIN_ANCHOR"] = "1"
+    env["TLS_INSECURE_NO_HOST_NAME"] = "1"
     tool_logs_before = snapshot_logs(ANVIL_TOOL_LOG_DIR)
     timeout = args.timeout or None
     stdout_path = logs_dir / "TLS-Anvil.stdout.log"

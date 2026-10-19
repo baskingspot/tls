@@ -6,8 +6,8 @@
 # committed baseline plus a documented repetition policy and threshold; see
 # docs/research/PERFORMANCE.md "Acceptance thresholds and regression gate".
 #
-# The gate passes if ztls sec/op does not regress by more than 15% on any
-# comparable AES-GCM row versus the baseline, and ztls remains faster than
+# The gate passes if tls sec/op does not regress by more than 15% on any
+# comparable AES-GCM row versus the baseline, and tls remains faster than
 # libssl on every comparable AES-GCM row. The 15% threshold is generous because
 # current deltas are 66–253%; it exists to catch silent regressions, not 1% noise.
 #
@@ -59,11 +59,11 @@ if [[ -z "${baseline}" ]]; then
     path_pattern='*ec2-c7i-2xlarge*'
   fi
 
-  # Latest committed wall-time capture with a ztls.txt file. Row-perf and
-  # handshake-row-perf dirs don't have ztls.txt and are not valid baselines.
+  # Latest committed wall-time capture with a tls.txt file. Row-perf and
+  # handshake-row-perf dirs don't have tls.txt and are not valid baselines.
   baseline="$(find docs/research/perf -mindepth 1 -maxdepth 1 -type d \
     -path "${path_pattern}" 2>/dev/null | sort | while IFS= read -r d; do
-      [[ -f "$d/ztls.txt" ]] && echo "$d"
+      [[ -f "$d/tls.txt" ]] && echo "$d"
     done | tail -n 1)"
 fi
 
@@ -76,12 +76,12 @@ if [[ -z "${fresh}" ]]; then
   echo "run: just bench-remote-capture --instance-types c7i.2xlarge --count 10 --benchtime 500ms" >&2
   exit 1
 fi
-if [[ ! -f "${baseline}/ztls.txt" ]]; then
-  echo "baseline ${baseline}/ztls.txt missing" >&2
+if [[ ! -f "${baseline}/tls.txt" ]]; then
+  echo "baseline ${baseline}/tls.txt missing" >&2
   exit 1
 fi
-if [[ ! -f "${fresh}/ztls.txt" ]]; then
-  echo "fresh ${fresh}/ztls.txt missing" >&2
+if [[ ! -f "${fresh}/tls.txt" ]]; then
+  echo "fresh ${fresh}/tls.txt missing" >&2
   exit 1
 fi
 
@@ -101,7 +101,7 @@ cleanup() { [[ -n "${tmp_dir}" ]] && rm -rf "${tmp_dir}"; }
 trap cleanup EXIT
 tmp_dir="$(mktemp -d)"
 
-# Normalize Go-bench-format ztls output into benchstat rows. Same normalization
+# Normalize Go-bench-format tls output into benchstat rows. Same normalization
 # as scripts/bench-analyze.sh normalize_go, kept inline so this script is
 # self-contained.
 normalize_go() {
@@ -122,15 +122,15 @@ normalize_go() {
         else if (parts[i] ~ /^[0-9]+$/) { size = parts[i] }
       }
       if (suite == "") suite = "none"
-      printf "Benchmark%s/impl=ztls/suite=%s/size=%s", base, suite, size
+      printf "Benchmark%s/impl=tls/suite=%s/size=%s", base, suite, size
       for (i = 2; i <= NF; i++) printf "\t%s", $i
       printf "\n"
     }
   ' "${input}" > "${output}"
 }
 
-normalize_go "${baseline}/ztls.txt" "${tmp_dir}/baseline.txt"
-normalize_go "${fresh}/ztls.txt" "${tmp_dir}/fresh.txt"
+normalize_go "${baseline}/tls.txt" "${tmp_dir}/baseline.txt"
+normalize_go "${fresh}/tls.txt" "${tmp_dir}/fresh.txt"
 
 # Filter to comparable AES-GCM app-data rows for the regression check.
 grep -E '^Benchmark(AppClientToServer|AppServerToClient|AppPingPong)/.*TLS_AES_128_GCM_SHA256|^Benchmark(AppClientToServer|AppServerToClient|AppPingPong)/.*TLS_AES_256_GCM_SHA384' \
@@ -143,7 +143,7 @@ echo "# baseline: ${baseline} (instance: ${baseline_itype})"
 echo "# fresh:    ${fresh} (instance: ${fresh_itype})"
 echo "# threshold: 15% regression on any comparable AES-GCM row fails the gate"
 echo
-echo "## Comparable AES-GCM rows (ztls baseline vs fresh)"
+echo "## Comparable AES-GCM rows (tls baseline vs fresh)"
 benchstat -row ".name /suite /size" "${tmp_dir}/baseline-aes.txt" "${tmp_dir}/fresh-aes.txt" \
   | sed '/^geomean[[:space:]]/d'
 echo

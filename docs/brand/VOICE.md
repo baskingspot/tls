@@ -1,6 +1,6 @@
-# ztls Brand Voice
+# tls Brand Voice
 
-This is the constitution for how ztls talks to the outside world. Every public
+This is the constitution for how tls talks to the outside world. Every public
 artifact — README, positioning copy, a future landing page, release notes,
 visual identity — inherits from this file. It exists so public-facing work stays
 consistent instead of being re-derived (and re-argued) every time.
@@ -15,7 +15,7 @@ your instinct, this file wins until Matt says otherwise.
 
 ## The position: honesty is the product
 
-ztls is a crypto library. For a crypto library, the scarcest thing is not speed
+tls is a crypto library. For a crypto library, the scarcest thing is not speed
 or features — it's trust. So the brand is not "fast" and it is not "modern." The
 brand is **that we tell you the truth about what works, what doesn't, and how we
 know.** We show the row where we lose. We name what's unproven. We point at the
@@ -43,7 +43,7 @@ marketing around it. There is no exception to this. It is the one rule.
 
 ---
 
-## What ztls is (the durable claims)
+## What tls is (the durable claims)
 
 These are the positioning pillars. They are architecture facts, not performance
 claims, so they hold regardless of where the benchmark numbers land. Lead with
@@ -92,10 +92,10 @@ software equally.
 
 **The register, same fact two ways:**
 
-> Slop: ztls is a high-performance, modern TLS 1.3 implementation written in Zig
+> Slop: tls is a high-performance, modern TLS 1.3 implementation written in Zig
 > that provides seamless integration and robust security for your applications.
 >
-> Voiced: ztls is a TLS 1.3 state machine with no opinions about your I/O. You
+> Voiced: tls is a TLS 1.3 state machine with no opinions about your I/O. You
 > hand it bytes from whatever transport you already have; it hands back bytes to
 > send. It allocates nothing on its own. It's pre-alpha and the API will move —
 > read `docs/USAGE.md` before you depend on it.
@@ -169,7 +169,7 @@ opinion. The rules above are the actual standard; the score is not.
 
 Same anti-slop rule as the prose. No generic lightning bolts, no
 padlock-with-shield, no "futuristic" gradients, no aesthetic that could belong to
-any security startup on Earth. ztls is a Sans-I/O state machine in Zig; the
+any security startup on Earth. tls is a Sans-I/O state machine in Zig; the
 visual identity should be as specific and unsentimental as the copy.
 
 herald does not render images. Image work is a collaboration: herald writes the
@@ -184,9 +184,9 @@ to the project.
   with filled endpoint nodes — bytes enter top-left, exit bottom-right. It is
   both the letter z and a state-transition diagram. Use it where an icon is
   needed: favicon, social-preview card, org avatar.
-- **Wordmark** (`images/logo/wordmark.svg`, `wordmark-dark.svg`): `.ztls` in
+- **Wordmark** (`images/logo/wordmark.svg`, `wordmark-dark.svg`): `.tls` in
   JetBrains Mono over the tagline, glyphs outlined to paths. The leading dot
-  echoes `.name = .ztls` in `build.zig.zon`. Use it for headers (README, a
+  echoes `.name = .tls` in `build.zig.zon`. Use it for headers (README, a
   future site). Regenerate with `just brand-wordmark`.
 - **Do not stack the mark and the wordmark.** The mark is a z and the wordmark
   opens with `.z`; together they read as two z's and look redundant. Header
@@ -200,7 +200,7 @@ to the project.
 
 Every capability or status claim in public copy must be supportable by
 `PRODUCTION_READINESS.md` or the committed evidence it points at. Before writing
-"ztls supports X" or "ztls is faster than Y," open the spine and confirm. If the
+"tls supports X" or "tls is faster than Y," open the spine and confirm. If the
 spine says `PARTIAL` or `NONE`, the copy says "in progress," "not yet," or omits
 it. herald never asserts status in the spine and never edits it to fit the copy —
 if a claim needs the spine to move, that's flagged to Matt / `evidence-auditor`,

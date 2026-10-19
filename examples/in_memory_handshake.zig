@@ -10,7 +10,7 @@ const mem = std.mem;
 const testing = std.testing;
 const assert = std.debug.assert;
 
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 const fixtures = @import("fixtures");
 const cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
@@ -19,21 +19,21 @@ const scalar: []const u8 = &fixtures.server_ecdsa_scalar;
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     // Load the server's signing key from a fixture P-256 scalar.
-    var signer: ztls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
+    var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
     const signer_api = signer.signer();
 
     // Fresh ephemeral X25519 keypairs for client and server.
-    const client_keypair: ztls.x25519.KeyPair = .generate();
-    const server_keypair: ztls.x25519.KeyPair = .generate();
+    const client_keypair: tls.x25519.KeyPair = .generate();
+    const server_keypair: tls.x25519.KeyPair = .generate();
 
-    var client_random: ztls.Random = undefined;
+    var client_random: tls.Random = undefined;
     io.random(&client_random.data);
-    var server_random: ztls.Random = undefined;
+    var server_random: tls.Random = undefined;
     io.random(&server_random.data);
 
     // ── Client setup ────────────────────────
-    var client: ztls.ClientHandshake = .init(.{
+    var client: tls.ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),
         .host_name = "ztls.server.test",
         .now_sec = 0,
@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     defer client.deinit();
 
     // ── Server setup ────────────────────────
-    var server: ztls.ServerHandshake = .init(.{
+    var server: tls.ServerHandshake = .init(.{
         .keypairs = try .init(server_keypair),
         .random = server_random,
         .alpn_protocols = &.{"h2"},
@@ -53,9 +53,9 @@ pub fn main(init: std.process.Init) !void {
     server.setCredentials(&.{cert_der}, signer_api);
 
     // Caller-owned buffers. The engine never allocates; we provide all storage.
-    var client_out: ztls.ClientHandshake.OutBuffer = .empty;
-    var server_out: ztls.ServerHandshake.OutBuffer = .empty;
-    var flight: ztls.ServerHandshake.FlightBuffer = .empty;
+    var client_out: tls.ClientHandshake.OutBuffer = .empty;
+    var server_out: tls.ServerHandshake.OutBuffer = .empty;
+    var flight: tls.ServerHandshake.FlightBuffer = .empty;
 
     // 1. ClientHello — client emits its first flight.
     const ch_record = try client.start(&client_out.buffer);
@@ -68,7 +68,7 @@ pub fn main(init: std.process.Init) !void {
     print("[server] ServerHello sent → state={s}\n", .{@tagName(server.state)});
 
     // 3. Client installs handshake keys from ServerHello.
-    try client.processServerHello(sh_record[ztls.frame.header_len..]);
+    try client.processServerHello(sh_record[tls.frame.header_len..]);
     print("[client] handshake keys installed → state={s}\n", .{@tagName(client.state)});
 
     // 4. Server sends authenticated flight: EE + Cert + CertificateVerify + Finished.

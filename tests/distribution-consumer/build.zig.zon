@@ -1,7 +1,7 @@
 .{
-    .name = .ztls_distribution_consumer,
+    .name = .tls_distribution_consumer,
     .version = "0.0.0",
-    .fingerprint = 0x1e3100c831535344,
+    .fingerprint = 0xf92c5a4c84d28401,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{

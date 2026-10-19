@@ -47,7 +47,7 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
 
-    const mod = b.addModule("ztls", .{
+    const mod = b.addModule("tls", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -72,28 +72,28 @@ pub fn build(b: *Build) void {
     const expose_xev = b.option(
         bool,
         "xev",
-        "Expose ztls_xev and fetch its lazy libxev dependency",
+        "Expose tls_xev and fetch its lazy libxev dependency",
     ) orelse false;
     {
-        const std_mod = b.addModule("ztls_std", .{
-            .root_source_file = b.path("integrations/ztls-std/src/root.zig"),
+        const std_mod = b.addModule("tls_std", .{
+            .root_source_file = b.path("integrations/tls-std/src/root.zig"),
             .target = target,
             .optimize = optimize,
         });
-        std_mod.addImport("ztls", mod);
+        std_mod.addImport("tls", mod);
         std_mod.link_libc = true;
 
-        const ktls_mod = b.addModule("ztls_ktls", .{
-            .root_source_file = b.path("integrations/ztls-ktls/src/root.zig"),
+        const ktls_mod = b.addModule("tls_ktls", .{
+            .root_source_file = b.path("integrations/tls-ktls/src/root.zig"),
             .target = target,
             .optimize = optimize,
         });
-        ktls_mod.addImport("ztls", mod);
+        ktls_mod.addImport("tls", mod);
         ktls_mod.link_libc = true;
 
-        const xev_mod = b.addModule("ztls_xev", .{
+        const xev_mod = b.addModule("tls_xev", .{
             .root_source_file = b.path(if (expose_xev)
-                "integrations/ztls-xev/src/root.zig"
+                "integrations/tls-xev/src/root.zig"
             else
                 "src/integration_requires_xev.zig"),
             .target = target,
@@ -105,7 +105,7 @@ pub fn build(b: *Build) void {
                 .optimize = optimize,
             });
             if (libxev) |dependency| xev_mod.addImport("xev", dependency.module("xev"));
-            xev_mod.addImport("ztls", mod);
+            xev_mod.addImport("tls", mod);
             xev_mod.link_libc = true;
         }
     }
@@ -128,7 +128,7 @@ pub fn build(b: *Build) void {
 
     // testingx: plain-text test runner, benchmark harness, and comptime
     // fixtures. Lazy — only fetched when a development step is built, not
-    // when consumers use ztls as a library dependency.
+    // when consumers use tls as a library dependency.
     const testingx_dep = b.lazyDependency("testingx", .{
         // testingx declares no `optimize` option; the module is compiled at
         // the optimize mode of whatever artifact imports it.
@@ -169,7 +169,7 @@ pub fn build(b: *Build) void {
         .test_mod = test_mod,
         .fuzz = fuzz_mode,
         .testingx = testingx_dep,
-        .ztls_mod = mod,
+        .tls_mod = mod,
         .fixtures_mod = fixtures_mod,
         .openssl_c = c_modules.openssl_c,
         .pty_c = c_modules.pty_c,
@@ -179,7 +179,7 @@ pub fn build(b: *Build) void {
 
     bench_mod.addSteps(b, @This(), .{
         .target = target,
-        .ztls_mod = mod,
+        .tls_mod = mod,
         .c_mod = c_mod,
         .c_ssl_mod = c_ssl_mod,
         .openssl_c = c_modules.openssl_c,
@@ -191,7 +191,7 @@ pub fn build(b: *Build) void {
     examples_mod.addSteps(b, .{
         .target = target,
         .optimize = optimize,
-        .ztls_mod = mod,
+        .tls_mod = mod,
         .fixtures_mod = fixtures_mod,
     });
 
@@ -199,7 +199,7 @@ pub fn build(b: *Build) void {
     // generated HTML into the mdBook source tree at docs/site/zig-docs, where
     // `mdbook build` sweeps it into the published site at /zig-docs/.
     const docs_obj = b.addObject(.{
-        .name = "ztls-docs",
+        .name = "tls-docs",
         .root_module = mod,
     });
     const docs_install = b.addInstallDirectory(.{

@@ -1,6 +1,6 @@
 //! Platform entropy for keypair convenience constructors.
 //!
-//! This stays intentionally narrower than `std.Io`: ztls core remains Sans-I/O,
+//! This stays intentionally narrower than `std.Io`: tls core remains Sans-I/O,
 //! while key generation needs only the local OS CSPRNG syscall.
 const std = @import("std");
 const testing = std.testing;
@@ -16,7 +16,7 @@ const panic = std.debug.panic;
 /// randomSecure: arc4random_buf where the libc provides it, then getrandom.
 pub fn fill(buf: []u8) void {
     // glibc >= 2.36 and musl provide arc4random_buf, which rides the getrandom
-    // vDSO on kernels >= 6.11. ztls always links libc (libcrypto), so the
+    // vDSO on kernels >= 6.11. tls always links libc (libcrypto), so the
     // comptime decl check is the whole probe.
     if (@TypeOf(c.arc4random_buf) != void) {
         c.arc4random_buf(buf.ptr, buf.len);
@@ -33,7 +33,7 @@ pub fn fill(buf: []u8) void {
             .SUCCESS => remaining = remaining[@intCast(rc)..],
             .INTR => continue,
             else => |e| panic(
-                "ztls: OS CSPRNG getrandom failed with {t}; " ++
+                "tls: OS CSPRNG getrandom failed with {t}; " ++
                     "cannot generate key material without entropy",
                 .{e},
             ),

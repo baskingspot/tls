@@ -8,7 +8,7 @@ The tests use timestamp `1800000000` and hostname `critical.test`.
 |---|---|
 | `valid` | Supported critical Basic Constraints and Key Usage |
 | `ignored` | Non-critical Netscape Comment |
-| `critical` | Critical Netscape Comment, which ztls does not process |
+| `critical` | Critical Netscape Comment, which tls does not process |
 | `san_application` | Application-class GeneralNames wrapper |
 | `san_context` | Context-specific GeneralNames wrapper |
 | `san_private` | Private-class GeneralNames wrapper |
@@ -20,15 +20,15 @@ The public certificate tests cover both authentication roles for critical-extens
 Hostname tests cover all five malformed SAN wrappers.
 
 `openssl-results.json` contains the reference commands and raw OpenSSL verdicts.
-OpenSSL 3.6.4 accepts the primitive SEQUENCE wrapper. ztls requires the constructed GeneralNames encoding.
-The malformed-SAN client-auth results are reference controls, not comparisons against ztls client-auth behavior.
+OpenSSL 3.6.4 accepts the primitive SEQUENCE wrapper. tls requires the constructed GeneralNames encoding.
+The malformed-SAN client-auth results are reference controls, not comparisons against tls client-auth behavior.
 
 ## Regeneration
 
 Run the generator in a private output directory:
 
 ```sh
-bash tests/fixtures/critical/generate.sh /tmp/ztls-extension-fixtures
+bash tests/fixtures/critical/generate.sh /tmp/tls-extension-fixtures
 ```
 
 Replace the corresponding base64 sections in `../fixtures.txtar`.

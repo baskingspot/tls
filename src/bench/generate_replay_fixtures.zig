@@ -9,7 +9,7 @@ const mem = std.mem;
 const heap = std.heap;
 const Allocator = mem.Allocator;
 
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 const host = "127.0.0.1";
 const replay_host_name = "test.local";
@@ -26,7 +26,7 @@ const suites = [_]Suite{
     .{ .name = "TLS_AES_256_GCM_SHA384", .file = "aes256" },
 };
 
-const client_keypair: ztls.x25519.KeyPair = .{
+const client_keypair: tls.x25519.KeyPair = .{
     .secret_key = .init(.{
         0x49, 0xaf, 0x42, 0xba, 0x7f, 0x79, 0x94, 0x85,
         0x2d, 0x71, 0x3e, 0xf2, 0x78, 0x4b, 0xcb, 0xca,
@@ -41,7 +41,7 @@ const client_keypair: ztls.x25519.KeyPair = .{
     }),
 };
 
-const client_random: ztls.Random = .{ .data = .{
+const client_random: tls.Random = .{ .data = .{
     0xcb, 0x34, 0xec, 0xb1, 0xe7, 0x81, 0x63, 0xba,
     0x1c, 0x38, 0xc6, 0xda, 0xcb, 0x19, 0x6a, 0x6d,
     0xff, 0xa2, 0x1a, 0x8d, 0x99, 0x12, 0xec, 0x18,
@@ -89,7 +89,7 @@ fn captureSuite(io: Io, arena: Allocator, suite: []const u8, port: u16) ![]u8 {
     const stream = try connectWithRetry(io, port);
     defer stream.close(io);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),
         .host_name = replay_host_name,
         .now_sec = 0,
@@ -99,23 +99,23 @@ fn captureSuite(io: Io, arena: Allocator, suite: []const u8, port: u16) ![]u8 {
     });
     defer hs.deinit();
     var out: [1024]u8 = undefined;
-    try ztls.io.writeAll(io, stream, try hs.start(&out));
+    try tls.io.writeAll(io, stream, try hs.start(&out));
     hs.completeWrite();
 
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
     var records: std.ArrayList(u8) = .empty;
     errdefer records.deinit(arena);
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(io, stream, &rb);
+        const n = try tls.io.fill(io, stream, &rb);
         if (n == 0) return error.ServerClosed;
         while (try rb.next()) |record| {
             try records.appendSlice(arena, record);
             switch (try hs.handleRecord(record, &out)) {
                 .write => |w| {
-                    try ztls.io.writeAll(io, stream, w);
+                    try tls.io.writeAll(io, stream, w);
                     hs.completeWrite();
                 },
                 .none => {},

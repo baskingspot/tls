@@ -88,7 +88,7 @@ pub fn setsockopt(fd: i32, level: i32, optname: u32, opt: []const u8) bool {
 const rc = linux.syscall6(.splice, fd_in, @intFromPtr(off_in_opt), fd_out, @intFromPtr(off_out_opt), len, flags);
 ```
 
-**kTLS lives here** — the verified UAPI layer (constants, installs, cmsg framing) is `ztls.ktls` in `src/ktls.zig`, with `integrations/ztls-ktls` as the data-plane integration. Define kernel TLS constants there, nowhere else.
+**kTLS lives here** — the verified UAPI layer (constants, installs, cmsg framing) is `tls.ktls` in `src/ktls.zig`, with `integrations/tls-ktls` as the data-plane integration. Define kernel TLS constants there, nowhere else.
 
 `std.os.linux.IoUring` is the raw ring wrapper (init, get_sqe, submit, enter, copy_cqes, cqe_seen, plus op builders: `splice`, `read_fixed`, `write_fixed`, `accept`, ...). Use that, **not** `std.Io.Uring` (the WIP Evented backend).
 
@@ -133,7 +133,7 @@ const len = r.assumeRead(u16);           // attacker-controlled TLS record lengt
 if (remaining < len + 5) return error.UnexpectedEof;   // BUG: len + 5 overflows u16
 ```
 
-panics (Debug/ReleaseSafe) or is UB (ReleaseFast) before the comparison rejects the oversized input. Remote DoS class — caused 14 exploitable sites in ztls (#72). `ziglint` does not catch this. This project parses TLS record headers (u16 lengths) constantly. Always widen first:
+panics (Debug/ReleaseSafe) or is UB (ReleaseFast) before the comparison rejects the oversized input. Remote DoS class — caused 14 exploitable sites in tls (#72). `ziglint` does not catch this. This project parses TLS record headers (u16 lengths) constantly. Always widen first:
 
 ```zig
 if (remaining < @as(usize, len) + 5) return error.UnexpectedEof;

@@ -918,7 +918,7 @@ def test_parser_rejects_missing_skip_list(tmp_path):
 
 
 # ─── #52 expected-failure classification ─────────────────────────────────
-# RFC 8446 §4.2.3 / Appendix D: DSA MUST NOT be used in TLS 1.3. ztls
+# RFC 8446 §4.2.3 / Appendix D: DSA MUST NOT be used in TLS 1.3. tls
 # correctly rejects DSA-root certificate chains, so the six TLS-Anvil rows
 # in #52 fail only on DSA-root RSA-leaf parameter combinations. These are
 # classified as expected_failed (visible, not expected_skipped, not hidden)

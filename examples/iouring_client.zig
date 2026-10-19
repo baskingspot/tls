@@ -1,6 +1,6 @@
 //! Linux io_uring TLS 1.3 HTTPS client proof.
 //!
-//! This example keeps ztls Sans-I/O: io_uring only drives the socket edge.
+//! This example keeps tls Sans-I/O: io_uring only drives the socket edge.
 //! TLS records still move through RecordBuffer and ClientHandshake, and every
 //! emitted TLS record calls completeWrite() after the io_uring send completes.
 //! If io_uring or the peer is unavailable, this example exits non-zero instead
@@ -15,7 +15,7 @@ const builtin = @import("builtin");
 
 const IpAddress = Io.net.IpAddress;
 
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 const fixtures = @import("fixtures");
 
@@ -55,11 +55,11 @@ pub fn main(init: std.process.Init) !void {
     defer stream.close(io);
     print("[iouring] connected to {s}:{d}\n", .{ connect_host, port });
 
-    const client_keypair: ztls.x25519.KeyPair = .generate();
-    var random: ztls.Random = undefined;
+    const client_keypair: tls.x25519.KeyPair = .generate();
+    var random: tls.Random = undefined;
     io.random(&random.data);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),
         .host_name = server_name,
         .now_sec = Io.Timestamp.now(io, .real).toSeconds(),
@@ -69,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
     defer hs.deinit();
 
     // Certificate verification: pinned trust anchor for the test server.
-    // This is example-wrapper allocation, not ztls core allocation.
+    // This is example-wrapper allocation, not tls core allocation.
     var bundle: crypto.Certificate.Bundle = .empty;
     defer bundle.deinit(gpa);
     const cert_start: u32 = @intCast(bundle.bytes.items.len);
@@ -77,9 +77,9 @@ pub fn main(init: std.process.Init) !void {
     try bundle.parseCert(gpa, cert_start, hs.policy.now_sec);
     hs.policy.bundle = &bundle;
 
-    var out: ztls.ClientHandshake.OutBuffer = .empty;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var out: tls.ClientHandshake.OutBuffer = .empty;
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
     try sendAll(&ring, stream.socket.handle, try hs.start(&out.buffer));
     hs.completeWrite();
@@ -154,7 +154,7 @@ fn sendAll(ring: *IoUring, fd: posix.fd_t, bytes: []const u8) !void {
     }
 }
 
-fn recvIntoRecordBuffer(ring: *IoUring, fd: posix.fd_t, rb: *ztls.RecordBuffer) !usize {
+fn recvIntoRecordBuffer(ring: *IoUring, fd: posix.fd_t, rb: *tls.RecordBuffer) !usize {
     const writable = rb.writable();
     _ = try ring.recv(2, fd, .{ .buffer = writable }, 0);
     _ = try ring.submit();

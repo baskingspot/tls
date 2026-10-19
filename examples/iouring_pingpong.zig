@@ -3,7 +3,7 @@
 //! This is the deterministic counterpart to `iouring_client.zig`: both peers
 //! live in one process, the server binds an ephemeral loopback port, and all TLS
 //! socket reads/writes use io_uring. Blocking `listen`/`accept`/`connect` setup
-//! is intentionally boring; the point is proving ztls's Sans-I/O record driver
+//! is intentionally boring; the point is proving tls's Sans-I/O record driver
 //! composes with io_uring for the TLS data path.
 const std = @import("std");
 const Io = std.Io;
@@ -11,7 +11,7 @@ const IoUring = std.os.linux.IoUring;
 const print = std.debug.print;
 const builtin = @import("builtin");
 
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 const IpAddress = Io.net.IpAddress;
 
@@ -36,13 +36,13 @@ const IoError = error{ IoUringFailed, PeerClosed };
 const ServerCtx = struct {
     io: Io,
     listener: *Io.net.Server,
-    keypair: ztls.x25519.KeyPair,
+    keypair: tls.x25519.KeyPair,
 };
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    const client_keypair: ztls.x25519.KeyPair = .generate();
-    const server_keypair: ztls.x25519.KeyPair = .generate();
+    const client_keypair: tls.x25519.KeyPair = .generate();
+    const server_keypair: tls.x25519.KeyPair = .generate();
 
     const addr: IpAddress = try .parse(host, port);
     // Loopback-only convenience so repeated CI/dev runs do not trip over
@@ -70,24 +70,24 @@ fn serverRun(ctx: *ServerCtx) !void {
     defer stream.close(io);
     print("[server] accepted connection\n", .{});
 
-    var random: ztls.Random = undefined;
+    var random: tls.Random = undefined;
     io.random(&random.data);
 
-    var hs: ztls.ServerHandshake = .init(.{
+    var hs: tls.ServerHandshake = .init(.{
         .keypairs = try .init(ctx.keypair),
         .random = random,
         .alpn_protocols = &.{alpn},
     });
     defer hs.deinit();
 
-    var signer: ztls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
+    var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
     hs.setCredentials(&.{cert_der}, signer.signer());
 
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
-    var out: ztls.ServerHandshake.OutBuffer = .empty;
-    var flight: ztls.ServerHandshake.FlightBuffer = .empty;
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
+    var out: tls.ServerHandshake.OutBuffer = .empty;
+    var flight: tls.ServerHandshake.FlightBuffer = .empty;
 
     while (!hs.isConnected()) {
         const n = try recvIntoRecordBuffer(&ring, stream.socket.handle, &rb);
@@ -149,7 +149,7 @@ fn serverRun(ctx: *ServerCtx) !void {
     }
 }
 
-fn clientRun(io: Io, client_keypair: ztls.x25519.KeyPair, actual_port: u16) !void {
+fn clientRun(io: Io, client_keypair: tls.x25519.KeyPair, actual_port: u16) !void {
     var ring: IoUring = try .init(8, 0);
     defer ring.deinit();
 
@@ -158,10 +158,10 @@ fn clientRun(io: Io, client_keypair: ztls.x25519.KeyPair, actual_port: u16) !voi
     defer stream.close(io);
     print("[client] connected to {s}:{d}\n", .{ host, actual_port });
 
-    var random: ztls.Random = undefined;
+    var random: tls.Random = undefined;
     io.random(&random.data);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),
         .host_name = server_name,
         .now_sec = Io.Timestamp.now(io, .real).toSeconds(),
@@ -171,9 +171,9 @@ fn clientRun(io: Io, client_keypair: ztls.x25519.KeyPair, actual_port: u16) !voi
     });
     defer hs.deinit();
 
-    var out: ztls.ClientHandshake.OutBuffer = .empty;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var out: tls.ClientHandshake.OutBuffer = .empty;
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
     try sendAll(&ring, stream.socket.handle, try hs.start(&out.buffer));
     hs.completeWrite();
@@ -252,7 +252,7 @@ fn sendAll(ring: *IoUring, fd: std.posix.fd_t, bytes: []const u8) !void {
     }
 }
 
-fn recvIntoRecordBuffer(ring: *IoUring, fd: std.posix.fd_t, rb: *ztls.RecordBuffer) !usize {
+fn recvIntoRecordBuffer(ring: *IoUring, fd: std.posix.fd_t, rb: *tls.RecordBuffer) !usize {
     const writable = rb.writable();
     _ = try ring.recv(2, fd, .{ .buffer = writable }, 0);
     _ = try ring.submit();

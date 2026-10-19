@@ -427,7 +427,7 @@ test "encryptPrepared/decrypt: round-trip" {
     var rx: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = key }, iv);
     defer rx.deinit();
 
-    const plaintext = "hello, ztls";
+    const plaintext = "hello, tls";
     var buf: [frame.header_len + plaintext.len + 1 + tag_len]u8 = undefined;
     @memcpy(buf[frame.header_len..][0..plaintext.len], plaintext);
 
@@ -446,7 +446,7 @@ test "encrypt/decrypt: round-trip" {
     var rx: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = key }, iv);
     defer rx.deinit();
 
-    const plaintext = "hello, ztls";
+    const plaintext = "hello, tls";
     var buf: [frame.header_len + plaintext.len + 1 + tag_len]u8 = undefined;
 
     const record_buf = try tx.encrypt(.application_data, plaintext, &buf);
@@ -476,7 +476,7 @@ test "encrypt/decrypt: sequence numbers advance" {
 
 // RFC 8446 §5.2 — on AEAD authentication failure the caller buffer contents are
 // backend-owned. OpenSSL EVP writes unauthenticated plaintext before tag
-// verification; AWS-LC EVP_AEAD zeroes the output on failure. This is not a ztls
+// verification; AWS-LC EVP_AEAD zeroes the output on failure. This is not a tls
 // correctness assertion, but the test pins the per-backend behavior explicitly.
 test "decrypt: failed auth exposes backend failure buffer behavior" {
     const key: Aes128GcmKey = .init(@splat(0xab));

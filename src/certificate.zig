@@ -288,7 +288,7 @@ fn anchorChain(
 /// Tracks the §6.1.2(k) max_path_length state variable: initialized to the
 /// trust anchor's pathLenConstraint when the anchor certificate carries one
 /// (§6.1.1(d)(g) trust-anchor inputs; OpenSSL applies an anchor's constraint
-/// and ztls matches — tests/fixtures/pathlen/README.md records the
+/// and tls matches — tests/fixtures/pathlen/README.md records the
 /// differential), else to the path length n, which no presented chain can
 /// exceed. §6.1.4(l) charges one unit for every non-self-issued path
 /// certificate except the final one (§4.2.1.9: the last certificate is not
@@ -507,7 +507,7 @@ pub fn certificateVerifyEncodedLen(signature: []const u8) usize {
 }
 
 /// Encode a CertificateVerify handshake message from a caller-provided
-/// signature. ztls does not own private keys; server-side code signs
+/// signature. tls does not own private keys; server-side code signs
 /// `server_context || transcript_hash` outside this helper, then wraps the
 /// signature here. RFC 8446 §4.4.3.
 pub fn encodeCertificateVerify(
@@ -1016,7 +1016,7 @@ test "encode: round trips certificate chain" {
     try testing.expect(pub_key.len > 0);
 }
 
-// RFC 8446 §4.4.2.1 — ztls does not request or consume OCSP responses today,
+// RFC 8446 §4.4.2.1 — tls does not request or consume OCSP responses today,
 // so a server CertificateEntry status_request extension is unsupported.
 test "parse: rejects unsupported CertificateEntry status_request" {
     var buf: [2048]u8 = undefined;
@@ -1029,7 +1029,7 @@ test "parse: rejects unsupported CertificateEntry status_request" {
     );
 }
 
-// RFC 8446 §4.4.2.1 — ztls does not request or consume SCTs today, so a server
+// RFC 8446 §4.4.2.1 — tls does not request or consume SCTs today, so a server
 // CertificateEntry signed_certificate_timestamp extension is unsupported.
 test "parse: rejects unsupported CertificateEntry SCT" {
     var buf: [2048]u8 = undefined;
@@ -1627,7 +1627,7 @@ test "parse: intermediate below a self-issued certificate still counts" {
 // RFC 5280 §6.1.1(d)(g)/§6.2 — a trust anchor supplied as a certificate
 // contributes its pathLenConstraint as the initial max_path_length input
 // (§6.1.2(k)); OpenSSL applies it (error 25 attributes the failure to the
-// anchor root itself at depth 3) and ztls matches. Two intermediates below a
+// anchor root itself at depth 3) and tls matches. Two intermediates below a
 // pathlen:1 anchor are rejected.
 test "parse: trust anchor pathLenConstraint limits intermediates below it" {
     var bundle = try pathlenBundle(pathlen_root_plc1_pem);
@@ -2142,7 +2142,7 @@ test "verifySignature: wrong transcript hash" {
 }
 
 // RFC 8446 §4.4.3 — CertificateVerify must use a scheme from the client's
-// signature_algorithms extension, not just any scheme ztls globally supports.
+// signature_algorithms extension, not just any scheme tls globally supports.
 test "verifySignature: rejects scheme absent from offered list" {
     var cert_buf: [1024]u8 = undefined;
     const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), .{

@@ -2,7 +2,7 @@
 //!
 //! RFC 8446 §4.1.2
 //!
-//! RFC 6066 §3 permits opaque inbound names. ztls instead applies one
+//! RFC 6066 §3 permits opaque inbound names. tls instead applies one
 //! 1–253-octet HostName length policy to encoding, length preflight, and parsing.
 //! A null server_name omits SNI. A present empty name is invalid.
 //! Callers own DNS label validation and IDNA conversion.
@@ -2187,7 +2187,7 @@ test "parse: encoded ClientHello" {
 }
 
 // RFC 8446 §4.2 / RFC 6066 §3 — extension presence is separate from whether
-// ztls extracted a hostname value from the ServerNameList.
+// tls extracted a hostname value from the ServerNameList.
 test "parse: tracks offered SNI extension presence" {
     var buf: [512]u8 = undefined;
     const encoded = try encode(&buf, .zero, .zero, "example.com", &.{});
@@ -2621,7 +2621,7 @@ test "parse: rejects duplicate psk_key_exchange_modes" {
 }
 
 // RFC 8446 §4.1.2 — a server MUST ignore unrecognized extensions in ClientHello.
-// ztls skips them; this pins that current behavior so a regression that started
+// tls skips them; this pins that current behavior so a regression that started
 // rejecting unknown extensions would be caught.
 test "parse: ignores unknown extension" {
     var buf: [512]u8 = undefined;

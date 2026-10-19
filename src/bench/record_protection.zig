@@ -6,13 +6,13 @@ const fmt = std.fmt;
 
 const testingx = @import("testingx");
 
-const ztls = @import("../root.zig");
-const Aead = ztls.aead.Aead;
-const Iv = ztls.aead.Iv;
-const KeyPairs = ztls.ClientHandshake.KeyPairs;
-const RecordBuffer = ztls.RecordBuffer;
-const RecordLayer = ztls.RecordLayer;
-const frame = ztls.frame;
+const tls = @import("../root.zig");
+const Aead = tls.aead.Aead;
+const Iv = tls.aead.Iv;
+const KeyPairs = tls.ClientHandshake.KeyPairs;
+const RecordBuffer = tls.RecordBuffer;
+const RecordLayer = tls.RecordLayer;
+const frame = tls.frame;
 const fixtures = @import("fixtures");
 const rfc8448 = @import("rfc8448.zig");
 
@@ -55,7 +55,7 @@ const Suite = enum {
         };
     }
 
-    fn cipherSuite(self: Suite) ztls.CipherSuite {
+    fn cipherSuite(self: Suite) tls.CipherSuite {
         return switch (self) {
             .aes_128_gcm_sha256 => .aes_128_gcm_sha256,
             .aes_256_gcm_sha384 => .aes_256_gcm_sha384,
@@ -89,7 +89,7 @@ pub fn benchmarkRecordBufferNext(b: *testingx.B) !void {
 }
 
 fn replayHandshake(records: []const u8, out: []u8) !void {
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(rfc8448.client_keypair),
         .host_name = rfc8448.replay_host_name,
         .now_sec = 0,
@@ -140,16 +140,16 @@ fn fixture(comptime name: []const u8, out: []u8) []u8 {
     return out[0..bytes.len];
 }
 
-fn deterministicClientKeypair() !ztls.x25519.KeyPair {
+fn deterministicClientKeypair() !tls.x25519.KeyPair {
     return .generateDeterministic(.init(@splat(0x11)));
 }
 
-fn deterministicServerKeypair() !ztls.x25519.KeyPair {
+fn deterministicServerKeypair() !tls.x25519.KeyPair {
     return .generateDeterministic(.init(@splat(0x22)));
 }
 
-fn deterministicClientHandshake() ztls.ClientHandshake {
-    const client: ztls.ClientHandshake = .init(.{
+fn deterministicClientHandshake() tls.ClientHandshake {
+    const client: tls.ClientHandshake = .init(.{
         // Bench-only setup on fixed seeds; the calls cannot fail for these
         // inputs, but they are fallible now (#88), so a failure must be a
         // loud panic, not `unreachable` UB in ReleaseFast.
@@ -164,7 +164,7 @@ fn deterministicClientHandshake() ztls.ClientHandshake {
     return client;
 }
 
-fn deterministicServerHandshake() ztls.ServerHandshake {
+fn deterministicServerHandshake() tls.ServerHandshake {
     return .init(.{
         .keypairs = KeyPairs.init(
             deterministicServerKeypair() catch @panic("x25519 keygen failed"),
@@ -174,10 +174,10 @@ fn deterministicServerHandshake() ztls.ServerHandshake {
 }
 
 fn connectPair(comptime suite: Suite) !struct {
-    client: ztls.ClientHandshake,
-    server: ztls.ServerHandshake,
+    client: tls.ClientHandshake,
+    server: tls.ServerHandshake,
 } {
-    var client: ztls.ClientHandshake = .init(.{
+    var client: tls.ClientHandshake = .init(.{
         .keypairs = try .init(try deterministicClientKeypair()),
         .host_name = "ztls.server.test",
         .now_sec = 0,
@@ -189,18 +189,18 @@ fn connectPair(comptime suite: Suite) !struct {
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: ztls.ServerHandshake = .init(.{
+    var server: tls.ServerHandshake = .init(.{
         .keypairs = try .init(try deterministicServerKeypair()),
         .random = rfc8448.server_random,
     });
     errdefer server.deinit();
-    const suites = [_]ztls.CipherSuite{suite.cipherSuite()};
+    const suites = [_]tls.CipherSuite{suite.cipherSuite()};
     server.supportSuites(&suites);
     var server_out: [8192]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
-    try client.processServerHello(sh_record[ztls.frame.header_len..]);
+    try client.processServerHello(sh_record[tls.frame.header_len..]);
 
-    var signer: ztls.signature.PrivateKey = try .fromP256Scalar(server_scalar[0..32]);
+    var signer: tls.signature.PrivateKey = try .fromP256Scalar(server_scalar[0..32]);
     defer signer.deinit();
     const flight_record = try server.sendPreparedAuthenticatedFlight(
         &.{server_cert_der},
@@ -224,7 +224,7 @@ pub fn benchmarkClientHandshakeReplay(b: *testingx.B) !void {
     }
 }
 
-fn benchZtlsHandshake(comptime suite: Suite) testingx.Function {
+fn benchTlsHandshake(comptime suite: Suite) testingx.Function {
     return struct {
         pub fn benchFn(b: *testingx.B) !void {
             _ = connectPair(suite) catch unreachable;
@@ -242,8 +242,8 @@ fn benchZtlsHandshake(comptime suite: Suite) testingx.Function {
 pub fn benchmarkHandshake(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
-        const name = try fmt.bufPrint(&name_buf, "impl=ztls/suite={s}", .{suite.name()});
-        _ = try b.run(name, benchZtlsHandshake(suite));
+        const name = try fmt.bufPrint(&name_buf, "impl=tls/suite={s}", .{suite.name()});
+        _ = try b.run(name, benchTlsHandshake(suite));
     }
 }
 
@@ -252,7 +252,7 @@ fn benchHandshakeClientStart(comptime suite: Suite) testingx.Function {
     return struct {
         pub fn benchFn(b: *testingx.B) !void {
             while (try b.loop()) {
-                var client: ztls.ClientHandshake = deterministicClientHandshake();
+                var client: tls.ClientHandshake = deterministicClientHandshake();
                 var client_out: [4096]u8 = undefined;
                 const ch = client.start(&client_out) catch unreachable;
                 b.keepAlive(ch.ptr);
@@ -271,14 +271,14 @@ pub fn benchmarkHandshakeClientStart(b: *testingx.B) !void {
 fn benchHandshakeServerAccept(comptime suite: Suite) testingx.Function {
     return struct {
         pub fn benchFn(b: *testingx.B) !void {
-            var client: ztls.ClientHandshake = deterministicClientHandshake();
+            var client: tls.ClientHandshake = deterministicClientHandshake();
             var client_out: [4096]u8 = undefined;
             const ch_record = client.start(&client_out) catch unreachable;
             client.completeWrite();
 
             while (try b.loop()) {
-                var server: ztls.ServerHandshake = deterministicServerHandshake();
-                const suites = [_]ztls.CipherSuite{suite.cipherSuite()};
+                var server: tls.ServerHandshake = deterministicServerHandshake();
+                const suites = [_]tls.CipherSuite{suite.cipherSuite()};
                 server.supportSuites(&suites);
                 var server_out: [8192]u8 = undefined;
                 _ = server.acceptClientHello(
@@ -302,13 +302,13 @@ pub fn benchmarkHandshakeServerAccept(b: *testingx.B) !void {
 fn benchHandshakeClientServerHello(comptime suite: Suite) testingx.Function {
     return struct {
         pub fn benchFn(b: *testingx.B) !void {
-            var client: ztls.ClientHandshake = deterministicClientHandshake();
+            var client: tls.ClientHandshake = deterministicClientHandshake();
             var client_out: [4096]u8 = undefined;
             const ch_record = client.start(&client_out) catch unreachable;
             client.completeWrite();
 
-            var server: ztls.ServerHandshake = deterministicServerHandshake();
-            const suites = [_]ztls.CipherSuite{suite.cipherSuite()};
+            var server: tls.ServerHandshake = deterministicServerHandshake();
+            const suites = [_]tls.CipherSuite{suite.cipherSuite()};
             server.supportSuites(&suites);
             var server_out: [8192]u8 = undefined;
             const sh_record = server.acceptClientHello(
@@ -317,8 +317,8 @@ fn benchHandshakeClientServerHello(comptime suite: Suite) testingx.Function {
             ) catch unreachable;
 
             while (try b.loop()) {
-                var c: ztls.ClientHandshake = deterministicClientHandshake();
-                c.processServerHello(sh_record[ztls.frame.header_len..]) catch unreachable;
+                var c: tls.ClientHandshake = deterministicClientHandshake();
+                c.processServerHello(sh_record[tls.frame.header_len..]) catch unreachable;
                 b.keepAlive(&c);
                 c.deinit();
             }
@@ -337,13 +337,13 @@ pub fn benchmarkHandshakeClientServerHello(b: *testingx.B) !void {
 fn benchHandshakeServerFlight(comptime suite: Suite) testingx.Function {
     return struct {
         pub fn benchFn(b: *testingx.B) !void {
-            var client: ztls.ClientHandshake = deterministicClientHandshake();
+            var client: tls.ClientHandshake = deterministicClientHandshake();
             var client_out: [4096]u8 = undefined;
             const ch_record = client.start(&client_out) catch unreachable;
             client.completeWrite();
 
-            var server: ztls.ServerHandshake = deterministicServerHandshake();
-            const suites = [_]ztls.CipherSuite{suite.cipherSuite()};
+            var server: tls.ServerHandshake = deterministicServerHandshake();
+            const suites = [_]tls.CipherSuite{suite.cipherSuite()};
             server.supportSuites(&suites);
             var server_out: [8192]u8 = undefined;
             const sh_record = server.acceptClientHello(
@@ -351,16 +351,16 @@ fn benchHandshakeServerFlight(comptime suite: Suite) testingx.Function {
                 &server_out,
             ) catch unreachable;
 
-            var client2: ztls.ClientHandshake = deterministicClientHandshake();
-            client2.processServerHello(sh_record[ztls.frame.header_len..]) catch unreachable;
+            var client2: tls.ClientHandshake = deterministicClientHandshake();
+            client2.processServerHello(sh_record[tls.frame.header_len..]) catch unreachable;
 
-            var signer: ztls.signature.PrivateKey = ztls.signature.PrivateKey.fromP256Scalar(
+            var signer: tls.signature.PrivateKey = tls.signature.PrivateKey.fromP256Scalar(
                 server_scalar[0..32],
             ) catch unreachable;
             defer signer.deinit();
 
             while (try b.loop()) {
-                var s: ztls.ServerHandshake = deterministicServerHandshake();
+                var s: tls.ServerHandshake = deterministicServerHandshake();
                 s.supportSuites(&suites);
                 var so: [8192]u8 = undefined;
                 _ = s.acceptClientHello(ch_record, &so) catch unreachable;
@@ -388,13 +388,13 @@ pub fn benchmarkHandshakeServerFlight(b: *testingx.B) !void {
 fn benchHandshakeClientFlight(comptime suite: Suite) testingx.Function {
     return struct {
         pub fn benchFn(b: *testingx.B) !void {
-            var client: ztls.ClientHandshake = deterministicClientHandshake();
+            var client: tls.ClientHandshake = deterministicClientHandshake();
             var client_out: [4096]u8 = undefined;
             const ch_record = client.start(&client_out) catch unreachable;
             client.completeWrite();
 
-            var server: ztls.ServerHandshake = deterministicServerHandshake();
-            const suites = [_]ztls.CipherSuite{suite.cipherSuite()};
+            var server: tls.ServerHandshake = deterministicServerHandshake();
+            const suites = [_]tls.CipherSuite{suite.cipherSuite()};
             server.supportSuites(&suites);
             var server_out: [8192]u8 = undefined;
             const sh_record = server.acceptClientHello(
@@ -402,10 +402,10 @@ fn benchHandshakeClientFlight(comptime suite: Suite) testingx.Function {
                 &server_out,
             ) catch unreachable;
 
-            var client2: ztls.ClientHandshake = deterministicClientHandshake();
-            client2.processServerHello(sh_record[ztls.frame.header_len..]) catch unreachable;
+            var client2: tls.ClientHandshake = deterministicClientHandshake();
+            client2.processServerHello(sh_record[tls.frame.header_len..]) catch unreachable;
 
-            var signer: ztls.signature.PrivateKey = ztls.signature.PrivateKey.fromP256Scalar(
+            var signer: tls.signature.PrivateKey = tls.signature.PrivateKey.fromP256Scalar(
                 server_scalar[0..32],
             ) catch unreachable;
             defer signer.deinit();
@@ -416,8 +416,8 @@ fn benchHandshakeClientFlight(comptime suite: Suite) testingx.Function {
             ) catch unreachable;
 
             while (try b.loop()) {
-                var c: ztls.ClientHandshake = deterministicClientHandshake();
-                c.processServerHello(sh_record[ztls.frame.header_len..]) catch unreachable;
+                var c: tls.ClientHandshake = deterministicClientHandshake();
+                c.processServerHello(sh_record[tls.frame.header_len..]) catch unreachable;
                 var co: [4096]u8 = undefined;
                 const ev = c.handleRecord(server_out[0..flight_record.len], &co) catch unreachable;
                 const cf = switch (ev) {
@@ -440,7 +440,7 @@ pub fn benchmarkHandshakeClientFlight(b: *testingx.B) !void {
 }
 
 const ServerFinishedInput = struct {
-    server: ztls.ServerHandshake,
+    server: tls.ServerHandshake,
     record_buf: [128]u8,
     record_len: usize,
 
@@ -450,21 +450,21 @@ const ServerFinishedInput = struct {
 };
 
 fn serverFinishedInput(comptime suite: Suite) !ServerFinishedInput {
-    var client: ztls.ClientHandshake = deterministicClientHandshake();
+    var client: tls.ClientHandshake = deterministicClientHandshake();
     defer client.deinit();
     var client_out: [4096]u8 = undefined;
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: ztls.ServerHandshake = deterministicServerHandshake();
+    var server: tls.ServerHandshake = deterministicServerHandshake();
     errdefer server.deinit();
-    const suites = [_]ztls.CipherSuite{suite.cipherSuite()};
+    const suites = [_]tls.CipherSuite{suite.cipherSuite()};
     server.supportSuites(&suites);
     var server_out: [8192]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
-    try client.processServerHello(sh_record[ztls.frame.header_len..]);
+    try client.processServerHello(sh_record[tls.frame.header_len..]);
 
-    var signer: ztls.signature.PrivateKey = try .fromP256Scalar(server_scalar[0..32]);
+    var signer: tls.signature.PrivateKey = try .fromP256Scalar(server_scalar[0..32]);
     defer signer.deinit();
     const flight_record = try server.sendPreparedAuthenticatedFlight(
         &.{server_cert_der},
@@ -634,7 +634,7 @@ pub fn benchmarkRecordEncryptPrepared(b: *testingx.B) !void {
 
 const Direction = enum { client_to_server, server_to_client };
 
-fn benchZtlsAppData(
+fn benchTlsAppData(
     comptime suite: Suite,
     comptime size: usize,
     comptime direction: Direction,
@@ -684,10 +684,10 @@ pub fn benchmarkAppClientToServer(b: *testingx.B) !void {
         inline for (sizes) |size| {
             const name = try fmt.bufPrint(
                 &name_buf,
-                "impl=ztls/suite={s}/size={d}",
+                "impl=tls/suite={s}/size={d}",
                 .{ suite.name(), size },
             );
-            _ = try b.run(name, benchZtlsAppData(suite, size, .client_to_server));
+            _ = try b.run(name, benchTlsAppData(suite, size, .client_to_server));
         }
     }
 }
@@ -698,15 +698,15 @@ pub fn benchmarkAppServerToClient(b: *testingx.B) !void {
         inline for (sizes) |size| {
             const name = try fmt.bufPrint(
                 &name_buf,
-                "impl=ztls/suite={s}/size={d}",
+                "impl=tls/suite={s}/size={d}",
                 .{ suite.name(), size },
             );
-            _ = try b.run(name, benchZtlsAppData(suite, size, .server_to_client));
+            _ = try b.run(name, benchTlsAppData(suite, size, .server_to_client));
         }
     }
 }
 
-fn benchZtlsAppDataPrepared(comptime suite: Suite, comptime size: usize) testingx.Function {
+fn benchTlsAppDataPrepared(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
         pub fn benchFn(b: *testingx.B) !void {
             var pair = connectPair(suite) catch unreachable;
@@ -736,12 +736,12 @@ pub fn benchmarkAppPreparedClientToServer(b: *testingx.B) !void {
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
             const name = try nameBuf(&name_buf, suite, size);
-            _ = try b.run(name, benchZtlsAppDataPrepared(suite, size));
+            _ = try b.run(name, benchTlsAppDataPrepared(suite, size));
         }
     }
 }
 
-fn benchZtlsPingPong(comptime suite: Suite, comptime size: usize) testingx.Function {
+fn benchTlsPingPong(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
         pub fn benchFn(b: *testingx.B) !void {
             var pair = connectPair(suite) catch unreachable;
@@ -779,10 +779,10 @@ pub fn benchmarkAppPingPong(b: *testingx.B) !void {
         inline for (sizes) |size| {
             const name = try fmt.bufPrint(
                 &name_buf,
-                "impl=ztls/suite={s}/size={d}",
+                "impl=tls/suite={s}/size={d}",
                 .{ suite.name(), size },
             );
-            _ = try b.run(name, benchZtlsPingPong(suite, size));
+            _ = try b.run(name, benchTlsPingPong(suite, size));
         }
     }
 }

@@ -1,4 +1,4 @@
-//! X.509 certificate parser — ztls-owned fork of Zig 0.15.2 std.crypto.Certificate.
+//! X.509 certificate parser — tls-owned fork of Zig 0.15.2 std.crypto.Certificate.
 //!
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) Zig contributors
@@ -14,7 +14,7 @@
 const std = @import("std");
 const crypto = std.crypto;
 const mem = std.mem;
-/// OS trust-store loading stays std-owned; ztls owns X.509 parse-and-verify.
+/// OS trust-store loading stays std-owned; tls owns X.509 parse-and-verify.
 pub const Bundle = std.crypto.Certificate.Bundle;
 
 buffer: []const u8,
@@ -1098,7 +1098,7 @@ test "Parsed.verifyNameConstraints: mixed DNS SAN violation is rejected" {
     try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
-// RFC 5280 §4.2.1.10 — when subjectAltName is absent, ztls applies DNS
+// RFC 5280 §4.2.1.10 — when subjectAltName is absent, tls applies DNS
 // constraints to the Common Name used by its TLS hostname fallback.
 test "Parsed.verifyNameConstraints: DNS common name fallback" {
     const constraints = "\x30\x11\xA0\x0F\x30\x0D\x82\x0Bexample.com";
@@ -1588,7 +1588,7 @@ test "parse rejects duplicate recognized extensions" {
     try std.testing.expectError(error.CertificateHasDuplicateExtension, cert.parse());
 }
 
-// RFC 5280 §4.2 — recognized extensions outside ztls's processing set do not
+// RFC 5280 §4.2 — recognized extensions outside tls's processing set do not
 // overwrite parsed policy state, including obsolete and modern OID aliases.
 test "parse accepts old and new authority key identifier OIDs" {
     const cert_der = &[_]u8{

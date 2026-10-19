@@ -5,7 +5,7 @@ mkdir -p "$out"
 cd "$out"
 openssl ecparam -name prime256v1 -genkey -noout -out root.key
 openssl req -x509 -new -key root.key -sha256 -days 3650 \
-  -subj '/CN=ztls key capacity root' -out root.crt \
+  -subj '/CN=tls key capacity root' -out root.crt \
   -addext 'basicConstraints=critical,CA:TRUE' \
   -addext 'keyUsage=critical,keyCertSign,cRLSign'
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:8192 -out leaf.key

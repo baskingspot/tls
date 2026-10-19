@@ -45,9 +45,9 @@ SKIP_RESULTS = frozenset({"DISABLED"})
 ENDPOINT_MODE_MISMATCH_REASON = "TestEndpointMode doesn't match"
 
 # #52: six TLS-Anvil client/both TLS 1.3 rows whose only failed cases are
-# DSA-root certificate parameter combinations. ztls correctly rejects DSA
+# DSA-root certificate parameter combinations. tls correctly rejects DSA
 # under RFC 8446 §4.2.3 / Appendix D, so these failures are expected and must
-# not be hidden as expected_skipped or accepted by making ztls accept DSA.
+# not be hidden as expected_skipped or accepted by making tls accept DSA.
 # Gate by exact test-id suffix so non-DSA coverage in the same rows stays
 # visible and unrelated failures are not absorbed.
 DSA_ROOT_EXPECTED_FAIL_IDS = frozenset(
@@ -61,7 +61,7 @@ DSA_ROOT_EXPECTED_FAIL_IDS = frozenset(
     }
 )
 DSA_ROOT_EXPECTED_FAIL_REASON = (
-    "DSA-root certificate parameter combination (#52); ztls correctly rejects "
+    "DSA-root certificate parameter combination (#52); tls correctly rejects "
     "DSA under RFC 8446 §4.2.3 / Appendix D"
 )
 DSA_ROOT_RSA_LEAF_SIZES = frozenset({1024, 2048, 4096})
@@ -467,7 +467,7 @@ def write_summary_txt(summary: dict[str, Any], path: Path) -> None:
             "were expected-skipped by the configured skip list. "
             f"{c['expected_failed']} failed test(s) were classified as "
             "expected_failed (DSA-root certificate parameter combinations, #52; "
-            "ztls correctly rejects DSA under RFC 8446 §4.2.3 / Appendix D) and "
+            "tls correctly rejects DSA under RFC 8446 §4.2.3 / Appendix D) and "
             "remain visible, not hidden as expected_skipped. "
             "not_attempted "
             "tests are runner-direction gaps, not conformance passes. Review "

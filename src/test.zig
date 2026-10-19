@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const testing = std.testing;
 const assert = std.debug.assert;
-const ztls = @import("root.zig");
+const tls = @import("root.zig");
 
 pub fn hex(comptime len: usize, comptime encoded: []const u8) [len]u8 {
     // Catch length mismatches at compile time: hexToBytes would otherwise
@@ -33,7 +33,7 @@ fn refAllDeclsRecursive(comptime T: type) void {
 }
 
 test {
-    refAllDeclsRecursive(ztls);
+    refAllDeclsRecursive(tls);
     _ = @import("wycheproof.zig");
     _ = @import("interop.zig");
     _ = @import("crypto/backend_primitive_tests.zig");

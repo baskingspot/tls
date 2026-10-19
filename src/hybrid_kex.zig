@@ -88,7 +88,7 @@ pub const Encapsulation = struct {
     shared_secret: []const u8,
 };
 
-/// RFC 10024 §4.2-§4.3 server operation. ztls performs the FIPS 203 §7.2
+/// RFC 10024 §4.2-§4.3 server operation. tls performs the FIPS 203 §7.2
 /// encapsulation-key check before provider import and encapsulation.
 pub fn encapsulate(
     group: NamedGroup,

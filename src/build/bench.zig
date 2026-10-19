@@ -3,7 +3,7 @@ const Build = std.Build;
 
 pub const Options = struct {
     target: Build.ResolvedTarget,
-    ztls_mod: *Build.Module,
+    tls_mod: *Build.Module,
     c_mod: *Build.Module,
     c_ssl_mod: *Build.Module,
     /// Translated libcrypto C API (#145) — the benchmark_root tree
@@ -26,7 +26,7 @@ pub fn addSteps(b: *Build, comptime root: type, opts: Options) void {
     }) orelse return;
     const testingx_mod = dep.module("testingx");
 
-    addZtlsBenchmarks(b, opts, testingx, testingx_mod);
+    addTlsBenchmarks(b, opts, testingx, testingx_mod);
     addEvpBenchmarks(b, opts, testingx, testingx_mod);
     addLibsslBenchmarks(b, opts, testingx, testingx_mod);
     addReplayFixtureGenerator(b, opts);
@@ -47,7 +47,7 @@ fn addRunStep(
     b.step(b.fmt("{s}-bin", .{step_name}), bin_desc).dependOn(&install.step);
 }
 
-fn addZtlsBenchmarks(
+fn addTlsBenchmarks(
     b: *Build,
     opts: Options,
     comptime testingx: type,
@@ -59,7 +59,7 @@ fn addZtlsBenchmarks(
         .root_source_file = b.path("src/bench.zig"),
         .target = opts.target,
         .imports = &.{
-            .{ .name = "ztls", .module = opts.ztls_mod },
+            .{ .name = "tls", .module = opts.tls_mod },
             .{ .name = "stdx", .module = opts.stdx_mod },
             .{ .name = "fixtures", .module = opts.fixtures_mod },
             .{ .name = "openssl_c", .module = opts.openssl_c },
@@ -86,14 +86,14 @@ fn addReplayFixtureGenerator(b: *Build, opts: Options) void {
             .target = opts.target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "ztls", .module = opts.ztls_mod },
+                .{ .name = "tls", .module = opts.tls_mod },
             },
         }),
     });
     const run = b.addRunArtifact(exe);
     const step = b.step(
         "generate-replay-fixtures",
-        "Generate OpenSSL replay fixtures for ztls benchmarks",
+        "Generate OpenSSL replay fixtures for tls benchmarks",
     );
     step.dependOn(&run.step);
 }
@@ -110,7 +110,7 @@ fn addEvpBenchmarks(
         .root_source_file = b.path("bench/evp.zig"),
         .target = opts.target,
         .imports = &.{
-            .{ .name = "ztls", .module = opts.ztls_mod },
+            .{ .name = "tls", .module = opts.tls_mod },
             .{ .name = "stdx", .module = opts.stdx_mod },
             .{ .name = "c", .module = opts.c_mod },
         },
@@ -137,7 +137,7 @@ fn addLibsslBenchmarks(
         .root_source_file = b.path("bench/bio.zig"),
         .target = opts.target,
         .imports = &.{
-            .{ .name = "ztls", .module = opts.ztls_mod },
+            .{ .name = "tls", .module = opts.tls_mod },
             .{ .name = "stdx", .module = opts.stdx_mod },
             .{ .name = "c", .module = opts.c_mod },
             .{ .name = "c_ssl", .module = opts.c_ssl_mod },

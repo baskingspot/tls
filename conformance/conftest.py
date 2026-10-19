@@ -13,7 +13,7 @@ SERVER_BIN = CONF_DIR / "zig-out" / "bin" / "tlsfuzzer_server"
 
 def _wait_for_ready(proc: subprocess.Popen, host: str, port: int, timeout_s: float = 5.0) -> None:
     deadline = time.monotonic() + timeout_s
-    marker = b"ztls tlsfuzzer server listening on"
+    marker = b"tls tlsfuzzer server listening on"
     captured = bytearray()
     assert proc.stdout is not None
     flags = fcntl.fcntl(proc.stdout, fcntl.F_GETFL)
@@ -44,7 +44,7 @@ def _wait_for_ready(proc: subprocess.Popen, host: str, port: int, timeout_s: flo
 
 
 @pytest.fixture(scope="session")
-def ztls_server():
+def tls_server():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -68,10 +68,10 @@ def ztls_server():
 
 @pytest.fixture(autouse=True)
 def _server_alive(request):
-    if "ztls_server" not in request.fixturenames:
+    if "tls_server" not in request.fixturenames:
         yield
         return
-    proc = request.getfixturevalue("ztls_server")["proc"]
+    proc = request.getfixturevalue("tls_server")["proc"]
     if proc.poll() is not None:
         pytest.fail(f"tlsfuzzer_server died before test rc={proc.returncode}", pytrace=False)
     yield

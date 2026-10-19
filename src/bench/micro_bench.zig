@@ -243,18 +243,18 @@ fn tryRead(comptime T: type, r: *wire.Reader) usize {
     return r.read(T) catch unreachable;
 }
 
-export fn ztlsBenchNonceConstruct() void {
+export fn tlsBenchNonceConstruct() void {
     const iv: aead.Iv = .init(@splat(0xab));
     doNotOptimizeAway(aead.construct(&iv, 0x12345678));
 }
 
-export fn ztlsBenchLastIndexNonZero() void {
+export fn tlsBenchLastIndexNonZero() void {
     var buf: [128]u8 = @splat(0);
     buf[111] = 23;
     doNotOptimizeAway(stdx.mem.lastIndexOfNonZero(&buf));
 }
 
-export fn ztlsBenchParseHeader() void {
+export fn tlsBenchParseHeader() void {
     const input = [_]u8{ 23, 0x03, 0x03, 0x40, 0x00 };
     doNotOptimizeAway(frame.parseHeader(&input) catch unreachable);
 }

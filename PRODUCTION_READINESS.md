@@ -1,7 +1,7 @@
-# ztls Production Readiness
+# tls Production Readiness
 
 **This document is the single authoritative answer to "what is the state of this
-project, and what does done mean?"** If the state of ztls is written down
+project, and what does done mean?"** If the state of tls is written down
 anywhere, it is written down here. Other documents may explain *how* something
 works; only this one says *whether it is done and how we know*.
 
@@ -33,7 +33,7 @@ works; only this one says *whether it is done and how we know*.
 
 ## Definition of Done
 
-ztls is production-ready when all six pillars are `PROVEN` and one immutable
+tls is production-ready when all six pillars are `PROVEN` and one immutable
 candidate passes the qualification gates below. Evidence applies to its recorded
 revision, not automatically to later commits.
 
@@ -43,16 +43,16 @@ revision, not automatically to later commits.
 2. **Ergonomics** — the Sans-I/O API is demonstrably pleasant to use, proven by
    complete, working client *and* server examples across io_uring, epoll, and
    `std.net.Stream`. "Works everywhere" is shown, not asserted.
-3. **Performance** — ztls is measurably competitive with (ideally faster than)
+3. **Performance** — tls is measurably competitive with (ideally faster than)
    OpenSSL libssl and rustls, with reproducible benchmarks across a hardware
    matrix, and a documented methodology proving the comparisons are
    apples-to-apples. This pillar is the project's reason for existing.
 4. **Providers** — aws-lc, BoringSSL, and bring-your-own libcrypto are
    supported behind a clean provider seam, each validated through the same
    correctness and interop gates as the default backend.
-5. **Marketing flair** — the positioning story (why ztls over libssl) is told
+5. **Marketing flair** — the positioning story (why tls over libssl) is told
    clearly, backed by the Pillar 3 numbers.
-6. **User docs** — external users can adopt ztls from getting-started through
+6. **User docs** — external users can adopt tls from getting-started through
    API reference and integration guides without reading the source.
 
 ---
@@ -62,10 +62,10 @@ revision, not automatically to later commits.
 | Pillar | Status | One-line |
 |---|---|---|
 | 1. Correctness | `PROVEN` | Immutable candidate `8814f1e` passes six terminal TLS-Anvil profiles, both consumer suites, negative controls, and bounded resource/recovery checks (#121–#122). Caller responsibilities and unsupported profiles remain explicit. |
-| 2. Ergonomics | `PROVEN` | CI-gated examples cover both roles across io_uring, epoll, kqueue, and `std.Io`. Core and wrapper APIs expose hybrid capabilities and reject invalid local policy before key generation or wire I/O (#105). `ztls-std` (#77) gates plain and mTLS OpenSSL interop in both directions. `ztls-xev` satisfies #76's Linux/macOS contract, including in-flight cancellation (#83). |
-| 3. Performance | `PROVEN` | n=10 captures on x86_64 (c7i.2xlarge), aarch64 (c7g.2xlarge), and macOS (Apple M1 Max) with formal CIs (p=0.000): ztls beats libssl on every comparable app-data row on all three platforms and rustls on all AES-GCM rows; regression gate committed. |
+| 2. Ergonomics | `PROVEN` | CI-gated examples cover both roles across io_uring, epoll, kqueue, and `std.Io`. Core and wrapper APIs expose hybrid capabilities and reject invalid local policy before key generation or wire I/O (#105). `tls-std` (#77) gates plain and mTLS OpenSSL interop in both directions. `tls-xev` satisfies #76's Linux/macOS contract, including in-flight cancellation (#83). |
+| 3. Performance | `PROVEN` | n=10 captures on x86_64 (c7i.2xlarge), aarch64 (c7g.2xlarge), and macOS (Apple M1 Max) with formal CIs (p=0.000): tls beats libssl on every comparable app-data row on all three platforms and rustls on all AES-GCM rows; regression gate committed. |
 | 4. Providers | `PROVEN` | OpenSSL, AWS-LC, and BoringSSL pass all six terminal TLS-Anvil profiles at `8814f1e`. Malformed ML-KEM keys produce `illegal_parameter`, while provider faults remain `internal_error`. Captures remain revision-bound. |
-| 5. Marketing | `PROVEN` | README leads with the proven performance story (n=10, both architectures, honest ChaCha20 loss) and the adversarial security posture; the why-ztls narrative and headline benchmarks are on the front door, backed by PERFORMANCE.md. |
+| 5. Marketing | `PROVEN` | README leads with the proven performance story (n=10, both architectures, honest ChaCha20 loss) and the adversarial security posture; the why-tls narrative and headline benchmarks are on the front door, backed by PERFORMANCE.md. |
 | 6. User docs | `PROVEN` | One fetched package exposes core plus the Zig 0.16 integration modules (#79). Isolated consumer gates and `docs/USAGE.md` cover dependency wiring, hybrid capability checks, borrowed lifetimes, cleanup, drive loops, and integrations (#105). |
 
 ---
@@ -75,7 +75,7 @@ revision, not automatically to later commits.
 **Qualification is `PROVEN` for the recorded consumer profiles.**
 
 The immutable candidate is `8814f1e55642a7ce73841779ca0b25e530d31ef8`.
-Its package hash is `ztls-0.0.0-SHHDXrSfIgAt79mZaiELvsf6SMaWI9Z-UxL0eTwGV85r`.
+Its package hash is `tls-0.0.0-SHHDXrSfIgAt79mZaiELvsf6SMaWI9Z-UxL0eTwGV85r`.
 The candidate also contains the consumer-gate controller.
 Later documentation commits do not change the qualified revision.
 Only handoff and z53 participate. Kafka is abandoned and outside this gate.
@@ -305,7 +305,7 @@ The earlier KeyUpdate failure remains forensically unattributed; current accepta
 uses the fresh captures above, not a claim that this old failure is explained.
 
 **Earlier failed capture (2026-09-12, #91):** scheduled client run
-[`34447449765`](https://github.com/mattrobenolt/ztls/actions/runs/34447449765)
+[`34447449765`](https://github.com/baskingspot/tls/actions/runs/34447449765)
 on clean `7c5049e` completed 437/437 BoringSSL tests: 92 passed, six
 unexpected failures, zero expected failures, 134 expected skips, and 205
 not attempted. The six IDs match the historical #52 set, but their raw
@@ -361,8 +361,8 @@ identity within a handshake) and selects an identity; both sides use the
 PSK as the early secret in the key schedule (psk_dhe_ke, PSK + ECDHE). In-memory
 tests cover issuance, matching client/server PSKs, resumption, renewal, and
 client-auth transcript binding. The repository's OpenSSL-provisioned CI gates
-resumption interop in both directions: ztls resumes a ticket from openssl
-s_server, and openssl s_client resumes a ticket issued by ztls. The client and
+resumption interop in both directions: tls resumes a ticket from openssl
+s_server, and openssl s_client resumes a ticket issued by tls. The client and
 server state machines handle the PSK resumption flight (EE + Finished, no server
 Certificate/CertificateVerify). 0-RTT early data is implemented: the client can
 offer early_data + derive the client_early_traffic_secret and send
@@ -406,10 +406,10 @@ post-window record corruption, and the default budget covering a full
 max-size early record (#111).
 0-RTT is disabled by default (offer_early_data=false) and the caller is
 responsible for replay-safe policy — 0-RTT data is not forward-secret and can
-be replayed by a network attacker; no anti-replay cache exists in ztls (the
+be replayed by a network attacker; no anti-replay cache exists in tls (the
 Sans-I/O library cannot own a global replay cache). An in-memory 0-RTT test
 proves the early traffic key derivation + EndOfEarlyData + record flow
-end-to-end, and OpenSSL 0-RTT interop is CI-gated: a ztls client sends 0-RTT
+end-to-end, and OpenSSL 0-RTT interop is CI-gated: a tls client sends 0-RTT
 data to openssl s_server and receives the HTTP response.
 
 **Current evidence (real, and good):**
@@ -481,11 +481,11 @@ data to openssl s_server and receives the HTTP response.
   (`decrypt_error`). Application-traffic-secret derivation on the server now
   uses a transcript snapshot through the server Finished (RFC 8446 §7.1) so the
   client Certificate/CertificateVerify absorbed afterwards does not perturb the
-  app-secret transcript. In-memory ztls client ↔ server required-auth
+  app-secret transcript. In-memory tls client ↔ server required-auth
   integration tests cover the success path and the forged-CV rejection, and
-  OpenSSL interop both directions is CI-gated in `src/interop.zig`: a ztls
+  OpenSSL interop both directions is CI-gated in `src/interop.zig`: a tls
   server requiring auth accepts an `openssl s_client -cert -key` peer, and a
-  ztls client with credentials completes against `openssl s_server -Verify
+  tls client with credentials completes against `openssl s_server -Verify
   -CAfile`. Client-auth leaf EKU/KU enforcement is now live: the
   `LeafUsage.client_auth` path calls `verifyClientAuthWithSignatureSchemes`,
   which checks X.509v3, `KeyUsage.digitalSignature` when KU is present, EKU
@@ -500,7 +500,7 @@ data to openssl s_server and receives the HTTP response.
   live; malicious-scheme test covers the defensive guard)*
   All six
   remaining unexpected failures align with TLS-Anvil `DSA_WITH_SHA256`
-  certificate parameter combinations that ztls correctly rejects during server
+  certificate parameter combinations that tls correctly rejects during server
   Certificate processing; closed #52 classifies those DSA-root TLS-Anvil
   parameter combinations without accepting DSA or hiding non-DSA coverage. The
   `anvil_report.py` normalizer now classifies the six #52 rows as
@@ -534,10 +534,10 @@ data to openssl s_server and receives the HTTP response.
   The scheduled client run `34447449765` failed with non-DSA unexpected
   failures on all three backends. A single-case reproduction (HappyFlow
   `8446-jVohiUKi4u`, `ROOT=RSA` leaf RSA-1024 combination) attributes the
-  failure to the TLS-Anvil fixture, not ztls: the pinned upstream
+  failure to the TLS-Anvil fixture, not tls: the pinned upstream
   `tls-test-framework-1.5.0` `X509CertificateChainProvider` generates chain
   signing (root) certificates without a basicConstraints extension, violating
-  RFC 5280 §4.2.1.9; ztls's issuer-usage check rejects them with
+  RFC 5280 §4.2.1.9; tls's issuer-usage check rejects them with
   `CertificateIssuerNotCa` (observed on the tested backend; the other backends
   are unproven for this path). Upstream v1.5.2 and `main` have the same gap
   (no upstream fix or config option). A minimal in-repo conformance-tools
@@ -759,15 +759,15 @@ data to openssl s_server and receives the HTTP response.
     for maintainer refinement.
   - H15 (safety subset) — the C ABI no longer silently wedges or ships a silent
     insecure default: a KeyUpdate carrying a response now surfaces as
-    `ZTLS_EVENT_WRITE` (was `.none` + a jammed `err_pending_write`), and the sole
-    client initializer is the explicitly-named `ztls_client_init_insecure` (was a
+    `TLS_EVENT_WRITE` (was `.none` + a jammed `err_pending_write`), and the sole
+    client initializer is the explicitly-named `tls_client_init_insecure` (was a
     silent `insecure_no_chain_anchor = true`). Full trust-anchor plumbing / a
-    verifying `ztls_client_init` remain #30.
+    verifying `tls_client_init` remain #30.
 
   Open — the remainder (re-adjudicated 2026-07 by a cross-family council):
   - H16 — `Signer` borrows the `PrivateKey` (deinit-then-use is a UAF). The
     council voted 2-1 to ref-count now, but on code inspection the borrowed
-    `Signer` is consistent with ztls's caller-owns-everything Sans-I/O design:
+    `Signer` is consistent with tls's caller-owns-everything Sans-I/O design:
     it is a stored caller-owned resource with a documented "must outlive the
     handshake" contract, exactly like caller-owned certs, reassembly buffers,
     keypairs, and ALPN — and the engine never frees it. Ref-counting it (the
@@ -795,7 +795,7 @@ data to openssl s_server and receives the HTTP response.
     storage and has never had a `secureZero`. Callers own clearing, stated on
     `useHandshakeBuffer`, `usePeerCertificateBuffer`, and `RecordBuffer.init`,
     and pinned by `deinit leaves caller-owned buffers to the caller` in both
-    engines. `integrations/ztls-std` discharges the obligation for every buffer
+    engines. `integrations/tls-std` discharges the obligation for every buffer
     it declares, gated by `deinit zeroes the wrapper's own buffers, including
     the retained chain`. Note this is a hygiene and honesty fix, not a
     disclosure fix: certificates are public, and the reassembly buffers hold
@@ -826,7 +826,7 @@ data to openssl s_server and receives the HTTP response.
     only `IdentityElement` (an invalid scalar, range-checked against the
     group order through the backend BN/group APIs before any point math);
     `LibcryptoFailed` propagates on the first occurrence; `KeyPairs.init` is
-    fallible at every call site; ztls-std maps the local failure to
+    fallible at every call site; tls-std maps the local failure to
     `InternalError` with the owned socket closed and `deinit` still a no-op;
     and the retry policy itself is pinned by comptime-draw tests on both
     curves, in which a regressed `catch continue` fails the error/count
@@ -889,7 +889,7 @@ data to openssl s_server and receives the HTTP response.
     historical zoxy commit `6e13999` (the bounded-keygen revision before
     zoxy v0.2.1 enlarged its 4 MiB heap). Under the original 700-connection,
     5,000 request/s, 15-second trigger dimensions, the same one-CPU zoxy
-    configuration with baseline zoxy-io/ztls `634567a` recorded 46,204
+    configuration with baseline zoxy-io/tls `634567a` recorded 46,204
     crypto-allocation sheds after load and failed all three later TLS probes;
     each probe added another shed. The guarded Zig 0.16 port of this source
     recorded 10,075 sheds, then answered TLS, plaintext, and admin probes after
@@ -899,7 +899,7 @@ data to openssl s_server and receives the HTTP response.
     returned null 46,310 times during load and still completed all later TLS
     probes, while the baseline counted 115,749 failures and completed none.
     The one MiB heap and hook counter are diagnostic only, not proposed zoxy
-    changes. Current zoxy no longer embeds ztls, so the historical revision is
+    changes. Current zoxy no longer embeds tls, so the historical revision is
     the closest public reproduction of zoxy-io/zoxy#222. Harness, source
     patches, complete logs, metrics, and checksums:
     `docs/research/ERRQ_88_ARENA_RECOVERY/20260914-zoxy/`.
@@ -914,7 +914,7 @@ data to openssl s_server and receives the HTTP response.
     Decision: keep the fail-stop for the entropy source. For a CSPRNG,
     proceeding without entropy is never acceptable; the only reachable
     errnos are EINTR/EAGAIN (handled) or EFAULT/EINVAL/ENOSYS, which indicate
-    a ztls or kernel bug, not a recoverable condition. That is consistent
+    a tls or kernel bug, not a recoverable condition. That is consistent
     with BoringSSL/AWS-LC backends, which abort on RAND failure. Backend key
     generation is now separately fallible (#88): `p256`/`p384` `generate()`
     return `p256.Error` — bounded retry of a bad draw, terminal propagation
@@ -928,7 +928,7 @@ data to openssl s_server and receives the HTTP response.
     stays infallible (clamping makes an invalid scalar unreachable). The
     fail-stop contract is documented on `entropy.fill` and on the `generate()`
     convenience constructors (x25519/p256/p384), and the `getrandom` abort now
-    emits an actionable errno message (`ztls: OS CSPRNG getrandom failed with
+    emits an actionable errno message (`tls: OS CSPRNG getrandom failed with
     errno {d}; cannot generate key material without entropy`) so embedders can
     diagnose the root cause rather than seeing a bare library panic. H12 (post-handshake KeyUpdate counter) is
   deliberately NOT taken as specified: the audit's "don't reset on app data"
@@ -948,11 +948,11 @@ data to openssl s_server and receives the HTTP response.
   because each combines proven engine mechanics with obligations the Sans-I/O
   boundary assigns to the caller: opaque ticket persistence, expiry, rotation,
   replay rejection, and SNI partitioning for resumption, and 0-RTT anti-replay.
-  Neither row requires a ztls-owned global ticket or replay cache; the engine's
+  Neither row requires a tls-owned global ticket or replay cache; the engine's
   0-RTT default stays disabled, and the caller supplies the replay policy it
   can actually observe.
 - `docs/research/NEGATIVE_SPACE.md` inventories supported-surface malformed and
-  malicious peer inputs, mapping each to ztls's response and evidence or an
+  malicious peer inputs, mapping each to tls's response and evidence or an
   explicit gap.
 - `docs/research/THREAT_MODEL.md` defines the in-scope attacker, defended
   attack classes, non-goals, caller responsibilities, and threat-relevant gaps.
@@ -992,7 +992,7 @@ The #91 fixture regressions and #108 conformance captures retain their historica
   generation with selected-group-only key_share, rejection when HRR selects an
   already-offered key share, second-HRR rejection, unsupported-group rejection,
   and post-HRR ServerHello cipher-suite/group consistency checks. An in-memory
-  end-to-end HRR round trip (ztls client → server HRR → ClientHello2 → server
+  end-to-end HRR round trip (tls client → server HRR → ClientHello2 → server
   flight → connected → application-data both ways) is now covered, proving both
   state machines compose with the §4.4.1 transcript collapse. OpenSSL forced-
   HRR interop remains ungated (it needs a client/server config knob to limit
@@ -1025,7 +1025,7 @@ The #91 fixture regressions and #108 conformance captures retain their historica
 ## Pillar 2 — Ergonomics
 
 **Target:** complete, working, idiomatic client and server examples proving the
-Sans-I/O API is pleasant across every I/O model ztls claims to support.
+Sans-I/O API is pleasant across every I/O model tls claims to support.
 
 **The matrix that defines done:**
 
@@ -1038,7 +1038,7 @@ Sans-I/O API is pleasant across every I/O model ztls claims to support.
 
 - **EstablishedSession extraction (#115, core proven; integration not yet
   wired):** `ServerHandshake.extractEstablished()` hands a connected server's
-  post-handshake life to a compact `ztls.EstablishedSession` — 736 bytes vs
+  post-handshake life to a compact `tls.EstablishedSession` — 736 bytes vs
   the handshake engine's 19,408 on the OpenSSL lane (26x), 1,872 vs 21,120 on
   AWS-LC 5.5.0 and 1,856 vs 21,088 on BoringSSL (inline AEAD contexts;
   >11x), measured Zig 0.15.2 aarch64-linux with a comptime `@sizeOf`
@@ -1093,7 +1093,7 @@ Sans-I/O API is pleasant across every I/O model ztls claims to support.
   135,256, exact buffer deltas unchanged), then a socketpair test closing
   before its peer finished sending. Draining the remaining payload before
   teardown fixed that race; the integration suite passed five additional
-  runs. Wrapper/example adoption (ztls-std pooling, an example) is deliberately
+  runs. Wrapper/example adoption (tls-std pooling, an example) is deliberately
   not wired in this slice.
 - Complete example inventory: `full_handshake.zig`, `handshake_keys.zig`,
   `https_client.zig`, `https_server.zig`, `in_memory_handshake.zig`,
@@ -1103,7 +1103,7 @@ Sans-I/O API is pleasant across every I/O model ztls claims to support.
   `zig build example-{name} --summary all` on this host, including
   `example-iouring_client`.
 - `examples/tcp_loopback.zig` is the strongest ergonomics proof: real TCP
-  loopback, ztls client + server, full handshake, application data, and clean
+  loopback, tls client + server, full handshake, application data, and clean
   `close_notify` in one command; `just ci` now runs it through `examples-ci`.
 - `examples/in_memory_handshake.zig` proves the pure Sans-I/O client/server path
   without sockets, including application data both directions, and `just ci` now
@@ -1115,7 +1115,7 @@ Sans-I/O API is pleasant across every I/O model ztls claims to support.
   `example-tcp_loopback`, `example-in_memory_handshake`,
   `example-epoll_pingpong`, and `example-iouring_pingpong`, covering the
   `std.Io.net` transport boundary for TCP loopback plus the raw-fd epoll and
-  io_uring examples. ztls is Zig 0.16-only; the dual-version compat shims and
+  io_uring examples. tls is Zig 0.16-only; the dual-version compat shims and
   Z011 suppressions are gone. *(#58, #61)*
 - CI still does not execute manual peer-dependent demos such as `https_client`,
   `https_server`, or `iouring_client`; those demos compile under Zig 0.16 and
@@ -1134,12 +1134,12 @@ separate from the engine, and `docs/research/API_ROADMAP.md` puts wrapper proof 
 examples or wrapper packages. The #47 design decision rejects a reusable connection
 driver in `src/`: blocking, epoll, io_uring, and in-memory flows differ enough that
 a shared driver would either own transport I/O or add callback/framework glue. The
-reusable core boundary is the handshake types plus `RecordBuffer` and `ztls.Outbox`;
+reusable core boundary is the handshake types plus `RecordBuffer` and `tls.Outbox`;
 CI-gated examples remain canonical for transport drive-loop glue.
 
 ### C ABI (#30) — PARTIAL
 
-The C ABI surface for the ztls TLS 1.3 client lifecycle is partially
+The C ABI surface for the tls TLS 1.3 client lifecycle is partially
 landed. `src/capi.zig` exports C-callable shims (`callconv(.c)`) for the
 client lifecycle: `ztls_client_init_insecure`, `ztls_client_deinit`,
 `ztls_client_start`, `ztls_client_handle_record`,
@@ -1162,9 +1162,9 @@ The security review
 opaque-sized design: transparent C structs leak secrets and backend
 pointers across C struct copies, so the internal state is hidden behind
 runtime size/align queries. NULL parameter checks map to
-`ZTLS_ERR_NULL_PARAMETER` before entering the Zig engine. A KeyUpdate carrying a
-response surfaces as `ZTLS_EVENT_WRITE`; NewSessionTicket (and a no-response
-KeyUpdate) map to `ZTLS_EVENT_NONE` without wedging. Certificate verification is
+`TLS_ERR_NULL_PARAMETER` before entering the Zig engine. A KeyUpdate carrying a
+response surfaces as `TLS_EVENT_WRITE`; NewSessionTicket (and a no-response
+KeyUpdate) map to `TLS_EVENT_NONE` without wedging. Certificate verification is
 deferred to #30: the sole init is the explicitly-named
 `ztls_client_init_insecure` (no server authentication), so an unauthenticated
 client cannot be created unknowingly.
@@ -1178,9 +1178,9 @@ conformance harness integration (TLS-Anvil through the C ABI per
 
 ---
 
-### `std.Io.net` wrapper — ztls-std (#77) — PROVEN
+### `std.Io.net` wrapper — tls-std (#77) — PROVEN
 
-`integrations/ztls-std/` is the reference higher-order integration: an
+`integrations/tls-std/` is the reference higher-order integration: an
 opinionated TLS 1.3 stream over Zig 0.16 `std.Io.net`. It is a separate
 workspace with its own `build.zig`, `build.zig.zon` (path dep on the core), and
 `justfile`; the root delegates through `just integrations-ci`, which is wired
@@ -1197,20 +1197,20 @@ preflight test rejects invalid hybrid options without creating a socket;
 `connect` and `accept` repeat validation before key generation or wire I/O.
 
 **Wrapper interop is CI-gated in both directions, including mTLS.**
-`ztls_std.Client` negotiates
+`tls_std.Client` negotiates
 TLS 1.3, AES-128-GCM, and `http/1.1` with `openssl s_server`, then exchanges an
 HTTP request and response through the public Reader/Writer surface.
-`openssl s_client` verifies the fixture-backed `ztls_std.Server` certificate and
+`openssl s_client` verifies the fixture-backed `tls_std.Server` certificate and
 hostname with `-CAfile -verify_return_error -verify_hostname`, negotiates the
 same suite and ALPN, exchanges application data, and exits cleanly. Neither test
 has a skip path when OpenSSL is absent, and the test run is marked side-effectful
 so the build graph cannot substitute a cached non-execution. The same holds for
-the two mTLS directions: `ztls_std.Client` presents the client fixture
+the two mTLS directions: `tls_std.Client` presents the client fixture
 certificate to `openssl s_server -Verify -verifyCAfile -verify_return_error`
 (a failed client-cert verification aborts the handshake, so a completed
 exchange proves OpenSSL verified the wrapper's credentials), and
 `openssl s_client -cert -key` with a generated clientAuth certificate
-interoperates with a requiring `ztls_std.Server` that verifies against a
+interoperates with a requiring `tls_std.Server` that verifies against a
 caller-owned `Bundle` with the real clock, retains the leaf, and surfaces the
 exact generated DER through `info().client_identity`. Negative interop is
 also gated: a credential-less wrapper client receives OpenSSL's fatal alert,
@@ -1237,7 +1237,7 @@ rather than asserted in prose:
 - **Fatal alerts are specific and use the correct key epoch.** The wrapper
   deleted the coarse `errors.alertForClass` (wrapper-only since the
   integrations stopped sharing it) and sends alerts through the canonical
-  per-error `ztls.alert.alertForError` table — pinned for
+  per-error `tls.alert.alertForError` table — pinned for
   `SignatureVerificationFailed` -> `decrypt_error`, `AuthenticationFailed`
   -> `bad_record_mac`, `MissingTrustAnchor` -> `unknown_ca`,
   `CertificateExpired` -> `certificate_expired`, and silence after
@@ -1282,7 +1282,7 @@ The following correctness properties are gated by tests rather than asserted in 
   `reader: a line longer than read_buffer reports StreamTooLong` pins the bound.
 - **Handshake failures reach the peer.** RFC 8446 §6.2 fatal alerts are sent
   before the socket closes. `connect: hostname mismatch surfaces as
-  CertificateVerificationFailed` asserts the ztls server peer observes
+  CertificateVerificationFailed` asserts the tls server peer observes
   `TlsAlertReceived` rather than a truncated connection; manual verification
   against `openssl s_server` shows `SSL alert number 42` (`bad_certificate`).
 - **Peer alert detail is observable (#85).** Both handshake engines retain
@@ -1294,7 +1294,7 @@ The following correctness properties are gated by tests rather than asserted in 
   and malformed records leave the stored value unchanged; deinit+reinit
   starts null. Mutation-checked red/green (storage removed → detail
   assertions fail with `TestExpectedEqual`). Green under Zig 0.15.2 and
-  0.16.0 (`zig build test`). Wrappers (ztls-std/ztls-xev, C ABI) do not
+  0.16.0 (`zig build test`). Wrappers (tls-std/tls-xev, C ABI) do not
   propagate the detail; open scope.
 - **Error classification is exhaustive by construction.** One `classify` table
   covers the union of every core handshake error set with no `else` arm, so
@@ -1324,15 +1324,15 @@ The following correctness properties are gated by tests rather than asserted in 
 
 **Runs on any `std.Io`, proven not asserted.** zio
 (<https://github.com/lalinsky/zio>) is a stackful-coroutine runtime that ships a
-full `std.Io` implementation, so ztls-std runs on it with zero adapter code:
+full `std.Io` implementation, so tls-std runs on it with zero adapter code:
 `rt.io()` goes straight into `Client.connect`. `examples/zio_client.zig` is the
 proof and is compiled by `just integrations-ci`; zio is a lazy dependency so
-consumers of ztls-std do not fetch an I/O runtime. Deliberately **not** a
-`ztls-zio` package: it would duplicate the drive loop, the reader/writer vtables,
+consumers of tls-std do not fetch an I/O runtime. Deliberately **not** a
+`tls-zio` package: it would duplicate the drive loop, the reader/writer vtables,
 and the error table with `Io` replaced by `Io`, which is the duplicate-artifact
-failure mode. `ztls-xev` (#76) and `ztls-ktls` (#78) still warrant their own
+failure mode. `tls-xev` (#76) and `tls-ktls` (#78) still warrant their own
 packages because libxev is a callback-based completion loop with its own API and
-kTLS is a kernel offload; neither implements the interface ztls-std targets.
+kTLS is a kernel offload; neither implements the interface tls-std targets.
 
 That example also closes the timeout gap by demonstration rather than by API:
 the whole exchange races a sleep through `Io.Select`, and a fired deadline arrives
@@ -1341,12 +1341,12 @@ phases: `handshake cancelled by the deadline` and `transfer cancelled by the
 deadline (recovered as error.Canceled)`. Before the `err` convention landed, the
 identical experiment reported a bare `ReadFailed`.
 
-### libxev — ztls-xev (#76) — PROVEN
+### libxev — tls-xev (#76) — PROVEN
 
-`integrations/ztls-xev/` is the completion-driven integration. libxev does not
+`integrations/tls-xev/` is the completion-driven integration. libxev does not
 implement `std.Io` — it borrows `std.Io.net.IpAddress` as a type and nothing else
 — so unlike a `std.Io` runtime it needs a real adapter rather than working through
-ztls-std unchanged. Separate workspace, own `build.zig`/`justfile`; gated by
+tls-std unchanged. Separate workspace, own `build.zig`/`justfile`; gated by
 `just integrations-ci` inside `just ci`.
 
 **Landed and gated.** Both roles. `Conn(role)` is one implementation
@@ -1360,19 +1360,19 @@ are both shared across connections. Surface is
 
 28 tests cover configuration, connection behavior, credentials, and address
 resolution. The client round trip drives a real `xev.Loop` against a blocking
-ztls server on a thread. Server tests run both roles on one loop over a
+tls server on a thread. Server tests run both roles on one loop over a
 socketpair. Configuration tests prove that both constructors reject local
 hybrid faults, and that client policy validation precedes trust-store allocation.
 The server example uses `openssl s_client` with X25519MLKEM768 and ALPN across
 repeated connections on one shared configuration.
 
-The API is not a port of ztls-std, and the reasons are structural rather than
-stylistic. ztls-std's drive loop owns the stack (`while (!isConnected())
+The API is not a port of tls-std, and the reasons are structural rather than
+stylistic. tls-std's drive loop owns the stack (`while (!isConnected())
 blocking_read()`); `Conn.pump` is that loop inverted, with every local promoted to
 a field and each completion re-entering it. `Io.Reader`/`Io.Writer` cannot be
 offered at all, because `stream()` must produce bytes or fail and has no way to
-say "call me back" — so ztls-std's drop-in byte-stream seam has no analogue here
-and callers get explicit callback operations. `ztls.errors.classify` is shared, so
+say "call me back" — so tls-std's drop-in byte-stream seam has no analogue here
+and callers get explicit callback operations. `tls.errors.classify` is shared, so
 both integrations project from one exhaustive table.
 
 Shape follows a proven server-side libxev TLS integration rather than being
@@ -1381,7 +1381,7 @@ with completions hidden inside `Conn`, state-gated operations that *deliver*
 `Closed`/`Concurrent` rather than asserting, and caller-owned buffers as runtime
 slices so a server can pool them.
 
-`ReadResult` splits `close_notify` from `eof`, which ztls-std cannot do
+`ReadResult` splits `close_notify` from `eof`, which tls-std cannot do
 (`std.Io.Reader` has one `EndOfStream` for both). Observed on real traffic:
 `www.cloudflare.com` completes with `close_notify` after 1_304_478 bytes across
 many records, while a peer that drops mid-request yields `eof` with the
@@ -1403,7 +1403,7 @@ backends that need one. The lesson is the durable part: io_uring is the permissi
 backend, and single-backend coverage is not backend coverage.
 
 **In-flight cancellation (#83):** regression tests cover reads and writes,
-abortive and orderly, on io_uring, epoll, and kqueue. ztls-xev pins libxev
+abortive and orderly, on io_uring, epoll, and kqueue. tls-xev pins libxev
 `7497c85`, the exact head of mitchellh/libxev#224. Its kqueue deletion flush
 prevents stale events after `tick(0)`. The macOS lane executes all four variants;
 [the acceptance capture](docs/research/XEV_KQUEUE_83/20260914-production/README.md)
@@ -1462,7 +1462,7 @@ clean on kqueue — `close_cb=true`, `peer=EOF`), and completion lifetime (the
 stall is unchanged with `Conn.deinit` disabled in that scenario).
 
 What the two-peer probe found instead is an outright libxev crash on kqueue —
-pure libxev, no ztls — when one peer cancels an armed read and closes while the
+pure libxev, no tls — when one peer cancels an armed read and closes while the
 other has a read armed:
 
     .BADF => unreachable
@@ -1497,8 +1497,8 @@ Not gaps, recorded here so they are not mistaken for debt: IOCP/Windows is an
 explicit non-goal (`AGENTS.md`: "Target platforms: Linux and macOS. No Windows
 support, no portability tax."). Client authentication,
 `peek`/`consume`/`writeNegotiationPlaintext` for StartTLS-style detection,
-key-update initiation, and session resumption are unrequested ztls-xev features
-rather than missing work. ztls-xev satisfies the supported #76 contract.
+key-update initiation, and session resumption are unrequested tls-xev features
+rather than missing work. tls-xev satisfies the supported #76 contract.
 
 ---
 
@@ -1513,14 +1513,14 @@ not supported. `abort()` wakes active halves. The owner joins both halves before
 
 No wrapper deadline is imposed. `std.Io` cancellation is the mechanism, and
 `examples/zio_client.zig` exercises it. Session resumption and 0-RTT wrappers are
-outside the #77 contract. `ztls-ktls` (#78) and independent distribution (#79)
+outside the #77 contract. `tls-ktls` (#78) and independent distribution (#79)
 remain separate expansion work.
 
 ---
 
 ## Pillar 3 — Performance
 
-**Target:** reproducible benchmarks across a hardware matrix showing ztls vs
+**Target:** reproducible benchmarks across a hardware matrix showing tls vs
 OpenSSL libssl vs rustls, with a documented methodology that *proves the
 comparisons measure equivalent work*. This is the project's justification.
 
@@ -1528,14 +1528,14 @@ comparisons measure equivalent work*. This is the project's justification.
 
 - `docs/research/PERFORMANCE.md` lays out the intended layers and row-by-row
   equivalence methodology: record protection, parser/framing throughput,
-  deterministic client handshake replay, full in-memory ztls connection rows,
+  deterministic client handshake replay, full in-memory tls connection rows,
   OpenSSL EVP raw-AEAD rows, OpenSSL/libssl memory-BIO rows, and rustls
   in-memory client/server rows. It defines which rows are comparable across
-  ztls/libssl/rustls and which are intentionally ztls-only or raw-crypto rows.
+  tls/libssl/rustls and which are intentionally tls-only or raw-crypto rows.
   It now includes per-row timed-work inventories for the comparable
   application-data row groups (`AppClientToServer`, `AppServerToClient`,
   `AppPingPong`) and the explicitly non-equivalent `Handshake` row. The
-  handshake inventory documents the auth-policy asymmetry: ztls performs
+  handshake inventory documents the auth-policy asymmetry: tls performs
   CertificateVerify signature verification, hostname verification, and leaf
   policy checks while rustls's `NoVerifier` does not, and libssl's
   `SSL_VERIFY_NONE` internal CertificateVerify behavior is opaque. `bench-analyze`
@@ -1545,7 +1545,7 @@ comparisons measure equivalent work*. This is the project's justification.
   template with timed-work inventory, raw timing table, normalized perf counter
   summary, hot symbols/disassembly notes, copy/allocation behavior, conclusion, and
   caveats. This is methodology tooling, not committed perf evidence.
-- `justfile` has useful local recipes: `bench` for ztls rows,
+- `justfile` has useful local recipes: `bench` for tls rows,
   `bench-capture` / `bench-capture-default` for full-comparison captures,
   `bench-analyze` for `benchstat` comparison of captures,
   `bench-remote-capture` for EC2 provision/deploy/run/pullback/analyze,
@@ -1557,18 +1557,18 @@ comparisons measure equivalent work*. This is the project's justification.
   `just ci` no longer runs benchmark measurements; benchmarks are not
   correctness evidence on uncontrolled CI runners.
 - `just bench-capture-default` writes a timestamped run directory under
-  `zig-out/perf/` with metadata plus ztls, EVP, libssl memory-BIO, and rustls
+  `zig-out/perf/` with metadata plus tls, EVP, libssl memory-BIO, and rustls
   captures; `just bench-analyze <capture>` compares those captures with
-  `benchstat`. Capture metadata records the ztls-linked `libcrypto` and the
-  OpenSSL EVP/libssl baseline library paths so backend-specific ztls captures
-  cannot silently poison the baseline rows. The four benchmarks (ztls, EVP,
+  `benchstat`. Capture metadata records the tls-linked `libcrypto` and the
+  OpenSSL EVP/libssl baseline library paths so backend-specific tls captures
+  cannot silently poison the baseline rows. The four benchmarks (tls, EVP,
   libssl, rustls) all emit Go-testing-style output and flow through one shared
   `normalize_go` path; the rustls harness auto-calibrates iteration counts to
   `--benchtime` (matching the `benchmark` package's `predictN` loop) and
   disables session tickets (`send_tls13_tickets = 0`, matching libssl's
   `SSL_CTX_set_num_tickets(0)`) so the handshake row measures a clean full
   1-RTT without NewSessionTicket issuance cost. The analyzer splits comparable
-  TLS, crypto-floor, and ztls-only diagnostic rows and warns when a comparable
+  TLS, crypto-floor, and tls-only diagnostic rows and warns when a comparable
   TLS row group has a missing implementation or mismatched sample counts across
   implementations.
 - `infra/bench/` is an OpenTofu/NixOS EC2 host recipe with a pinned-ish shape:
@@ -1588,7 +1588,7 @@ comparisons measure equivalent work*. This is the project's justification.
   committed EC2 result set. Fresh #11 remote-runner captures now live under
   `docs/research/perf/20260705-183821-ec2-c7i-large/` and
   `docs/research/perf/20260705-194022-ec2-c7i-2xlarge/`, with raw
-  ztls/EVP/libssl/rustls outputs, `metadata.txt`, and `benchstat.txt`. They were
+  tls/EVP/libssl/rustls outputs, `metadata.txt`, and `benchstat.txt`. They were
   captured on clean `c7i.large` and `c7i.2xlarge` hosts in `us-west-2` with
   `--count 5 --benchtime 500ms`; the `c7i.large` capture records git revision
   `5ec2eaae729d7e9aa8746650bf8288327f81fdf1`, and the `c7i.2xlarge` capture
@@ -1600,9 +1600,9 @@ comparisons measure equivalent work*. This is the project's justification.
   section stating the performance claim, backed by the n=10 EC2 capture
   (`docs/research/perf/20260712-102422-ec2-c7i-2xlarge/`, formal CIs, p=0.000):
   across the 45 comparable TLS application-data rows on x86_64 `c7i.2xlarge`,
-  ztls is faster than OpenSSL libssl on every row (+21% to +261%) and faster
+  tls is faster than OpenSSL libssl on every row (+21% to +261%) and faster
   than rustls on all 30 AES-GCM rows (+65% to +131%) and on large ChaCha20
-  records; ztls is slower than rustls on small ChaCha20 records (16B/128B:
+  records; tls is slower than rustls on small ChaCha20 records (16B/128B:
   -50% to -56%), a real measured loss attributed to OpenSSL EVP ChaCha20
   small-record overhead versus ring's direct path. The claim is backed by the
   committed benchstat capture and the row-perf explanations that tie wall-time
@@ -1618,7 +1618,7 @@ comparisons measure equivalent work*. This is the project's justification.
 Two n=10 EC2 captures — x86_64 (`docs/research/perf/20260712-102422-ec2-c7i-2xlarge/`)
 and aarch64 (`docs/research/perf/20260712-201912-ec2-c7g-2xlarge/`) — produce
 formal confidence intervals (`± 0%` to `± 5%`) and p=0.000 for every
-comparable row. ztls beats OpenSSL libssl on every comparable app-data row on
+comparable row. tls beats OpenSSL libssl on every comparable app-data row on
 both architectures and rustls on all 30 AES-GCM rows on both architectures;
 the ChaCha20 small-record loss to rustls on x86_64 largely disappears on
 aarch64 (where OpenSSL's NEON ChaCha20 is more competitive with ring). The
@@ -1636,7 +1636,7 @@ in sync without re-running the capture.
   prove the claim on both architectures with formal CIs. The `c7i.large`
   capture confirms the x86_64 ordering on a smaller shape. Instance-family
   breadth (e.g. AMD, Graviton3) and a final matrix policy remain open for
-  marketing-grade evidence, but the core claim (ztls faster than libssl and
+  marketing-grade evidence, but the core claim (tls faster than libssl and
   rustls on AES-GCM app data on both x86_64 and aarch64) is established with
   formal CIs. macOS (Apple M1 Max) is now proven with an n=10 capture; Intel
   Macs and other Linux distros are not measured.
@@ -1645,20 +1645,20 @@ in sync without re-running the capture.
   `docs/research/perf/20260705-215953-ec2-c7i-2xlarge-row-perf/` records pinned
   Linux/x86_64 `perf stat`, `perf report`, `perf annotate`, symbols, and row
   explanations for `AppPingPong/TLS_AES_128_GCM_SHA256/1350` and
-  `AppClientToServer/TLS_CHACHA20_POLY1305_SHA256/16` across ztls, OpenSSL
+  `AppClientToServer/TLS_CHACHA20_POLY1305_SHA256/16` across tls, OpenSSL
   libssl, and rustls. The AES-GCM ping-pong row now has counter evidence that
-  ztls executes fewer cycles/instructions/branches than libssl and rustls; the
+  tls executes fewer cycles/instructions/branches than libssl and rustls; the
   small ChaCha row now has counter evidence that rustls's ring path is cheaper
-  than ztls's OpenSSL EVP path. The `Handshake` row has been explicitly demoted
+  than tls's OpenSSL EVP path. The `Handshake` row has been explicitly demoted
   from comparable output because the auth-policy work differs across harnesses;
   `docs/research/perf/20260706-000535-ec2-c7i-2xlarge-handshake-row-perf/`
-  records pinned row-perf evidence showing ztls and libssl both perform
+  records pinned row-perf evidence showing tls and libssl both perform
   CertificateVerify verification while rustls `NoVerifier` does not. No
   cross-implementation handshake performance claim is allowed from the current
   row.
 - **The Zig 0.16/Linux kTLS integration is proven for its documented
   surface.** Core still exports copied traffic-key snapshots and the three
-  Linux cipher layouts through `RecordLayer.ktlsInfo()` and `ztls.ktls`.
+  Linux cipher layouts through `RecordLayer.ktlsInfo()` and `tls.ktls`.
   `RecordBuffer.isEmpty()`, `hasPendingWrite()`, `hasPendingTicket()`, and
   `hasPendingKeyUpdateResponse()` make the one-way activation preconditions
   explicit and prevent application data from overtaking an RFC 8446 §4.6.3
@@ -1668,7 +1668,7 @@ in sync without re-running the capture.
   `ratchetKtlsTx()` advances an externally sent TX KeyUpdate without producing
   duplicate userspace ciphertext.
 
-  `integrations/ztls-ktls` owns the immediate export → pack → `setsockopt`
+  `integrations/tls-ktls` owns the immediate export → pack → `setsockopt`
   sequence and zeroes every local key copy. Activation rejects read-ahead bytes,
   prepared tickets, pending writes, and unanswered KeyUpdate requests, and shuts
   down partial installs. Successful server activation latches TX ownership in
@@ -1699,7 +1699,7 @@ in sync without re-running the capture.
   lifecycle and neither sent nor verified `close_notify` explicitly. The package
   does both.
 
-  Residual scope is explicit in `integrations/ztls-ktls/README.md`: one
+  Residual scope is explicit in `integrations/tls-ktls/README.md`: one
   single-threaded blocking caller; fragmented KeyUpdate is fatal because the
   kernel pauses before exposing its continuation; pre-live-rekey kernels cannot
   recover from a peer update after RX handoff; affected kernels can stay inside
@@ -1739,7 +1739,7 @@ each passing the same correctness and interop gates.
   The AWS-LC and BoringSSL recipes verify their include and library paths in
   Zig's verbose build output. TLS-Anvil workflows assert that selected headers
   match each matrix label before they build conformance harnesses. Benchmark
-  scripts make the same assertion before they build ztls rows. The BoringSSL
+  scripts make the same assertion before they build tls rows. The BoringSSL
   shell synthesizes `libcrypto.pc` because nixpkgs BoringSSL does not ship one.
   Final local gates passed `just ci`, `just check-backend-boringssl`, and Zig
   0.16 `just ci-0_16` on 2026-09-17. The Zig 0.16 AWS-LC suite passed 766 tests.
@@ -1767,7 +1767,7 @@ each passing the same correctness and interop gates.
   provider-backed (#112): `PrivateKey.fromPemAuto(pem)` loads the key and
   derives the CertificateVerify scheme from the exact key type
   (`EVP_PKEY_id`, not base_id — RFC 8446 §4.2.3 assigns a loadable
-  rsassaPss-OID key to rsa_pss_pss_*, which ztls does not implement or
+  rsassaPss-OID key to rsa_pss_pss_*, which tls does not implement or
   advertise; a backend may also reject that container while loading) and
   curve via the legacy `EVP_PKEY_get0_EC_KEY` →
   `EC_GROUP_get_curve_name` family, then gates the result against the
@@ -1817,7 +1817,7 @@ each passing the same correctness and interop gates.
   lanes (OpenSSL, AWS-LC, BoringSSL × Zig 0.15.2/0.16); the check's Darwin
   build was verified by cross-target semantic analysis only — linking it
   needs a darwin libcrypto, so it has not been executed on macOS. `PrivateKey` also
-  carries a `nonce_mode` option (`NonceMode`, RFC 6979, mattrobenolt/ztls#82):
+  carries a `nonce_mode` option (`NonceMode`, RFC 6979, mattrobenolt/tls#82):
   default `.random`; `.deterministic` makes an ECDSA CertificateVerify
   byte-reproducible. Capability is compiled support only
   (`supportsDeterministicNonce()`: not BoringSSL-family and the nonce-type
@@ -1835,7 +1835,7 @@ each passing the same correctness and interop gates.
   some backends may reject the container earlier with `error.LibcryptoFailed`.
 - `src/certificate.zig` routes CertificateVerify public-key construction and
   signature verification through `src/crypto/backend.zig`; certificate parsing,
-  chain signature verification, and path policy remain ztls/std-derived code.
+  chain signature verification, and path policy remain tls/std-derived code.
   Ed25519 certificate-chain signatures are verified via
   `std.crypto.sign.Ed25519` in `src/certificate_parser.zig` and are advertised
   in the non-FIPS `certificate_signature_schemes` tables of both backends. The
@@ -1853,7 +1853,7 @@ each passing the same correctness and interop gates.
   `tlsfuzzer_server` can be built as AWS-LC-linked harness binaries.
 - Handshake SHA-256/SHA-384 (transcript, HMAC, HKDF, Finished, PSK binders)
   run on the backend through `src/crypto/sha2.zig` (#138). HMAC
-  (`src/hmac.zig`) and HKDF (`src/hkdf.zig`) are ztls code. The handshakes
+  (`src/hmac.zig`) and HKDF (`src/hkdf.zig`) are tls code. The handshakes
   key each secret once for the labels derived from it, so one server
   handshake does 14 HMAC keyings and 22 MACs instead of 25 and 25. The keyed
   pad states stay on the stack of one derivation and are wiped in a `defer`.
@@ -1913,8 +1913,8 @@ each passing the same correctness and interop gates.
   runs `just check-backend-boringssl` under `nix develop .#boringssl` on
   pushes/PRs. Benchmark scripts (`bench-capture.sh`, `bench-perf-row.sh`,
   `bench-disasm-row.sh`, `remote-capture.sh`, `remote-perf-rows.sh`) accept
-  `boringssl` as a `--crypto-backend` value; BoringSSL ztls benchmark rows
-  are ztls-linked-only with OpenSSL libssl baselines kept explicit (no mixed
+  `boringssl` as a `--crypto-backend` value; BoringSSL tls benchmark rows
+  are tls-linked-only with OpenSSL libssl baselines kept explicit (no mixed
   geomeans). The BoringSSL backend (`src/crypto/backend_boringssl.zig`)
   mirrors the AWS-LC backend: X25519 via flat `curve25519.h`, AEAD via
   `EVP_AEAD` one-shot, EC/RSA/signature via legacy EVP (BoringSSL has no
@@ -1922,7 +1922,7 @@ each passing the same correctness and interop gates.
   `EVP_PKEY_Q_keygen`). The same `backend_primitive_tests.zig` vectors run
   under the BoringSSL lane. The flake synthesizes both `libcrypto.pc` and
   `libssl.pc` for BoringSSL (nixpkgs ships neither) and exports
-  `ZTLS_BORINGSSL_PKG_CONFIG_PATH` / `ZTLS_BORINGSSL_LIB_DIR` env vars in
+  `TLS_BORINGSSL_PKG_CONFIG_PATH` / `TLS_BORINGSSL_LIB_DIR` env vars in
   `commonHook`. Zig 0.16 needs BoringSSL warning pragma macros disabled during
   header translation; the translate-c wrapper `openssl_c.h` neuters them and
   they only suppress C warnings (#145). `just check-backends` runs the
@@ -1975,11 +1975,11 @@ dispatch through the backend facade; capability tables are backend-owned.
 **Design decisions and residual scope:**
 
 - **The provider abstraction is real for handshake primitives; certificate
-  chain policy remains ztls-owned.** `src/crypto/backend.zig` dispatches
+  chain policy remains tls-owned.** `src/crypto/backend.zig` dispatches
   X25519, P-256/P-384, AEAD, CertificateVerify signing/verification, and pure
-  ML-KEM-768/1024 operations. RFC 10024 composition stays in ztls above that
+  ML-KEM-768/1024 operations. RFC 10024 composition stays in tls above that
   seam. Certificate-chain signature verification and
-  path validation stay ztls/std-derived rather than backend-backed — that is
+  path validation stay tls/std-derived rather than backend-backed — that is
   the recorded ownership decision: the backend seam lacks PKCS#1 v1.5 /
   Ed25519 / ECDSA-all-hashes primitives, the std path is exercised and tested,
   and there is no FIPS/perf driver to move it. On divergent-backend evidence,
@@ -2014,7 +2014,7 @@ dispatch through the backend facade; capability tables are backend-owned.
   `passed=91`, `failed=6`, `expected_failed=6`, `expected_skipped=135`,
   `unexpected_skipped=0`, `not_attempted=205`. The local AWS-LC provider-lane
   benchmark capture `docs/research/perf/20260705-160550-awslc-local/` records
-  selected TLS handshake and 1350-byte ping-pong rows with ztls linked against
+  selected TLS handshake and 1350-byte ping-pong rows with tls linked against
   AWS-LC and OpenSSL libssl baselines linked against OpenSSL; it is measurement
   evidence, not a performance conclusion or Linux x86_64 perf/disassembly proof.
   Wycheproof coverage is now facade-direct for X25519, all advertised AEAD
@@ -2059,7 +2059,7 @@ dispatch through the backend facade; capability tables are backend-owned.
 - **Capability gating covers the whole advertised handshake surface.**
   ClientHello cipher suites, named groups, `signature_algorithms`, and
   `signature_algorithms_cert` come from the active backend capability table.
-  Server selection consults the same facade. Public `ztls.capabilities` exposes
+  Server selection consults the same facade. Public `tls.capabilities` exposes
   `active_backend`, `is_fips`, `hybrid_groups`, group support, policy validation,
   and the P-384 requirement. OpenSSL, AWS-LC, and BoringSSL advertise all three
   RFC 10024 groups. The `openssl-fips` and `aws-lc-fips` identities advertise
@@ -2076,12 +2076,12 @@ dispatch through the backend facade; capability tables are backend-owned.
 - **Named-group/key-exchange plumbing is group-sized and provider-backed.**
   X25519, P-256, and opt-in P-384 ECDHE work on both roles. RFC 10024 adds
   X25519MLKEM768, SecP256r1MLKEM768, and SecP384r1MLKEM1024 through pure
-  ML-KEM provider operations with ztls-owned component order and secret
+  ML-KEM provider operations with tls-owned component order and secret
   composition. Exact ClientHello/ServerHello share lengths, malformed point
   rejection, direct negotiation, HRR selected-group-only ClientHello2,
   transcript collapse, and direct plus post-HRR PSK resumption with application
   data are covered locally. Bidirectional OpenSSL 3.6 interop exercises plain P-384 and
-  every hybrid group with ztls linked to each non-FIPS backend. TLS-Anvil has no
+  every hybrid group with tls linked to each non-FIPS backend. TLS-Anvil has no
   RFC 10024 coverage; the pinned upstream tlsfuzzer ML-KEM driver instead covers
   35 external conversations across the three groups, including HRR and malformed
   share rejection. Large KEM union variants use pointer captures to avoid Zig
@@ -2105,7 +2105,7 @@ dispatch through the backend facade; capability tables are backend-owned.
   P-256/P-384 ECDH, RSA-PSS, and ECDSA P-256/P-384 (selected tcIds, both
   OpenSSL and AWS-LC lanes); the FIPS divergence matrix is comptime (subset
   asserts + divergence tests under the default backend); the certificate-
-  chain ownership decision is recorded as keep ztls/std (see the cert-chain
+  chain ownership decision is recorded as keep tls/std (see the cert-chain
   ownership gap above). BoringSSL backend now compiles and passes primitive
   tests with a CI-gated lane, `just check-backend-boringssl` recipe,
   benchmark lane, and tlsfuzzer smoke (#63 CI/follow-up slice); the
@@ -2118,7 +2118,7 @@ dispatch through the backend facade; capability tables are backend-owned.
 
 ## Pillar 5 — Marketing flair
 
-**Target:** the "why ztls over libssl" story, told clearly and backed by Pillar 3
+**Target:** the "why tls over libssl" story, told clearly and backed by Pillar 3
 numbers.
 
 **Status:** `PROVEN`
@@ -2127,14 +2127,14 @@ numbers.
 real n=10 numbers on x86_64 and aarch64, the honest ChaCha20 small-record
 loss stated alongside the wins, mechanism tied to cycles/symbols. The README
 also carries the honest security posture (adversarially reviewed, 3 vulns
-fixed, not an external audit). The "why ztls over libssl" narrative is the
+fixed, not an external audit). The "why tls over libssl" narrative is the
 README's Performance + Why-it-works-this-way sections; the benchmarks-as-
 marketing surface is the README headline table + `docs/research/PERFORMANCE.md`
 full tables. The herald agent's voice-calibration notes are committed in
 `.pi/agents/herald.md`.
 
 The story is told, backed by `PROVEN` Pillar 3 numbers, on the front door.
-A standalone why-ztls page, a separate benchmarks page, or a project site
+A standalone why-tls page, a separate benchmarks page, or a project site
 would be additional surfaces but are not required for the target ("the story,
 told clearly and backed by numbers").
 
@@ -2146,9 +2146,9 @@ told clearly and backed by numbers").
 guides, without reading source.
 
 **Current evidence:** `README.md` gives a root on-ramp and fresh-project module
-wiring pointer. The root fetched package exposes `ztls` and the
-`ztls_std`, `ztls_xev`, and Linux-only `ztls_ktls` integration modules, all
-Zig 0.16-only (#79). `ztls_xev` gates its libxev dependency behind an explicit
+wiring pointer. The root fetched package exposes `tls` and the
+`tls_std`, `tls_xev`, and Linux-only `tls_ktls` integration modules, all
+Zig 0.16-only (#79). `tls_xev` gates its libxev dependency behind an explicit
 opt-in. The distribution consumer compiles from an isolated package cache,
 checks the xev opt-in diagnostic, and rejects eager benchmark, test-runner,
 fixture-decoder, or libxev fetches on core and standard-wrapper paths. `docs/USAGE.md` documents the
@@ -2186,7 +2186,7 @@ These are not feature work; they stop the bleeding and make the rest legible.
 4. **DONE — Define workspace ownership for build.zig / just recipes.**
    `src/build/` modules and root `just/` sub-files exist, while domain
    subprojects such as `conformance/` own their local workflows and root
-   delegates to them. Benchmark recipes separate ztls development runs from full
+   delegates to them. Benchmark recipes separate tls development runs from full
    comparison captures, OpenSSL interop runs as normal Zig tests instead of
    standalone build-step binaries, and `tests/fixtures/` is the only real
    fixture source tree.

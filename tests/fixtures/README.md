@@ -1,4 +1,4 @@
-# ztls test fixtures
+# tls test fixtures
 
 These files are public test fixtures, not production credentials or trust anchors.
 Private keys and scalars under this directory are intentionally committed only so

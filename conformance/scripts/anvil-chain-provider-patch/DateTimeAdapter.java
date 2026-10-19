@@ -1,4 +1,4 @@
-// ztls #91 conformance patch: JAXB adapter for joda-time DateTime fields in
+// tls #91 conformance patch: JAXB adapter for joda-time DateTime fields in
 // the de.rub.nds.x509attacker.config package.
 //
 // Upstream x509-attacker 4.3.10 has no package-info for this package, so

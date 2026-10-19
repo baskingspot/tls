@@ -72,7 +72,7 @@ const NamedGroup = @import("kex.zig").NamedGroup;
 /// extension to resume a session. RFC 8446 §4.6.1, §4.2.11.
 pub const SessionTicket = struct {
     /// Opaque ticket identity bytes (copied from the NewSessionTicket). The
-    /// caller owns this storage; ztls copies into the fixed-capacity buffer.
+    /// caller owns this storage; tls copies into the fixed-capacity buffer.
     identity: buffer.Array(u8, 256) = .empty,
     /// PSK derived from the resumption_master_secret and the ticket nonce
     /// (HKDF-Expand-Label(resumption_master_secret, "resumption", nonce,
@@ -611,7 +611,7 @@ received_certificate_request: bool = false,
 /// null sends an empty Certificate when the server sends CertificateRequest
 /// (existing behavior). When set, the client emits a real Certificate chain
 /// and a CertificateVerify signed with the client private key before Finished.
-/// RFC 8446 §4.4.2, §4.4.3. Caller-owned: ztls stores references and does not
+/// RFC 8446 §4.4.2, §4.4.3. Caller-owned: tls stores references and does not
 /// copy; the chain and signer must outlive the handshake.
 client_credentials: ?ClientCredentials = null,
 /// PSK offered for resumption via startWithPsk (RFC 8446 §4.2.11), retained
@@ -644,7 +644,7 @@ server_accepted_early_data: bool = false,
 /// RFC 10024 hybrid-group policy copied from Config.
 hybrid: HybridPolicy = .{},
 /// Pure ML-KEM backend handle plus the selected RFC 10024 hybrid group. The
-/// ECDHE scalar remains in keypairs; ztls owns the component ordering.
+/// ECDHE scalar remains in keypairs; tls owns the component ordering.
 kem_key: ?hybrid_kex.ClientKeyPair = null,
 /// The cipher suite field is needed to pick the right HKDF hash for the early
 /// secret; it must match the negotiated suite for resumption.
@@ -810,7 +810,7 @@ pub fn cipherSuite(self: *const ClientHandshake) CipherSuite {
 
 /// Store caller-owned client certificate credentials for client authentication.
 /// `certs_der` is a list of DER certificates (leaf first) and `signer` signs
-/// the client CertificateVerify. Both must outlive the handshake; ztls stores
+/// the client CertificateVerify. Both must outlive the handshake; tls stores
 /// references and does not copy. Call before start(). RFC 8446 §4.4.2, §4.4.3.
 pub fn setCredentials(self: *ClientHandshake, certs_der: []const []const u8, signer: Signer) void {
     self.setCertificateChain(.init(certs_der), signer);
@@ -1605,7 +1605,7 @@ pub fn processServerHello(self: *ClientHandshake, msg: []const u8) ServerHelloEr
             try p384.sharedSecret(keypair.secret_key, key, dhe[0..48]);
             break :blk @as(usize, 48);
         },
-        // RFC 10024 §4.2-§4.3 — ztls validates/splits the selected server
+        // RFC 10024 §4.2-§4.3 — tls validates/splits the selected server
         // share, derives both components, and combines them in group order.
         // Pointer capture avoids the Zig x86_64 large-union bug from #65.
         .kem => |*k| blk: {
@@ -1625,7 +1625,7 @@ pub fn processServerHello(self: *ClientHandshake, msg: []const u8) ServerHelloEr
     };
     defer crypto.secureZero(u8, dhe[0..dhe_len]);
     // PSK resumption (RFC 8446 §4.2.11): if the server selected our offered
-    // PSK, use it as the early secret. ztls offers a single identity, so the
+    // PSK, use it as the early secret. tls offers a single identity, so the
     // selected index must be 0.
     const psk: ?[]const u8 = if (sh.selected_identity) |idx| blk: {
         if (idx != 0) return error.IllegalParameter;
@@ -2519,16 +2519,16 @@ test "processServerHello: rejects unoffered cipher suite" {
 // time): server_flight.b64 = EE||Cert||CV||Finished plaintext;
 // server_flight_record.b64 = the same flight as an encrypted wire record.
 //
-// The fixture imports live inside the function so the public ztls module
+// The fixture imports live inside the function so the public tls module
 // never requires the fixtures module (which is test-only and not included
 // in the published tarball). Issue #66.
 
 // Decode a base64 entry from the embedded RFC 8448 archive into `out`.
-// Test-only — the fixtures import lives inside the function so the public ztls
+// Test-only — the fixtures import lives inside the function so the public tls
 // module never requires the fixtures module (test-only, not in the published
 // tarball). Issue #66.
 fn rfc8448Fixture(comptime name: []const u8, out: []u8) []u8 {
-    // ziglint-ignore: Z028 -- test-only import; the published ztls module
+    // ziglint-ignore: Z028 -- test-only import; the published tls module
     // must not require the fixtures module (#66).
     const bytes = @import("fixtures").rfc8448.b64(name);
     @memcpy(out[0..bytes.len], bytes);
@@ -2846,7 +2846,7 @@ test "processFlight: handshake message spanning records needs buffer" {
 }
 
 // RFC 8446 §5.1 — handshake messages MAY be split across records. Caller-owned
-// reassembly storage keeps ztls allocation-free while supporting large flights.
+// reassembly storage keeps tls allocation-free while supporting large flights.
 test "processFlight: reassembles handshake message split across records" {
     var hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
     defer hs.deinit();

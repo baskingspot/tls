@@ -52,39 +52,39 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${impl}" ]]; then
-  echo "usage: $0 --impl ztls|openssl|evp|rustls [--crypto-backend openssl|aws-lc|boringssl]" >&2
+  echo "usage: $0 --impl tls|openssl|evp|rustls [--crypto-backend openssl|aws-lc|boringssl]" >&2
   exit 2
 fi
 
 case "${impl}" in
-  ztls|openssl|evp|rustls) ;;
+  tls|openssl|evp|rustls) ;;
   *)
-    echo "invalid --impl=${impl}; expected ztls, openssl, evp, or rustls" >&2
+    echo "invalid --impl=${impl}; expected tls, openssl, evp, or rustls" >&2
     exit 2
     ;;
 esac
 
 # --- build the benchmark binary --------------------------------------------
 
-openssl_pkg_config_path="${ZTLS_OPENSSL_PKG_CONFIG_PATH:-}"
+openssl_pkg_config_path="${TLS_OPENSSL_PKG_CONFIG_PATH:-}"
 if [[ -z "${openssl_pkg_config_path}" ]]; then
   openssl_dev=$(nix build --no-link --print-out-paths nixpkgs#openssl.dev)
   openssl_pkg_config_path="${openssl_dev}/lib/pkgconfig"
 fi
 
-build_ztls() {
+build_tls() {
   case "${crypto_backend}" in
     aws-lc)
-      backend_pkg_config_path="${ZTLS_AWS_LC_PKG_CONFIG_PATH:-}"
+      backend_pkg_config_path="${TLS_AWS_LC_PKG_CONFIG_PATH:-}"
       if [[ -z "${backend_pkg_config_path}" ]]; then
         aws_lc_dev=$(nix build --no-link --print-out-paths nixpkgs#aws-lc.dev)
         backend_pkg_config_path="${aws_lc_dev}/lib/pkgconfig"
       fi
       ;;
     boringssl)
-      backend_pkg_config_path="${ZTLS_BORINGSSL_PKG_CONFIG_PATH:-}"
+      backend_pkg_config_path="${TLS_BORINGSSL_PKG_CONFIG_PATH:-}"
       if [[ -z "${backend_pkg_config_path}" ]]; then
-        echo "ZTLS_BORINGSSL_PKG_CONFIG_PATH is not set; run inside 'nix develop .#boringssl'" >&2
+        echo "TLS_BORINGSSL_PKG_CONFIG_PATH is not set; run inside 'nix develop .#boringssl'" >&2
         exit 1
       fi
       ;;
@@ -108,7 +108,7 @@ build_rustls() {
 }
 
 case "${impl}" in
-  ztls)    build_ztls;    binary="zig-out/bin/benchmark" ;;
+  tls)    build_tls;    binary="zig-out/bin/benchmark" ;;
   openssl) build_openssl; binary="zig-out/bin/bio_bench" ;;
   evp)     build_evp;     binary="zig-out/bin/evp_bench" ;;
   rustls)  build_rustls;  binary="bench/rustls/target/release/rustls_bench" ;;

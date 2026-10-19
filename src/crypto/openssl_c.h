@@ -1,5 +1,5 @@
 // #145 — translate-c wrapper for the libcrypto-family C API (b.addTranslateC
-// replaces @cImport in Zig 0.16). One wrapper serves the ztls module, the
+// replaces @cImport in Zig 0.16). One wrapper serves the tls module, the
 // test module, the #88 errq check, and the bench/c.zig C-API baseline.
 //
 // opensslv.h is common to all three supported families. AWS-LC and BoringSSL

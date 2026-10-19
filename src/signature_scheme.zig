@@ -2,7 +2,7 @@
 //!
 //! RFC 8446 §4.2.3
 
-/// RFC 8446 §4.2.3 signature schemes supported by ztls.
+/// RFC 8446 §4.2.3 signature schemes supported by tls.
 pub const SignatureScheme = enum(u16) {
     rsa_pkcs1_sha256 = 0x0401,
     rsa_pkcs1_sha384 = 0x0501,

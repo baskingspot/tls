@@ -61,11 +61,11 @@ const Server = @import("Server.zig");
 var server: Server = try .init(gpa, .{});
 ```
 
-This is ztls's `ServerHandshake.zig` / `RecordBuffer.zig` shape. Consequences: every file-scope decl is a member; tests inline at the bottom exercise the real type; one type per stateful file, helper types nest inside it. A file of standalone functions (no state) stays lowercase (`sys.zig`, `mem.zig`) — and only earns existence when it has real content, not one function.
+This is tls's `ServerHandshake.zig` / `RecordBuffer.zig` shape. Consequences: every file-scope decl is a member; tests inline at the bottom exercise the real type; one type per stateful file, helper types nest inside it. A file of standalone functions (no state) stays lowercase (`sys.zig`, `mem.zig`) — and only earns existence when it has real content, not one function.
 
 ## Import style — alias densely, never qualify in bodies
 
-The import block is a table of contents; bodies stay short. From ztls/z53/exosphere:
+The import block is a table of contents; bodies stay short. From tls/z53/exosphere:
 
 ```zig
 const std = @import("std");
@@ -123,11 +123,11 @@ Structured key-value, not printf: `log.info("connection accepted", .{ .fd = fd, 
 - **Bit-tag types are `packed struct(uN)`, not shift-math.** A tag like `op:8 | slot:16 | gen:16 | spare:24` is `packed struct(u64)` with those fields; convert with `@bitCast` both ways. No manual `packTag`/`unpackTag` shift functions — the type system does the packing. **Packing rules (verified on-toolchain): first declared field sits at bit 0 (declare LSB-first to keep an MSB-first wire layout); explicit bit-align on fields is rejected; nested packed structs and bools are legal fields — plain structs (std.EnumSet) are not; std IntegerBitSet is exact-fit backed (`std.meta.Int(.unsigned, N)`, NOT power-of-2 rounded) so width is never the obstacle — names are: bit flags read individually at dispatch become named bools in a nested packed struct (`spare: packed struct(u24) { slotless, backend, splice_in: bool, pad: u5, reserved: u16 }`), never index-constant masks and never unnamed std bit sets.**
 - **Clustered bools → `std.EnumSet`** (extends the enums-over-bools rule): two or more related bool fields on one struct (op-in-flight flags, state latches that group) become one `EnumSet(Kind)` with `.contains`/`.insert`/`.remove` at call sites.
 - **No manually-allocated list slices.** `gpa.alloc(T, n)` for a list that the type owns → `std.ArrayList(T)`. For a fixed-capacity table (the common case here): `initCapacity(gpa, n)` + `expandToCapacity()` — two calls, exact allocation, `items.len` set to capacity. NOT the `.empty + ensureTotalCapacity + resize` dance. `.empty` is for growable lists only. For appending when capacity is known-good: `appendAssumeCapacity` (not `append` + `catch unreachable`). `deinit(gpa)` in teardown. (Owner-corrected 2026-09-16 — the mechanical refactor used the wrong idiom.)
-- **No hand-rolled `buffer` + `len` pairs.** Append-shaped → `ArrayBuffer(T)`; read-cursor (len + pos) → `SliceBuffer(T)`. Port from `~/code/ztls/src/array_buffer.zig` with attribution (not exported from ztls root). Keep the no-secureZero-on-views contract: clear the backing storage where it is declared (ztls #81).
+- **No hand-rolled `buffer` + `len` pairs.** Append-shaped → `ArrayBuffer(T)`; read-cursor (len + pos) → `SliceBuffer(T)`. Port from `~/code/tls/src/array_buffer.zig` with attribution (not exported from tls root). Keep the no-secureZero-on-views contract: clear the backing storage where it is declared (tls #81).
 - **The devShell is the tool contract.** Scripts in this repo do NOT carry runtime tool guards (require_tools / command -v checks) — every tool a script needs goes in flake.nix's devShell. A missing tool is a flake fix, never a script check. The only legitimate preflight is for build artifacts the script consumes (e.g. the compiled proxy binary).
 - **Zeroing: `crypto.secureZero` for anything that has ever held secret material; `@memset` only for never-secret contract hygiene, with a comment saying why the content is not secret.** The distinction is dead-store elimination: `@memset` on a dead buffer can be elided by the optimizer in ReleaseFast; `secureZero` cannot. Classify by what the buffer CAN hold, not what it holds at the zeroing site. (Owner-raised 2026-09-16.)
 
-## Sockets (0.16 idiom, from ztls examples/net_compat)
+## Sockets (0.16 idiom, from tls examples/net_compat)
 
 **Ring-native ops need own address builders:** std's address types (`net.IpAddress`, `net.UnixAddress`) are Io-vtable-bound — their listen/connect are blocking `Io` paths and the raw sockaddr bytes are never exposed. A ring op (`IoUring.connect` etc.) needs the sockaddr pointer + addrlen itself, so the sockaddr builder for any ring-bound endpoint is caller code. Validate std first every time — but if the piece is ring-native, owning it is correct, not duplication. (Owner-raised 2026-09-16; UnixAddress checked and declined: thin path-slice wrapper, blocking-only, hard-coded 108 where our derived capacity check is stricter.)
 

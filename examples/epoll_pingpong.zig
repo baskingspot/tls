@@ -4,9 +4,9 @@
 //! perform a full TLS 1.3 handshake and then exchange ping/pong messages for
 //! a fixed number of rounds. No HTTP, no external process, no blocking I/O.
 //!
-//! The interesting part is how ztls's Sans-I/O engine composes with edge-ish,
-//! non-blocking sockets. ztls hands back one wire-ready record at a time and
-//! requires it to reach the transport before the next engine call. `ztls.Outbox`
+//! The interesting part is how tls's Sans-I/O engine composes with edge-ish,
+//! non-blocking sockets. tls hands back one wire-ready record at a time and
+//! requires it to reach the transport before the next engine call. `tls.Outbox`
 //! captures the single unsent record and calls `completeWrite()` only after the
 //! kernel accepts every byte; `Conn` owns the socket and epoll interest bits.
 //!
@@ -33,7 +33,7 @@ const Io = std.Io;
 const IpAddress = Io.net.IpAddress;
 const builtin = @import("builtin");
 
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 comptime {
     if (builtin.os.tag != .linux) @compileError("epoll_pingpong is Linux-only");
@@ -100,7 +100,7 @@ const LockedWriter = struct {
 var stdout: LockedWriter = undefined;
 var stderr: LockedWriter = undefined;
 
-// -- Connection: socket + epoll + ztls write outbox --------------------------
+// -- Connection: socket + epoll + tls write outbox --------------------------
 
 pub const EpollSender = struct {
     fd: posix.fd_t,
@@ -114,14 +114,14 @@ pub const EpollSender = struct {
 };
 
 /// A non-blocking socket registered with an epoll instance. `outbox` tracks the
-/// single record ztls produced but the transport has not yet fully accepted.
+/// single record tls produced but the transport has not yet fully accepted.
 /// While `writeBlocked()` is true the caller must not invoke another
-/// record-producing ztls method on this connection.
+/// record-producing tls method on this connection.
 const Conn = struct {
     epoll_fd: posix.fd_t,
     fd: posix.fd_t,
     ev: linux.epoll_event,
-    outbox: ztls.Outbox = .init,
+    outbox: tls.Outbox = .init,
 
     fn init(epoll_fd: posix.fd_t, fd: posix.fd_t, events: u32) !Conn {
         var conn: Conn = .{
@@ -213,7 +213,7 @@ fn epollWait(epfd: posix.fd_t, events: []linux.epoll_event, timeout_ms: i32) !us
 const FillResult = enum { more, closed };
 
 /// Drain the socket into the record buffer until it would block.
-fn fillRecordBuffer(fd: posix.fd_t, rb: *ztls.RecordBuffer) !FillResult {
+fn fillRecordBuffer(fd: posix.fd_t, rb: *tls.RecordBuffer) !FillResult {
     while (true) {
         const writable = rb.writable();
         if (writable.len == 0) return .more;
@@ -429,7 +429,7 @@ fn serverRun(
     shared.ready.set(io);
 
     const key_pem = try Io.Dir.cwd().readFileAlloc(io, args.key, arena, .limited(1 << 20));
-    var private_key: ztls.signature.PrivateKey = try .fromPemAuto(key_pem);
+    var private_key: tls.signature.PrivateKey = try .fromPemAuto(key_pem);
     defer private_key.deinit();
     try private_key.pairsWith(certs[0]);
 
@@ -438,10 +438,10 @@ fn serverRun(
     var listen_ev: linux.epoll_event = .{ .events = linux.EPOLL.IN, .data = .{ .fd = listen_fd } };
     try epollCtl(epoll_fd, linux.EPOLL.CTL_ADD, listen_fd, &listen_ev);
 
-    var random: ztls.Random = .empty;
+    var random: tls.Random = .empty;
     io.random(&random.data);
-    var hs_storage: ztls.ServerHandshake.Storage = .empty;
-    var hs: ztls.ServerHandshake = .init(.{
+    var hs_storage: tls.ServerHandshake.Storage = .empty;
+    var hs: tls.ServerHandshake = .init(.{
         .keypairs = try .init(.generate()),
         .random = random,
         .alpn_protocols = &.{alpn},
@@ -450,10 +450,10 @@ fn serverRun(
     defer hs.deinit();
     hs.setCredentials(certs, private_key.signer());
 
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
-    var out: ztls.ServerHandshake.OutBuffer = .empty;
-    var flight: ztls.ServerHandshake.FlightBuffer = .empty;
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
+    var out: tls.ServerHandshake.OutBuffer = .empty;
+    var flight: tls.ServerHandshake.FlightBuffer = .empty;
 
     var conn: Conn = undefined;
     var connected = false;
@@ -552,11 +552,11 @@ fn clientRun(io: Io, arena: Allocator, args: *const Args, port: u16) !void {
         try bundle.parseCert(arena, cert_start, now_sec);
     }
 
-    var random: ztls.Random = .empty;
+    var random: tls.Random = .empty;
     io.random(&random.data);
-    var hs_storage: ztls.ClientHandshake.Storage = .empty;
+    var hs_storage: tls.ClientHandshake.Storage = .empty;
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(.generate()),
         .host_name = args.host,
         .now_sec = now_sec,
@@ -567,9 +567,9 @@ fn clientRun(io: Io, arena: Allocator, args: *const Args, port: u16) !void {
     });
     defer hs.deinit();
 
-    var out: ztls.ClientHandshake.OutBuffer = .empty;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var out: tls.ClientHandshake.OutBuffer = .empty;
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
     var connected = false;
     var handshake_logged = false;

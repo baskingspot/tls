@@ -44,7 +44,7 @@ pub const ParseError = error{
     DuplicateExtension,
     /// A field contained an unrecognised enum value.
     InvalidEnumTag,
-    /// Server selected HelloRetryRequest; ztls does not implement the retry path yet.
+    /// Server selected HelloRetryRequest; tls does not implement the retry path yet.
     HelloRetryRequest,
     /// legacy_version is SSLv3-or-lower, or supported_versions is absent.
     UnsupportedTlsVersion,
@@ -332,7 +332,7 @@ pub fn encodeHelloRetryRequest(
 }
 
 /// Encode a TLS 1.3 ServerHello handshake message. The caller supplies the
-/// legacy_session_id_echo from ClientHello; ztls' client currently sends an
+/// legacy_session_id_echo from ClientHello; tls' client currently sends an
 /// empty one, but the server path needs to echo arbitrary caller-owned bytes.
 /// RFC 8446 §4.1.3.
 pub fn encode(
@@ -779,7 +779,7 @@ test "parse: rejects HelloRetryRequest" {
 }
 
 // RFC 8446 §4.2.1 — without supported_versions the ServerHello is a legacy
-// TLS 1.2 (or below) message; ztls only speaks TLS 1.3.
+// TLS 1.2 (or below) message; tls only speaks TLS 1.3.
 test "parse: missing extensions / no supported_versions yields UnsupportedTlsVersion" {
     // Minimal ServerHello with empty extensions block — no supported_versions.
     const msg = [_]u8{
@@ -889,7 +889,7 @@ test "parse: rejects record_size_limit in ServerHello" {
     try testing.expectError(error.UnexpectedExtension, parse(&with_rsl));
 }
 
-// RFC 8446 §4.2.8 — ServerHello carries exactly the selected group. ztls's
+// RFC 8446 §4.2.8 — ServerHello carries exactly the selected group. tls's
 // current supported surface accepts only X25519.
 test "parse: rejects key_share for unsupported group" {
     var msg = server_hello_rfc8448[0..server_hello_rfc8448.len].*;

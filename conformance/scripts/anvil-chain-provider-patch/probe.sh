@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ztls #91 regression probes: run AnvilChainProviderProbe and
+# tls #91 regression probes: run AnvilChainProviderProbe and
 # ValidityRoundTripProbe against the jars that are EFFECTIVE on the classpath
 # TLS-Anvil itself uses (zig-out/tools/TLS-Anvil.jar + zig-out/tools/lib/*).
 # Optional argument: a pristine upstream jar (tls-test-framework-*.jar or

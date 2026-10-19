@@ -20,7 +20,7 @@ RFC10024_GROUPS = "secp256r1mlkem768,x25519mlkem768,secp384r1mlkem1024"
 
 
 @pytest.mark.lockstep
-def test_upstream_tls13_mlkem_matrix(ztls_server):
+def test_upstream_tls13_mlkem_matrix(tls_server):
     with urllib.request.urlopen(DRIVER_URL, timeout=30) as response:
         driver = response.read()
     assert hashlib.sha256(driver).hexdigest() == DRIVER_SHA256
@@ -33,9 +33,9 @@ def test_upstream_tls13_mlkem_matrix(ztls_server):
                 sys.executable,
                 str(driver_path),
                 "-h",
-                ztls_server["host"],
+                tls_server["host"],
                 "-p",
-                str(ztls_server["port"]),
+                str(tls_server["port"]),
                 "--no-fuzz",
                 "--kems",
                 RFC10024_GROUPS,

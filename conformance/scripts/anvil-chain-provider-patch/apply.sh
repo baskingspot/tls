@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ztls conformance patches (#91, #146): rebuild/replace classes inside the
+# tls conformance patches (#91, #146): rebuild/replace classes inside the
 # jars the conformance build installs under zig-out/tools/lib. One remaining
 # patch, applied atomically to its own pinned jar with its own provenance
 # stamp:
@@ -11,7 +11,7 @@
 #    replace the configured validity dates with the copy's current time. The
 #    package-level adapter preserves the configured instants (including
 #    deliberately expired/future windows) exactly; it never relaxes any
-#    ztls-side validation.
+#    tls-side validation.
 #
 # The tls-test-framework jar is NO LONGER patched. TLS-Anvil v1.5.3 adopted
 # the #91 chain fix upstream: X509CertificateChainProvider now adds a

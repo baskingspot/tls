@@ -12,7 +12,7 @@
 //! The translate-c wrapper (`openssl_c.h`) excludes `core.h`, `core_names.h`,
 //! and `params.h` from the BoringSSL translation (#145).
 //!
-//! Pure ML-KEM uses BoringSSL's EVP_PKEY_ALG and EVP_KEM interfaces. ztls owns
+//! Pure ML-KEM uses BoringSSL's EVP_PKEY_ALG and EVP_KEM interfaces. tls owns
 //! the RFC 10024 hybrid composition so the wire construction is backend-neutral.
 const std = @import("std");
 const assert = std.debug.assert;

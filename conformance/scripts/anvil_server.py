@@ -192,17 +192,17 @@ def wait_for_server(proc: subprocess.Popen[bytes], port: int) -> None:
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(
-                f"ztls server exited rc={proc.returncode}: {captured.decode(errors='replace')!r}"
+                f"tls server exited rc={proc.returncode}: {captured.decode(errors='replace')!r}"
             )
         line = proc.stdout.readline()
         if line:
             captured.extend(line)
-            if b"ztls tlsfuzzer server listening on" in line:
+            if b"tls tlsfuzzer server listening on" in line:
                 with socket.create_connection(("127.0.0.1", port), timeout=1):
                     return
         time.sleep(0.05)
     raise RuntimeError(
-        f"ztls server not ready on 127.0.0.1:{port}; output={captured.decode(errors='replace')!r}"
+        f"tls server not ready on 127.0.0.1:{port}; output={captured.decode(errors='replace')!r}"
     )
 
 
@@ -239,9 +239,9 @@ def copy_new_logs(log_dir: Path, dest_dir: Path, before: dict[str, int]) -> list
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run TLS-Anvil server tests against the ztls server harness."
+        description="Run TLS-Anvil server tests against the tls server harness."
     )
-    parser.add_argument("--port", type=int, default=0, help="local ztls server port; 0 picks one")
+    parser.add_argument("--port", type=int, default=0, help="local tls server port; 0 picks one")
     parser.add_argument(
         "--timeout", type=int, default=0, help="seconds before stopping TLS-Anvil; 0 disables"
     )

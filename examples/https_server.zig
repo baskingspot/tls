@@ -14,7 +14,7 @@
 const std = @import("std");
 const Io = std.Io;
 const print = std.debug.print;
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 const IpAddress = Io.net.IpAddress;
 
@@ -28,7 +28,7 @@ const port: u16 = 8443;
 const cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
 const scalar: []const u8 = &fixtures.server_ecdsa_scalar;
 
-const response = "HTTP/1.0 200 OK\r\nContent-Length: 18\r\n\r\nHello from ztls!";
+const response = "HTTP/1.0 200 OK\r\nContent-Length: 18\r\n\r\nHello from tls!";
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -58,37 +58,37 @@ pub fn main(init: std.process.Init) !void {
     defer stream.close(io);
     print("[https]  client connected\n", .{});
 
-    const server_keypair: ztls.x25519.KeyPair = .generate();
-    var random: ztls.Random = undefined;
+    const server_keypair: tls.x25519.KeyPair = .generate();
+    var random: tls.Random = undefined;
     io.random(&random.data);
-    var hs: ztls.ServerHandshake = .init(.{
+    var hs: tls.ServerHandshake = .init(.{
         .keypairs = try .init(server_keypair),
         .random = random,
         .alpn_protocols = &.{"http/1.1"},
     });
     defer hs.deinit();
 
-    var signer = try ztls.signature.PrivateKey.fromP256Scalar(scalar[0..32]);
+    var signer = try tls.signature.PrivateKey.fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
     hs.setCredentials(&.{cert_der}, signer.signer());
 
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
-    var out: ztls.ServerHandshake.OutBuffer = .empty;
-    var flight: ztls.ServerHandshake.FlightBuffer = .empty;
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
+    var out: tls.ServerHandshake.OutBuffer = .empty;
+    var flight: tls.ServerHandshake.FlightBuffer = .empty;
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(io, stream, &rb);
+        const n = try tls.io.fill(io, stream, &rb);
         if (n == 0) return error.ClientClosed;
         rb.advance(n);
         while (try rb.next()) |record| {
             const ev = try hs.handleRecord(record, &out.buffer);
             switch (ev) {
                 .write => |w| {
-                    try ztls.io.writeAll(io, stream, w);
+                    try tls.io.writeAll(io, stream, w);
                     hs.completeWrite();
                     if (try hs.sendServerFlightBuffered(&flight)) |flight_bytes| {
-                        try ztls.io.writeAll(io, stream, flight_bytes);
+                        try tls.io.writeAll(io, stream, flight_bytes);
                         hs.completeWrite();
                     }
                 },
@@ -101,7 +101,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Handle one request, send response, close gracefully.
     while (true) {
-        const n = try ztls.io.fill(io, stream, &rb);
+        const n = try tls.io.fill(io, stream, &rb);
         if (n == 0) return error.ClientClosed;
         rb.advance(n);
         while (try rb.next()) |record| {
@@ -110,22 +110,22 @@ pub fn main(init: std.process.Init) !void {
                 .application_data => |data| {
                     if (std.mem.startsWith(u8, data, "GET ")) {
                         const rec = try hs.sendApplicationData(response, &out.buffer);
-                        try ztls.io.writeAll(io, stream, rec);
+                        try tls.io.writeAll(io, stream, rec);
                         hs.completeWrite();
                     }
                     const close = try hs.sendAlert(.close_notify, &out.buffer);
-                    try ztls.io.writeAll(io, stream, close);
+                    try tls.io.writeAll(io, stream, close);
                     hs.completeWrite();
                     return;
                 },
                 .write => |w| {
-                    try ztls.io.writeAll(io, stream, w);
+                    try tls.io.writeAll(io, stream, w);
                     hs.completeWrite();
                 },
                 .closed => return,
                 .key_update => |ku| {
                     if (ku.response) |w| {
-                        try ztls.io.writeAll(io, stream, w);
+                        try tls.io.writeAll(io, stream, w);
                         hs.completeWrite();
                     }
                 },

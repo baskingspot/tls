@@ -12,7 +12,7 @@
 //! The step's system libs exist only to feed that header search; the created
 //! modules carry no link objects. `createModule` would propagate `-lcrypto`
 //! onto every consumer, and a consumer that builds a static archive (the C
-//! ABI's libztls.a) would then bundle the resolved shared object into it —
+//! ABI's libtls.a) would then bundle the resolved shared object into it —
 //! capi-ci rejects exactly that. Each consumer already declares its own
 //! `linkSystemLibrary("crypto")`/`"ssl"` the way it did before #145, and
 //! imported-module system libs still propagate through those declarations.

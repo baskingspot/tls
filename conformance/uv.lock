@@ -161,7 +161,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ztls-conformance"
+name = "tls-conformance"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [

@@ -17,7 +17,7 @@ if [[ -z "${run}" ]]; then
   exit 1
 fi
 
-for file in ztls.txt evp.txt libssl.txt rustls.txt; do
+for file in tls.txt evp.txt libssl.txt rustls.txt; do
   if [[ ! -f "${run}/${file}" ]]; then
     echo "missing ${run}/${file}" >&2
     exit 1
@@ -149,12 +149,12 @@ normalize_rustls_csv() {
   fi
 }
 
-ztls_norm="${tmp_dir}/ztls.txt"
+tls_norm="${tmp_dir}/tls.txt"
 evp_norm="${tmp_dir}/evp.txt"
 libssl_norm="${tmp_dir}/libssl.txt"
 rustls_norm="${tmp_dir}/rustls.txt"
 
-normalize_go ztls "${run}/ztls.txt" "${ztls_norm}"
+normalize_go tls "${run}/tls.txt" "${tls_norm}"
 normalize_go evp "${run}/evp.txt" "${evp_norm}"
 normalize_go openssl "${run}/libssl.txt" "${libssl_norm}"
 # rustls captures may be in the old CSV format (pre-Go-bench captures) or
@@ -171,8 +171,8 @@ all_norm="${tmp_dir}/all.txt"
 tls_norm="${tmp_dir}/tls-comparable.txt"
 handshake_norm="${tmp_dir}/handshake-non-equivalent.txt"
 crypto_norm="${tmp_dir}/crypto-floor.txt"
-other_norm="${tmp_dir}/ztls-non-comparable.txt"
-cat "${ztls_norm}" "${evp_norm}" "${libssl_norm}" "${rustls_norm}" > "${all_norm}"
+other_norm="${tmp_dir}/tls-non-comparable.txt"
+cat "${tls_norm}" "${evp_norm}" "${libssl_norm}" "${rustls_norm}" > "${all_norm}"
 
 awk '
   /^Benchmark(AppClientToServer|AppServerToClient|AppPingPong)\// { print }
@@ -187,7 +187,7 @@ awk '
 ' "${all_norm}" > "${crypto_norm}"
 
 awk '
-  !/\/impl=ztls\// { next }
+  !/\/impl=tls\// { next }
   /^Benchmark(Handshake|AppClientToServer|AppServerToClient|AppPingPong)\// { next }
   /^Benchmark(RecordEncrypt|RecordDecrypt|Encrypt|Decrypt|BulkEncryptOnce|BulkDecryptOnce)\// { next }
   { print }
@@ -294,10 +294,10 @@ warn_comparable_gaps "${tls_norm}"
 run_benchstat "Comparable TLS application-data rows" "${tls_norm}"
 if [[ -s "${handshake_norm}" ]]; then
   echo "## Non-equivalent handshake rows (auth-policy differs; reported for transparency only)"
-  echo "ztls verifies CertificateVerify, hostname, and leaf policy; rustls NoVerifier skips signature and policy; libssl SSL_VERIFY_NONE behavior is partly opaque. Do not use the vs-base columns below as apples-to-apples performance claims."
+  echo "tls verifies CertificateVerify, hostname, and leaf policy; rustls NoVerifier skips signature and policy; libssl SSL_VERIFY_NONE behavior is partly opaque. Do not use the vs-base columns below as apples-to-apples performance claims."
   echo
   benchstat -row ".name /suite /size" -col /impl "${handshake_norm}" | sed '/^geomean[[:space:]]/d'
   echo
 fi
 run_benchstat "Crypto floor rows (not TLS-to-TLS comparisons)" "${crypto_norm}"
-run_benchstat "ztls-only diagnostic rows" "${other_norm}"
+run_benchstat "tls-only diagnostic rows" "${other_norm}"

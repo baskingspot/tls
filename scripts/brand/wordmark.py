@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Generate the ztls wordmark as SVG with glyphs converted to vector paths.
+"""Generate the tls wordmark as SVG with glyphs converted to vector paths.
 
 Text is laid out from a monospace font (JetBrains Mono) and emitted as filled
 paths, so the SVG renders identically without the font installed. Run via
 `just brand-wordmark` inside the `.#brand` dev shell, which supplies
-ZTLS_BRAND_FONT_DIR.
+TLS_BRAND_FONT_DIR.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from fontTools.ttLib import TTFont
 
 OUT_DIR = Path("images/logo")
 
-TITLE = ".ztls"
+TITLE = ".tls"
 TAGLINE = "Sans-I/O TLS 1.3 in Zig"
 
 TITLE_PT = 200.0
@@ -36,9 +36,9 @@ THEMES = {
 
 
 def font_file(name: str) -> Path:
-    root = os.environ.get("ZTLS_BRAND_FONT_DIR")
+    root = os.environ.get("TLS_BRAND_FONT_DIR")
     if not root:
-        sys.exit("ZTLS_BRAND_FONT_DIR is unset; run inside `nix develop .#brand`")
+        sys.exit("TLS_BRAND_FONT_DIR is unset; run inside `nix develop .#brand`")
     matches = list(Path(root).rglob(name))
     if not matches:
         sys.exit(f"font {name} not found under {root}")
@@ -116,7 +116,7 @@ def main() -> None:
             f'<svg xmlns="http://www.w3.org/2000/svg" '
             f'viewBox="0 0 {width:.0f} {height:.0f}" '
             f'width="{width:.0f}" height="{height:.0f}" '
-            f'role="img" aria-label="ztls — Sans-I/O TLS 1.3 in Zig">\n'
+            f'role="img" aria-label="tls — Sans-I/O TLS 1.3 in Zig">\n'
             f"{body}\n"
             f"</svg>\n"
         )

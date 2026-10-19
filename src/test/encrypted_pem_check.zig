@@ -38,12 +38,12 @@
 //! whose `error.WouldBlock` is the typed form of "this non-blocking fd is
 //! empty".
 const std = @import("std");
-const ztls = @import("ztls");
+const tls = @import("tls");
 const fixtures = @import("fixtures");
 
 const c = @import("pty_c");
 
-const PrivateKey = ztls.signature.PrivateKey;
+const PrivateKey = tls.signature.PrivateKey;
 
 /// File descriptors are C `int` here: everything that creates, dupes, or
 /// closes one goes through libc. On Linux and macOS `fd_t` is the same type,
@@ -54,7 +54,7 @@ const Fd = c_int;
 /// prompting provider consumes input rather than blocking, and any
 /// consumption shows up as a shortfall against this exact byte sequence. The
 /// text deliberately avoids the prompt marker.
-const sentinel = "ztls-sentinel-do-not-read\nztls-sentinel-do-not-read\n";
+const sentinel = "tls-sentinel-do-not-read\ntls-sentinel-do-not-read\n";
 
 /// Prompt text is the one thing the loaders must never emit. All three
 /// provider families spell their prompt with "phrase" ("Enter PEM pass

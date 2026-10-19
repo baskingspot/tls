@@ -1,6 +1,6 @@
 # Linux raw layer in zig 0.16 std — inventory and recipes
 
-Verified against the exact stdlib this repo compiles with (`zig env` → `.std_dir`, zig 0.16.0, aarch64-linux). This is the layer ztls's raw-fd examples and kTLS integration live on: stock syscalls, io_uring, kTLS ULP.
+Verified against the exact stdlib this repo compiles with (`zig env` → `.std_dir`, zig 0.16.0, aarch64-linux). This is the layer tls's raw-fd examples and kTLS integration live on: stock syscalls, io_uring, kTLS ULP.
 
 ## Layer map
 
@@ -90,7 +90,7 @@ For io_uring ownership discipline (slot index, generation, direction, op kind in
 
 ## kTLS
 
-The verified UAPI layer (constants, installs, cmsg framing) lives in ztls core (`src/ktls.zig`), with `integrations/ztls-ktls` owning the data plane. Two toolchain facts from that work:
+The verified UAPI layer (constants, installs, cmsg framing) lives in tls core (`src/ktls.zig`), with `integrations/tls-ktls` owning the data plane. Two toolchain facts from that work:
 - UAPI constant names trip ziglint Z006 (PascalCase wanted); the reference pattern is `// ziglint-ignore: Z006 -- kernel UAPI constant name, kept verbatim for grep-ability.` per declaration.
 - An array type alias cannot carry alignment (`pub const B = [24]u8 align(8);` is a syntax error) — alignment is legal only on variables, fields, and pointer types; wrap in a one-field struct when a control buffer needs alignment.
 

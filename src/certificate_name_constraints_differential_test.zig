@@ -13,10 +13,10 @@
 //! intermediate CA carrying a critical NameConstraints extension over one
 //! GeneralName form (dNSName / rfc822Name / URI / iPAddress, permitted and
 //! excluded), plus a leaf whose SAN sits inside, on, or outside the subtree.
-//! Ground truth is `openssl verify -CAfile root -untrusted inter leaf`; ztls's
+//! Ground truth is `openssl verify -CAfile root -untrusted inter leaf`; tls's
 //! verdict is `intermediate.verifyNameConstraints(leaf)` on the same DER.
 //!
-//! ztls now agrees with OpenSSL on every case. The former rfc822Name/URI
+//! tls now agrees with OpenSSL on every case. The former rfc822Name/URI
 //! bare-host subtree divergence (#75) was fixed: bare-host constraints now do
 //! exact host matching per RFC 5280 §4.2.1.10.
 
@@ -32,8 +32,8 @@ const Case = struct {
     name: []const u8,
     /// `openssl verify` accepted the chain (name constraints satisfied).
     openssl_ok: bool,
-    /// ztls verifyNameConstraints currently accepts. Regression anchor.
-    ztls_ok: bool,
+    /// tls verifyNameConstraints currently accepts. Regression anchor.
+    tls_ok: bool,
     inter_b64: []const u8,
     leaf_b64: []const u8,
 };
@@ -42,7 +42,7 @@ const cases = [_]Case{
     .{
         .name = "dns_in__dns_perm",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBtDCCAVqgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomr8wCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMBwxGjAYBgNV" ++
             "BAMMEW5jLWludGVyLWRuc19wZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsp5mzksa" ++
@@ -65,7 +65,7 @@ const cases = [_]Case{
     .{
         .name = "dns_exact__dns_perm",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBtDCCAVqgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomr8wCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMBwxGjAYBgNV" ++
             "BAMMEW5jLWludGVyLWRuc19wZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsp5mzksa" ++
@@ -88,7 +88,7 @@ const cases = [_]Case{
     .{
         .name = "dns_out__dns_perm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBtDCCAVqgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomr8wCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMBwxGjAYBgNV" ++
             "BAMMEW5jLWludGVyLWRuc19wZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsp5mzksa" ++
@@ -110,7 +110,7 @@ const cases = [_]Case{
     .{
         .name = "dns_suffix_trk__dns_perm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBtDCCAVqgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomr8wCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMBwxGjAYBgNV" ++
             "BAMMEW5jLWludGVyLWRuc19wZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsp5mzksa" ++
@@ -133,7 +133,7 @@ const cases = [_]Case{
     .{
         .name = "dns_in__dns_dotperm",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBuDCCAV6gAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsEwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMB8xHTAbBgNV" ++
             "BAMMFG5jLWludGVyLWRuc19kb3RwZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEr+IK" ++
@@ -156,7 +156,7 @@ const cases = [_]Case{
     .{
         .name = "dns_exact__dns_dotperm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBuDCCAV6gAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsEwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMB8xHTAbBgNV" ++
             "BAMMFG5jLWludGVyLWRuc19kb3RwZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEr+IK" ++
@@ -179,7 +179,7 @@ const cases = [_]Case{
     .{
         .name = "dns_bad__dns_excl",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBtzCCAV6gAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsAwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMBwxGjAYBgNV" ++
             "BAMMEW5jLWludGVyLWRuc19leGNsMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECilgeP1s" ++
@@ -202,7 +202,7 @@ const cases = [_]Case{
     .{
         .name = "dns_subbad__dns_excl",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBtzCCAV6gAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsAwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMBwxGjAYBgNV" ++
             "BAMMEW5jLWludGVyLWRuc19leGNsMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECilgeP1s" ++
@@ -225,7 +225,7 @@ const cases = [_]Case{
     .{
         .name = "dns_in__dns_excl",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBtzCCAV6gAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsAwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMBwxGjAYBgNV" ++
             "BAMMEW5jLWludGVyLWRuc19leGNsMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECilgeP1s" ++
@@ -248,7 +248,7 @@ const cases = [_]Case{
     .{
         .name = "email_host__email_hostperm",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBujCCAWCgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsIwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCIxIDAeBgNV" ++
             "BAMMF25jLWludGVyLWVtYWlsX2hvc3RwZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE" ++
@@ -271,7 +271,7 @@ const cases = [_]Case{
     .{
         .name = "email_sub__email_hostperm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBujCCAWCgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsIwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCIxIDAeBgNV" ++
             "BAMMF25jLWludGVyLWVtYWlsX2hvc3RwZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE" ++
@@ -294,7 +294,7 @@ const cases = [_]Case{
     .{
         .name = "email_host__email_dotperm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBujCCAWCgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsMwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCExHzAdBgNV" ++
             "BAMMFm5jLWludGVyLWVtYWlsX2RvdHBlcm0wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARH" ++
@@ -317,7 +317,7 @@ const cases = [_]Case{
     .{
         .name = "email_sub__email_dotperm",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBujCCAWCgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsMwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCExHzAdBgNV" ++
             "BAMMFm5jLWludGVyLWVtYWlsX2RvdHBlcm0wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARH" ++
@@ -340,7 +340,7 @@ const cases = [_]Case{
     .{
         .name = "email_admin__email_mbxperm",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBvjCCAWWgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsQwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCExHzAdBgNV" ++
             "BAMMFm5jLWludGVyLWVtYWlsX21ieHBlcm0wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATj" ++
@@ -363,7 +363,7 @@ const cases = [_]Case{
     .{
         .name = "email_host__email_mbxperm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBvjCCAWWgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsQwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCExHzAdBgNV" ++
             "BAMMFm5jLWludGVyLWVtYWlsX21ieHBlcm0wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATj" ++
@@ -386,7 +386,7 @@ const cases = [_]Case{
     .{
         .name = "email_host__email_hostexcl",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBujCCAWCgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsUwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCIxIDAeBgNV" ++
             "BAMMF25jLWludGVyLWVtYWlsX2hvc3RleGNsMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE" ++
@@ -409,7 +409,7 @@ const cases = [_]Case{
     .{
         .name = "email_sub__email_hostexcl",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBujCCAWCgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsUwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCIxIDAeBgNV" ++
             "BAMMF25jLWludGVyLWVtYWlsX2hvc3RleGNsMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE" ++
@@ -432,7 +432,7 @@ const cases = [_]Case{
     .{
         .name = "email_other__email_hostexcl",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBujCCAWCgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsUwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCIxIDAeBgNV" ++
             "BAMMF25jLWludGVyLWVtYWlsX2hvc3RleGNsMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE" ++
@@ -455,7 +455,7 @@ const cases = [_]Case{
     .{
         .name = "uri_sub__uri_perm",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBtTCCAVugAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsYwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMBwxGjAYBgNV" ++
             "BAMMEW5jLWludGVyLXVyaV9wZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsk9O/4y7" ++
@@ -478,7 +478,7 @@ const cases = [_]Case{
     .{
         .name = "uri_exact__uri_perm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBtTCCAVugAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsYwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMBwxGjAYBgNV" ++
             "BAMMEW5jLWludGVyLXVyaV9wZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsk9O/4y7" ++
@@ -501,7 +501,7 @@ const cases = [_]Case{
     .{
         .name = "uri_sub__uri_hostperm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBtzCCAV6gAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomscwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCAxHjAcBgNV" ++
             "BAMMFW5jLWludGVyLXVyaV9ob3N0cGVybTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABFS0" ++
@@ -524,7 +524,7 @@ const cases = [_]Case{
     .{
         .name = "uri_exact__uri_hostperm",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBtzCCAV6gAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomscwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCAxHjAcBgNV" ++
             "BAMMFW5jLWludGVyLXVyaV9ob3N0cGVybTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABFS0" ++
@@ -547,7 +547,7 @@ const cases = [_]Case{
     .{
         .name = "uri_userport__uri_hostperm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBtzCCAV6gAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomscwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTRaFw0zNjA3MTIyMDEyMTRaMCAxHjAcBgNV" ++
             "BAMMFW5jLWludGVyLXVyaV9ob3N0cGVybTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABFS0" ++
@@ -570,7 +570,7 @@ const cases = [_]Case{
     .{
         .name = "ip_in__ip_perm",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBrzCCAVSgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsgwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTVaFw0zNjA3MTIyMDEyMTVaMBsxGTAXBgNV" ++
             "BAMMEG5jLWludGVyLWlwX3Blcm0wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARX8OAPRfHZ" ++
@@ -592,7 +592,7 @@ const cases = [_]Case{
     .{
         .name = "ip_out__ip_perm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBrzCCAVSgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsgwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTVaFw0zNjA3MTIyMDEyMTVaMBsxGTAXBgNV" ++
             "BAMMEG5jLWludGVyLWlwX3Blcm0wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARX8OAPRfHZ" ++
@@ -614,7 +614,7 @@ const cases = [_]Case{
     .{
         .name = "ip6_in__ip_perm",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBrzCCAVSgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomsgwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTVaFw0zNjA3MTIyMDEyMTVaMBsxGTAXBgNV" ++
             "BAMMEG5jLWludGVyLWlwX3Blcm0wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARX8OAPRfHZ" ++
@@ -637,7 +637,7 @@ const cases = [_]Case{
     .{
         .name = "ip_out__ip_excl",
         .openssl_ok = false,
-        .ztls_ok = false,
+        .tls_ok = false,
         .inter_b64 = "MIIBrjCCAVSgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomskwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTVaFw0zNjA3MTIyMDEyMTVaMBsxGTAXBgNV" ++
             "BAMMEG5jLWludGVyLWlwX2V4Y2wwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARB1DjG3rt3" ++
@@ -659,7 +659,7 @@ const cases = [_]Case{
     .{
         .name = "ip_in__ip_excl",
         .openssl_ok = true,
-        .ztls_ok = true,
+        .tls_ok = true,
         .inter_b64 = "MIIBrjCCAVSgAwIBAgIUfIXDd6WpQ1DRce6dL3A/5kNomskwCgYIKoZIzj0EAwIwEjEQMA4G" ++
             "A1UEAwwHbmMtcm9vdDAeFw0yNjA3MTUyMDEyMTVaFw0zNjA3MTIyMDEyMTVaMBsxGTAXBgNV" ++
             "BAMMEG5jLWludGVyLWlwX2V4Y2wwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARB1DjG3rt3" ++
@@ -700,16 +700,16 @@ test "RFC 5280 §4.2.1.10 name-constraint verdicts vs OpenSSL 3.6.3 ground truth
         const inter = try inter_cert.parse();
         const leaf = try leaf_cert.parse();
 
-        const ztls_ok = if (inter.verifyNameConstraints(leaf)) true else |_| false;
+        const tls_ok = if (inter.verifyNameConstraints(leaf)) true else |_| false;
 
-        // Regression anchor: ztls verdict must not drift silently.
-        testing.expectEqual(c.ztls_ok, ztls_ok) catch |e| {
+        // Regression anchor: tls verdict must not drift silently.
+        testing.expectEqual(c.tls_ok, tls_ok) catch |e| {
             std.debug.print("verdict drift for {s}\n", .{c.name});
             return e;
         };
 
-        // ztls must agree with OpenSSL on every case (#75 resolved).
-        testing.expectEqual(c.openssl_ok, ztls_ok) catch |e| {
+        // tls must agree with OpenSSL on every case (#75 resolved).
+        testing.expectEqual(c.openssl_ok, tls_ok) catch |e| {
             std.debug.print("DISAGREEMENT with OpenSSL: {s}\n", .{c.name});
             return e;
         };

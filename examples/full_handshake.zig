@@ -12,13 +12,13 @@
 const std = @import("std");
 const Io = std.Io;
 
-const ztls = @import("ztls");
+const tls = @import("tls");
 const fixtures = @import("fixtures");
 
 // RFC 8448 §3 client ephemeral X25519 keypair. We replay the fixed §3
 // ClientHello via injectClientHello, so the public key here is unused, but
 // init takes the whole keypair.
-const client_keypair: ztls.x25519.KeyPair = .{
+const client_keypair: tls.x25519.KeyPair = .{
     .secret_key = .init(.{
         0x49, 0xaf, 0x42, 0xba, 0x7f, 0x79, 0x94, 0x85,
         0x2d, 0x71, 0x3e, 0xf2, 0x78, 0x4b, 0xcb, 0xca,
@@ -100,7 +100,7 @@ pub fn main(init: std.process.Init) !void {
     var flight_buf: [1024]u8 = undefined;
     const server_flight_record = fixture("server_flight_record.b64", &flight_buf);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),
         .host_name = null,
         .now_sec = 0,
@@ -116,7 +116,7 @@ pub fn main(init: std.process.Init) !void {
         client_hello.len, @tagName(hs.state),
     });
 
-    var out: ztls.ClientHandshake.OutBuffer = .empty;
+    var out: tls.ClientHandshake.OutBuffer = .empty;
 
     // Each server record goes through the one inbound entry point, handleRecord.
     var sh = server_hello_record;
@@ -145,8 +145,8 @@ pub fn main(init: std.process.Init) !void {
     // our send layer to stand in for the peer's read side.
     var peer = hs.tx;
 
-    const message = "Hello from ztls!";
-    var app_out: ztls.ClientHandshake.OutBuffer = .empty;
+    const message = "Hello from tls!";
+    var app_out: tls.ClientHandshake.OutBuffer = .empty;
     const record = try hs.sendApplicationData(message, &app_out.buffer);
     app_out.resize(@intCast(record.len));
     try stdout.print("[client] encrypted {} bytes                    → {} wire bytes\n", .{

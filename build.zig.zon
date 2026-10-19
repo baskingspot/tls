@@ -1,7 +1,7 @@
 .{
-    .name = .ztls,
+    .name = .tls,
     .version = "0.0.0",
-    .fingerprint = 0x767a5b455ec37148,
+    .fingerprint = 0xacfd1db3288cfd9d,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Production: fixed-capacity containers and memory scans shared with
@@ -17,8 +17,8 @@
             .hash = "testingx-0.0.0-ib95-4WvAgDlIY73PBF6aDm9FBntyPof0zrluXvyz-v5",
             .lazy = true,
         },
-        // Integration-only: fetched when a consumer opts into ztls_xev.
-        // Keep this pin in sync with integrations/ztls-xev/build.zig.zon.
+        // Integration-only: fetched when a consumer opts into tls_xev.
+        // Keep this pin in sync with integrations/tls-xev/build.zig.zon.
         .libxev = .{
             .url = "git+https://github.com/mitchellh/libxev#7497c85dfc3ae5141308944f2cd47c836772c300",
             .hash = "libxev-0.0.0-86vtc6BWFAAs_tGsasNfjQsxSsElhddIUnqVwGhwdnsu",
@@ -32,8 +32,8 @@
         "build.zig.zon",
         "src",
         "tests/fixtures",
-        "integrations/ztls-std/src",
-        "integrations/ztls-xev/src",
-        "integrations/ztls-ktls/src",
+        "integrations/tls-std/src",
+        "integrations/tls-xev/src",
+        "integrations/tls-ktls/src",
     },
 }

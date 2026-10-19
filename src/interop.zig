@@ -14,7 +14,7 @@ const fixtures = @import("fixtures");
 
 const backend = @import("crypto/backend.zig");
 const entropy = @import("entropy.zig");
-const ztls = @import("root.zig");
+const tls = @import("root.zig");
 
 const host = "127.0.0.1";
 const alpn_protocol = "http/1.1";
@@ -31,32 +31,32 @@ const client_suites = [_][]const u8{
 
 const ServerSuite = struct {
     openssl_name: []const u8,
-    ztls_suite: ztls.CipherSuite,
+    tls_suite: tls.CipherSuite,
 };
 
 const server_suites = [_]ServerSuite{
-    .{ .openssl_name = "TLS_AES_128_GCM_SHA256", .ztls_suite = .aes_128_gcm_sha256 },
-    .{ .openssl_name = "TLS_CHACHA20_POLY1305_SHA256", .ztls_suite = .chacha20_poly1305_sha256 },
-    .{ .openssl_name = "TLS_AES_256_GCM_SHA384", .ztls_suite = .aes_256_gcm_sha384 },
+    .{ .openssl_name = "TLS_AES_128_GCM_SHA256", .tls_suite = .aes_128_gcm_sha256 },
+    .{ .openssl_name = "TLS_CHACHA20_POLY1305_SHA256", .tls_suite = .chacha20_poly1305_sha256 },
+    .{ .openssl_name = "TLS_AES_256_GCM_SHA384", .tls_suite = .aes_256_gcm_sha384 },
 };
 
 const InteropGroup = struct {
     openssl_name: []const u8,
-    ztls_group: ztls.kex.NamedGroup,
+    tls_group: tls.kex.NamedGroup,
 };
 
 const p384_group: InteropGroup = .{
     .openssl_name = "P-384",
-    .ztls_group = .secp384r1,
+    .tls_group = .secp384r1,
 };
 
 const hybrid_groups = [_]InteropGroup{
-    .{ .openssl_name = "X25519MLKEM768", .ztls_group = .x25519_mlkem768 },
-    .{ .openssl_name = "SecP256r1MLKEM768", .ztls_group = .secp256r1_mlkem768 },
-    .{ .openssl_name = "SecP384r1MLKEM1024", .ztls_group = .secp384r1_mlkem1024 },
+    .{ .openssl_name = "X25519MLKEM768", .tls_group = .x25519_mlkem768 },
+    .{ .openssl_name = "SecP256r1MLKEM768", .tls_group = .secp256r1_mlkem768 },
+    .{ .openssl_name = "SecP384r1MLKEM1024", .tls_group = .secp384r1_mlkem1024 },
 };
 
-test "OpenSSL s_server interoperates with ztls client" {
+test "OpenSSL s_server interoperates with tls client" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
@@ -74,9 +74,9 @@ test "OpenSSL s_server interoperates with ztls client" {
     }
 }
 
-// RFC 8446 §4.2.8.2, §7.4 — OpenSSL independently validates the ztls
+// RFC 8446 §4.2.8.2, §7.4 — OpenSSL independently validates the tls
 // secp384r1 ClientHello share and derives matching handshake/traffic keys.
-test "OpenSSL s_server interoperates with ztls P-384 client" {
+test "OpenSSL s_server interoperates with tls P-384 client" {
     if (!backend.supportsClientP384()) return error.SkipZigTest;
 
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
@@ -93,9 +93,9 @@ test "OpenSSL s_server interoperates with ztls P-384 client" {
     try runClientGroup(arena, cert_path, key_path, p384_group, 20343);
 }
 
-// RFC 10024 §4 — OpenSSL independently validates every ztls client hybrid
+// RFC 10024 §4 — OpenSSL independently validates every tls client hybrid
 // share layout and derives matching ECDHE + ML-KEM traffic keys.
-test "OpenSSL s_server interoperates with ztls RFC 10024 client groups" {
+test "OpenSSL s_server interoperates with tls RFC 10024 client groups" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
@@ -109,7 +109,7 @@ test "OpenSSL s_server interoperates with ztls RFC 10024 client groups" {
 
     var tested = false;
     for (hybrid_groups, 0..) |group, i| {
-        if (!backend.supportsClientHybridGroup(group.ztls_group)) continue;
+        if (!backend.supportsClientHybridGroup(group.tls_group)) continue;
         tested = true;
         try runClientGroup(
             arena,
@@ -122,11 +122,11 @@ test "OpenSSL s_server interoperates with ztls RFC 10024 client groups" {
     if (!tested) return error.SkipZigTest;
 }
 
-// RFC 8446 §4.6.1, §4.2.11 — ztls client resumes with openssl s_server:
+// RFC 8446 §4.6.1, §4.2.11 — tls client resumes with openssl s_server:
 // connection 1 completes a full handshake and captures the NewSessionTicket
 // the server issues; connection 2 offers that ticket (startWithPsk) and the
 // server resumes with the PSK.
-test "ztls client resumes with OpenSSL s_server (PSK resumption)" {
+test "tls client resumes with OpenSSL s_server (PSK resumption)" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
@@ -141,12 +141,12 @@ test "ztls client resumes with OpenSSL s_server (PSK resumption)" {
     try runResumptionInterop(arena, cert_path, key_path, 19433);
 }
 
-// RFC 8446 §4.2.10, §4.5, §7.1 — ztls client sends 0-RTT early data to
+// RFC 8446 §4.2.10, §4.5, §7.1 — tls client sends 0-RTT early data to
 // openssl s_server. Connection 1 captures an NST with early_data; connection
 // 2 offers the ticket with early_data, sends 0-RTT data, then completes the
 // handshake (EndOfEarlyData + Finished). The server accepts the 0-RTT data
 // and responds to the GET request. See PRODUCTION_READINESS.md for status.
-test "ztls client sends 0-RTT early data to OpenSSL s_server" {
+test "tls client sends 0-RTT early data to OpenSSL s_server" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
@@ -161,7 +161,7 @@ test "ztls client sends 0-RTT early data to OpenSSL s_server" {
     try runEarlyDataInterop(arena, cert_path, key_path, 19434);
 }
 
-test "OpenSSL s_client interoperates with ztls server" {
+test "OpenSSL s_client interoperates with tls server" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
@@ -171,9 +171,9 @@ test "OpenSSL s_client interoperates with ztls server" {
     }
 }
 
-// RFC 8446 §4.6.1, §4.2.11 — OpenSSL stores a ztls-issued ticket on the first
-// connection and offers it on the second; the ztls server selects the PSK.
-test "OpenSSL s_client resumes with ztls server-issued ticket" {
+// RFC 8446 §4.6.1, §4.2.11 — OpenSSL stores a tls-issued ticket on the first
+// connection and offers it on the second; the tls server selects the PSK.
+test "OpenSSL s_client resumes with tls server-issued ticket" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
@@ -185,9 +185,9 @@ test "OpenSSL s_client resumes with ztls server-issued ticket" {
     try runServerResumptionSuite(arena, session_path, 16533);
 }
 
-// RFC 8446 §4.2.8.2, §7.4 — OpenSSL independently validates the ztls
+// RFC 8446 §4.2.8.2, §7.4 — OpenSSL independently validates the tls
 // secp384r1 ServerHello share and derives matching handshake/traffic keys.
-test "OpenSSL s_client interoperates with ztls P-384 server" {
+test "OpenSSL s_client interoperates with tls P-384 server" {
     if (!backend.supportsServerP384()) return error.SkipZigTest;
 
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
@@ -197,25 +197,25 @@ test "OpenSSL s_client interoperates with ztls P-384 server" {
     try runServerGroup(arena, p384_group, 21343);
 }
 
-// RFC 10024 §4 — OpenSSL independently validates every ztls server hybrid
+// RFC 10024 §4 — OpenSSL independently validates every tls server hybrid
 // share layout and derives matching ECDHE + ML-KEM traffic keys.
-test "OpenSSL s_client interoperates with ztls RFC 10024 server groups" {
+test "OpenSSL s_client interoperates with tls RFC 10024 server groups" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
 
     var tested = false;
     for (hybrid_groups, 0..) |group, i| {
-        if (!backend.supportsServerHybridGroup(group.ztls_group)) continue;
+        if (!backend.supportsServerHybridGroup(group.tls_group)) continue;
         tested = true;
         try runServerGroup(arena, group, 21433 + @as(u16, @intCast(i)));
     }
     if (!tested) return error.SkipZigTest;
 }
 
-// RFC 8446 §4.7.2, §4.4.2, §4.4.3 — ztls server requiring client authentication
+// RFC 8446 §4.7.2, §4.4.2, §4.4.3 — tls server requiring client authentication
 // accepts a client certificate presented by `openssl s_client -cert -key`.
-test "OpenSSL s_client with -cert interoperates with ztls server (required client auth)" {
+test "OpenSSL s_client with -cert interoperates with tls server (required client auth)" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
@@ -235,9 +235,9 @@ test "OpenSSL s_client with -cert interoperates with ztls server (required clien
     );
 }
 
-// RFC 8446 §4.7.2, §4.4.2, §4.4.3 — ztls client presenting a certificate to
+// RFC 8446 §4.7.2, §4.4.2, §4.4.3 — tls client presenting a certificate to
 // `openssl s_server -Verify` completes the handshake and exchanges data.
-test "ztls client with credentials interoperates with OpenSSL s_server -Verify" {
+test "tls client with credentials interoperates with OpenSSL s_server -Verify" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
@@ -246,7 +246,7 @@ test "ztls client with credentials interoperates with OpenSSL s_server -Verify" 
     defer tmp.cleanup();
     const dir = try tmpDirPath(arena, &tmp);
     // s_server needs a server cert/key (self-signed) and a CAfile that trusts
-    // the ztls client's self-signed fixture certificate. The fixture cert is
+    // the tls client's self-signed fixture certificate. The fixture cert is
     // self-signed, so its own PEM is the CAfile.
     const server_cert_path = try path.join(arena, &.{ dir, "server.pem" });
     const server_key_path = try path.join(arena, &.{ dir, "server.key" });
@@ -257,19 +257,19 @@ test "ztls client with credentials interoperates with OpenSSL s_server -Verify" 
     try runClientAuthClientSuite(arena, server_cert_path, server_key_path, client_ca_path, 18433);
 }
 
-// RFC 8446 §4.6.3, §7.2 — ztls-to-ztls TCP loopback KeyUpdate round trip.
+// RFC 8446 §4.6.3, §7.2 — tls-to-tls TCP loopback KeyUpdate round trip.
 // The server initiates KeyUpdate(update_requested) over a real TCP connection;
 // the client responds; both sides ratchet keys; application data flows under
 // the new keys. Tested with ChaCha20-Poly1305 to reproduce the TLS-Anvil
 // #71 scenario (BoringSSL + ChaCha20 + X25519 + CCS). Unlike the in-memory
 // test, this exercises the real socket drive loop including record
 // reassembly and partial reads.
-test "ztls-to-ztls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
+test "tls-to-tls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
     const KuCtx = struct {
         port: std.atomic.Value(u16) = .init(0),
-        server_keypair: ztls.x25519.KeyPair,
+        server_keypair: tls.x25519.KeyPair,
     };
-    const server_keypair: ztls.x25519.KeyPair = .generate();
+    const server_keypair: tls.x25519.KeyPair = .generate();
     var ctx: KuCtx = .{ .server_keypair = server_keypair };
 
     const ServerThread = struct {
@@ -282,36 +282,36 @@ test "ztls-to-ztls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
             const stream = try listener.accept(testing.io);
             defer stream.close(testing.io);
 
-            var random: ztls.Random = .empty;
+            var random: tls.Random = .empty;
             entropy.fill(&random.data);
-            var hs: ztls.ServerHandshake = .init(.{
+            var hs: tls.ServerHandshake = .init(.{
                 .keypairs = try .init(c.server_keypair),
                 .random = random,
             });
             defer hs.deinit();
-            const suites = [_]ztls.CipherSuite{.chacha20_poly1305_sha256};
+            const suites = [_]tls.CipherSuite{.chacha20_poly1305_sha256};
             hs.supportSuites(&suites);
-            var signer = try ztls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
+            var signer = try tls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
             defer signer.deinit();
             hs.setCredentials(&.{server_cert_der}, signer.signer());
 
-            var storage: ztls.RecordBuffer.Storage = .empty;
-            var rb: ztls.RecordBuffer = .init(&storage.buffer);
-            var out: ztls.ServerHandshake.OutBuffer = .empty;
-            var flight: ztls.ServerHandshake.FlightBuffer = .empty;
+            var storage: tls.RecordBuffer.Storage = .empty;
+            var rb: tls.RecordBuffer = .init(&storage.buffer);
+            var out: tls.ServerHandshake.OutBuffer = .empty;
+            var flight: tls.ServerHandshake.FlightBuffer = .empty;
 
             // Drive handshake.
             while (!hs.isConnected()) {
-                const n = try ztls.io.fill(testing.io, stream, &rb);
+                const n = try tls.io.fill(testing.io, stream, &rb);
                 if (n == 0) return error.ClientClosed;
                 while (try rb.next()) |record| {
                     const ev = try hs.handleRecord(record, &out.buffer);
                     switch (ev) {
                         .write => |w| {
-                            try ztls.io.writeAll(testing.io, stream, w);
+                            try tls.io.writeAll(testing.io, stream, w);
                             hs.completeWrite();
                             if (try hs.sendServerFlightBuffered(&flight)) |fb| {
-                                try ztls.io.writeAll(testing.io, stream, fb);
+                                try tls.io.writeAll(testing.io, stream, fb);
                                 hs.completeWrite();
                             }
                         },
@@ -323,34 +323,34 @@ test "ztls-to-ztls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
 
             // Server sends KeyUpdate(update_requested).
             const ku = try hs.sendKeyUpdate(&out.buffer, .update_requested);
-            try ztls.io.writeAll(testing.io, stream, ku);
+            try tls.io.writeAll(testing.io, stream, ku);
             hs.completeWrite();
 
             // Echo loop: expect client's KeyUpdate response, then app data.
             while (true) {
-                const n = try ztls.io.fill(testing.io, stream, &rb);
+                const n = try tls.io.fill(testing.io, stream, &rb);
                 if (n == 0) return error.ClientClosed;
                 while (try rb.next()) |record| {
                     const ev = try hs.handleRecord(record, &out.buffer);
                     switch (ev) {
                         .key_update => |ku_ev| {
                             if (ku_ev.response) |w| {
-                                try ztls.io.writeAll(testing.io, stream, w);
+                                try tls.io.writeAll(testing.io, stream, w);
                                 hs.completeWrite();
                             }
                         },
                         .application_data => |data| {
                             if (!mem.eql(u8, data, "after-ku")) return error.UnexpectedAppData;
                             const resp = try hs.sendApplicationData("pong-ku", &out.buffer);
-                            try ztls.io.writeAll(testing.io, stream, resp);
+                            try tls.io.writeAll(testing.io, stream, resp);
                             hs.completeWrite();
                             const close = try hs.sendAlert(.close_notify, &out.buffer);
-                            try ztls.io.writeAll(testing.io, stream, close);
+                            try tls.io.writeAll(testing.io, stream, close);
                             hs.completeWrite();
                             return;
                         },
                         .write => |w| {
-                            try ztls.io.writeAll(testing.io, stream, w);
+                            try tls.io.writeAll(testing.io, stream, w);
                             hs.completeWrite();
                         },
                         .closed => return,
@@ -374,14 +374,14 @@ test "ztls-to-ztls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
     }
 
     // Client side.
-    const client_keypair: ztls.x25519.KeyPair = .generate();
+    const client_keypair: tls.x25519.KeyPair = .generate();
     const addr: IpAddress = try .parse(host, server_port);
     const stream = try addr.connect(testing.io, .{ .mode = .stream });
     defer stream.close(testing.io);
 
-    var random: ztls.Random = .empty;
+    var random: tls.Random = .empty;
     entropy.fill(&random.data);
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),
         .host_name = "ztls.server.test",
         .now_sec = 0,
@@ -390,19 +390,19 @@ test "ztls-to-ztls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
     });
     defer hs.deinit();
 
-    var out: ztls.ClientHandshake.OutBuffer = .empty;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var out: tls.ClientHandshake.OutBuffer = .empty;
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
-    try ztls.io.writeAll(testing.io, stream, try hs.start(&out.buffer));
+    try tls.io.writeAll(testing.io, stream, try hs.start(&out.buffer));
     hs.completeWrite();
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ServerClosed;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out.buffer)) {
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .application_data,
@@ -418,19 +418,19 @@ test "ztls-to-ztls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
     var saw_key_update = false;
     var got_pong = false;
     while (!got_pong) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) break;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out.buffer)) {
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
                 // Send app data under the new keys after the KeyUpdate.
                 if (!saw_key_update) {
                     saw_key_update = true;
                     const app = try hs.sendApplicationData("after-ku", &out.buffer);
-                    try ztls.io.writeAll(testing.io, stream, app);
+                    try tls.io.writeAll(testing.io, stream, app);
                     hs.completeWrite();
                 }
             },
@@ -439,7 +439,7 @@ test "ztls-to-ztls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
                 got_pong = true;
             },
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .closed => return,
@@ -476,7 +476,7 @@ fn runClientGroup(
     defer killChild(&server);
     const stream = try connectWithRetry(port);
     defer stream.close(testing.io);
-    try clientInterop(stream, group.ztls_group);
+    try clientInterop(stream, group.tls_group);
 }
 
 fn runResumptionInterop(
@@ -490,7 +490,7 @@ fn runResumptionInterop(
 
     // Connection 1: full handshake, capture the NewSessionTicket.
     const stream1 = try connectWithRetry(port);
-    var ticket: ztls.ClientHandshake.SessionTicket = try clientInteropCaptureTicket(stream1);
+    var ticket: tls.ClientHandshake.SessionTicket = try clientInteropCaptureTicket(stream1);
     defer ticket.secureZero();
     stream1.close(testing.io);
 
@@ -528,7 +528,7 @@ fn runEarlyDataInterop(
 
     // Connection 1: full handshake, capture the NST (with early_data).
     const stream1 = try connectWithRetry(port);
-    var ticket: ztls.ClientHandshake.SessionTicket = try clientInteropCaptureTicket(stream1);
+    var ticket: tls.ClientHandshake.SessionTicket = try clientInteropCaptureTicket(stream1);
     defer ticket.secureZero();
     stream1.close(testing.io);
 
@@ -609,20 +609,20 @@ fn startServerWithGroup(
     });
 }
 
-fn clientInterop(stream: Stream, group: ?ztls.kex.NamedGroup) !void {
-    const kp: ztls.x25519.KeyPair = .generate();
-    var random: ztls.Random = .empty;
+fn clientInterop(stream: Stream, group: ?tls.kex.NamedGroup) !void {
+    const kp: tls.x25519.KeyPair = .generate();
+    var random: tls.Random = .empty;
     entropy.fill(&random.data);
 
-    var keypairs: ztls.ClientHandshake.KeyPairs = try .init(kp);
+    var keypairs: tls.ClientHandshake.KeyPairs = try .init(kp);
     if (group == .secp384r1 or group == .secp384r1_mlkem1024)
         keypairs.p384 = try .generate();
     const hybrid_group = if (group) |selected|
         if (selected.hybridSpec() != null) selected else null
     else
         null;
-    const groups = [_]ztls.kex.NamedGroup{hybrid_group orelse .x25519_mlkem768};
-    var hs: ztls.ClientHandshake = .init(.{
+    const groups = [_]tls.kex.NamedGroup{hybrid_group orelse .x25519_mlkem768};
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = keypairs,
         .host_name = "localhost",
         .now_sec = 0,
@@ -637,23 +637,23 @@ fn clientInterop(stream: Stream, group: ?ztls.kex.NamedGroup) !void {
     defer hs.deinit();
 
     var out: [4096]u8 = undefined;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
-    try ztls.io.writeAll(testing.io, stream, try hs.start(&out));
+    try tls.io.writeAll(testing.io, stream, try hs.start(&out));
     hs.completeWrite();
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ServerClosed;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -667,21 +667,21 @@ fn clientInterop(stream: Stream, group: ?ztls.kex.NamedGroup) !void {
     try testing.expectEqualStrings(alpn_protocol, hs.selectedAlpnProtocol().?);
 
     const request = try hs.sendApplicationData("GET / HTTP/1.0\r\n\r\n", &out);
-    try ztls.io.writeAll(testing.io, stream, request);
+    try tls.io.writeAll(testing.io, stream, request);
     hs.completeWrite();
 
     while (true) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) break;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .application_data => |data| if (mem.startsWith(u8, data, "HTTP/1.0 200")) return,
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -696,12 +696,12 @@ fn clientInterop(stream: Stream, group: ?ztls.kex.NamedGroup) !void {
 /// Connection 1 of PSK resumption: complete a full handshake, capture the
 /// NewSessionTicket the server issues post-handshake, derive a SessionTicket,
 /// and exchange a request/response so the connection closes cleanly.
-fn clientInteropCaptureTicket(stream: Stream) !ztls.ClientHandshake.SessionTicket {
-    const kp: ztls.x25519.KeyPair = .generate();
-    var random: ztls.Random = .empty;
+fn clientInteropCaptureTicket(stream: Stream) !tls.ClientHandshake.SessionTicket {
+    const kp: tls.x25519.KeyPair = .generate();
+    var random: tls.Random = .empty;
     entropy.fill(&random.data);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(kp),
         .host_name = "localhost",
         .now_sec = 0,
@@ -712,23 +712,23 @@ fn clientInteropCaptureTicket(stream: Stream) !ztls.ClientHandshake.SessionTicke
     defer hs.deinit();
 
     var out: [4096]u8 = undefined;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
-    try ztls.io.writeAll(testing.io, stream, try hs.start(&out));
+    try tls.io.writeAll(testing.io, stream, try hs.start(&out));
     hs.completeWrite();
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ServerClosed;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -744,13 +744,13 @@ fn clientInteropCaptureTicket(stream: Stream) !ztls.ClientHandshake.SessionTicke
     // may send the NST immediately or after the request; send the GET and read
     // until both the NST and the response are seen.
     const request = try hs.sendApplicationData("GET / HTTP/1.0\r\n\r\n", &out);
-    try ztls.io.writeAll(testing.io, stream, request);
+    try tls.io.writeAll(testing.io, stream, request);
     hs.completeWrite();
 
-    var ticket: ?ztls.ClientHandshake.SessionTicket = null;
+    var ticket: ?tls.ClientHandshake.SessionTicket = null;
     var got_response = false;
     while (true) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) break;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .new_session_ticket => |nst| {
@@ -760,12 +760,12 @@ fn clientInteropCaptureTicket(stream: Stream) !ztls.ClientHandshake.SessionTicke
                 got_response = true;
             },
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -780,12 +780,12 @@ fn clientInteropCaptureTicket(stream: Stream) !ztls.ClientHandshake.SessionTicke
 
 /// Connection 2 of PSK resumption: offer the captured ticket and complete the
 /// resumed handshake, then exchange application data.
-fn clientInteropResume(stream: Stream, ticket: *const ztls.ClientHandshake.SessionTicket) !void {
-    const kp: ztls.x25519.KeyPair = .generate();
-    var random: ztls.Random = .empty;
+fn clientInteropResume(stream: Stream, ticket: *const tls.ClientHandshake.SessionTicket) !void {
+    const kp: tls.x25519.KeyPair = .generate();
+    var random: tls.Random = .empty;
     entropy.fill(&random.data);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(kp),
         .host_name = "localhost",
         .now_sec = 0,
@@ -796,23 +796,23 @@ fn clientInteropResume(stream: Stream, ticket: *const ztls.ClientHandshake.Sessi
     defer hs.deinit();
 
     var out: [4096]u8 = undefined;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
-    try ztls.io.writeAll(testing.io, stream, try hs.startWithPsk(ticket, &out, false));
+    try tls.io.writeAll(testing.io, stream, try hs.startWithPsk(ticket, &out, false));
     hs.completeWrite();
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ServerClosed;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -825,21 +825,21 @@ fn clientInteropResume(stream: Stream, ticket: *const ztls.ClientHandshake.Sessi
     }
 
     const request = try hs.sendApplicationData("GET / HTTP/1.0\r\n\r\n", &out);
-    try ztls.io.writeAll(testing.io, stream, request);
+    try tls.io.writeAll(testing.io, stream, request);
     hs.completeWrite();
 
     while (true) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) break;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .application_data => |data| if (mem.startsWith(u8, data, "HTTP/1.0 200")) return,
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -855,13 +855,13 @@ fn clientInteropResume(stream: Stream, ticket: *const ztls.ClientHandshake.Sessi
 /// the resumed handshake and exchange application data.
 fn clientEarlyDataInterop(
     stream: Stream,
-    ticket: *const ztls.ClientHandshake.SessionTicket,
+    ticket: *const tls.ClientHandshake.SessionTicket,
 ) !void {
-    const kp: ztls.x25519.KeyPair = .generate();
-    var random: ztls.Random = .empty;
+    const kp: tls.x25519.KeyPair = .generate();
+    var random: tls.Random = .empty;
     entropy.fill(&random.data);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(kp),
         .host_name = "localhost",
         .now_sec = 0,
@@ -872,30 +872,30 @@ fn clientEarlyDataInterop(
     defer hs.deinit();
 
     var out: [4096]u8 = undefined;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
     // Send the PSK ClientHello with early_data.
-    try ztls.io.writeAll(testing.io, stream, try hs.startWithPsk(ticket, &out, true));
+    try tls.io.writeAll(testing.io, stream, try hs.startWithPsk(ticket, &out, true));
     hs.completeWrite();
 
     // Send 0-RTT data immediately (before the server responds).
     const early = try hs.sendEarlyData("GET / HTTP/1.0\r\n\r\n", &out);
-    try ztls.io.writeAll(testing.io, stream, early);
+    try tls.io.writeAll(testing.io, stream, early);
     hs.completeWrite();
 
     // Process the server's response (ServerHello + flight).
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ServerClosed;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -909,17 +909,17 @@ fn clientEarlyDataInterop(
 
     // Read the server's response (the 0-RTT data was the GET request).
     while (true) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) break;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .application_data => |data| if (mem.startsWith(u8, data, "HTTP/1.0 200")) return,
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -933,19 +933,19 @@ fn clientEarlyDataInterop(
 
 const ServerArgs = struct {
     port: u16,
-    suite: ztls.CipherSuite,
-    group: ?ztls.kex.NamedGroup = null,
+    suite: tls.CipherSuite,
+    group: ?tls.kex.NamedGroup = null,
 };
 
-const server_ticket_identity = "ztls-openssl-resumption";
+const server_ticket_identity = "tls-openssl-resumption";
 
 const ServerTicketState = struct {
     psk: [48]u8 = @splat(0),
     psk_len: u8 = 0,
-    cipher_suite: ztls.CipherSuite = .aes_128_gcm_sha256,
+    cipher_suite: tls.CipherSuite = .aes_128_gcm_sha256,
     did_resume: bool = false,
 
-    fn lookup(context: *anyopaque, identity: []const u8) ?ztls.ServerHandshake.PskEntry {
+    fn lookup(context: *anyopaque, identity: []const u8) ?tls.ServerHandshake.PskEntry {
         const self: *ServerTicketState = @ptrCast(@alignCast(context));
         if (!mem.eql(u8, identity, server_ticket_identity)) return null;
         return .{
@@ -967,7 +967,7 @@ const ServerResumptionArgs = struct {
 };
 
 fn runServerSuite(arena: Allocator, suite: ServerSuite, port: u16) !void {
-    var args: ServerArgs = .{ .port = port, .suite = suite.ztls_suite };
+    var args: ServerArgs = .{ .port = port, .suite = suite.tls_suite };
     const thread = try std.Thread.spawn(.{}, serverThread, .{&args});
 
     var child = try startClient(arena, suite.openssl_name, port);
@@ -1021,7 +1021,7 @@ fn runServerGroup(arena: Allocator, group: InteropGroup, port: u16) !void {
     var args: ServerArgs = .{
         .port = port,
         .suite = .aes_128_gcm_sha256,
-        .group = group.ztls_group,
+        .group = group.tls_group,
     };
     const thread = try std.Thread.spawn(.{}, serverThread, .{&args});
 
@@ -1149,24 +1149,24 @@ fn resumptionServerThread(args: *ServerResumptionArgs) !void {
 
 fn serve(
     stream: Stream,
-    suite: ztls.CipherSuite,
-    group: ?ztls.kex.NamedGroup,
+    suite: tls.CipherSuite,
+    group: ?tls.kex.NamedGroup,
     ticket_state: ?*ServerTicketState,
     ticket_phase: ServerTicketPhase,
 ) !void {
-    const server_keypair: ztls.x25519.KeyPair = .generate();
-    var server_random: ztls.Random = .empty;
+    const server_keypair: tls.x25519.KeyPair = .generate();
+    var server_random: tls.Random = .empty;
     entropy.fill(&server_random.data);
 
-    var keypairs: ztls.ServerHandshake.KeyPairs = try .init(server_keypair);
+    var keypairs: tls.ServerHandshake.KeyPairs = try .init(server_keypair);
     if (group == .secp384r1 or group == .secp384r1_mlkem1024)
         keypairs.p384 = try .generate();
     const hybrid_group = if (group) |selected|
         if (selected.hybridSpec() != null) selected else null
     else
         null;
-    const groups = [_]ztls.kex.NamedGroup{hybrid_group orelse .x25519_mlkem768};
-    var hs: ztls.ServerHandshake = .init(.{
+    const groups = [_]tls.kex.NamedGroup{hybrid_group orelse .x25519_mlkem768};
+    var hs: tls.ServerHandshake = .init(.{
         .keypairs = keypairs,
         .random = server_random,
         .psk_lookup = if (ticket_phase == .reuse) .{
@@ -1177,35 +1177,35 @@ fn serve(
     });
     defer hs.deinit();
     hs.supportAlpn(&.{alpn_protocol});
-    const supported = [_]ztls.CipherSuite{suite};
+    const supported = [_]tls.CipherSuite{suite};
     hs.supportSuites(&supported);
 
-    var signer = try ztls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
+    var signer = try tls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
     defer signer.deinit();
     hs.setCredentials(&.{server_cert_der}, signer.signer());
 
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
     var out: [4096]u8 = undefined;
     errdefer |err| sendBestEffortAlert(&hs, stream, err, &out);
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ClientClosed;
         while (try rb.next()) |record| {
             const ev = try hs.handleRecord(record, &out);
             switch (ev) {
                 .write => |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                     if (try hs.sendPreparedServerFlight(&out)) |flight| {
-                        try ztls.io.writeAll(testing.io, stream, flight);
+                        try tls.io.writeAll(testing.io, stream, flight);
                         hs.completeWrite();
                     }
                 },
                 .key_update => |ku| {
                     if (ku.response) |w| {
-                        try ztls.io.writeAll(testing.io, stream, w);
+                        try tls.io.writeAll(testing.io, stream, w);
                         hs.completeWrite();
                     }
                 },
@@ -1236,7 +1236,7 @@ fn serve(
                 },
                 &out,
             );
-            try ztls.io.writeAll(testing.io, stream, ticket_record);
+            try tls.io.writeAll(testing.io, stream, ticket_record);
             hs.completeWrite();
         },
         .reuse => state.did_resume = hs.isResumed(),
@@ -1245,39 +1245,39 @@ fn serve(
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .application_data => |data| return sendResponse(stream, &hs, data, &out),
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
             .closed => return,
             .none => {},
         };
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ClientClosed;
     }
 }
 
 fn sendResponse(
     stream: Stream,
-    hs: *ztls.ServerHandshake,
+    hs: *tls.ServerHandshake,
     request: []const u8,
     out: []u8,
 ) !void {
     if (!mem.startsWith(u8, request, "GET ")) return error.UnexpectedRequest;
     const rec = try hs.sendApplicationData(response, out);
-    try ztls.io.writeAll(testing.io, stream, rec);
+    try tls.io.writeAll(testing.io, stream, rec);
     hs.completeWrite();
     const close = try hs.sendAlert(.close_notify, out);
-    try ztls.io.writeAll(testing.io, stream, close);
+    try tls.io.writeAll(testing.io, stream, close);
     hs.completeWrite();
 }
 
-// RFC 8446 §4.7.2 — ztls server requiring client auth, exercised against an
+// RFC 8446 §4.7.2 — tls server requiring client auth, exercised against an
 // `openssl s_client -cert -key` peer. The server uses
 // insecure_no_client_chain_anchor so the self-signed openssl client cert is
 // accepted without a trust bundle; the CertificateVerify still proves key
@@ -1320,11 +1320,11 @@ fn serverClientAuthThread(args: *const ServerAuthArgs) !void {
 }
 
 fn serveClientAuth(stream: Stream) !void {
-    const server_keypair: ztls.x25519.KeyPair = .generate();
-    var server_random: ztls.Random = .empty;
+    const server_keypair: tls.x25519.KeyPair = .generate();
+    var server_random: tls.Random = .empty;
     entropy.fill(&server_random.data);
 
-    var hs: ztls.ServerHandshake = .init(.{
+    var hs: tls.ServerHandshake = .init(.{
         .keypairs = try .init(server_keypair),
         .random = server_random,
         .client_auth = .required,
@@ -1332,35 +1332,35 @@ fn serveClientAuth(stream: Stream) !void {
     });
     defer hs.deinit();
     hs.supportAlpn(&.{alpn_protocol});
-    const supported = [_]ztls.CipherSuite{.aes_128_gcm_sha256};
+    const supported = [_]tls.CipherSuite{.aes_128_gcm_sha256};
     hs.supportSuites(&supported);
 
-    var signer = try ztls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
+    var signer = try tls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
     defer signer.deinit();
     hs.setCredentials(&.{server_cert_der}, signer.signer());
 
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
     var out: [4096]u8 = undefined;
     errdefer |err| sendBestEffortAlert(&hs, stream, err, &out);
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ClientClosed;
         while (try rb.next()) |record| {
             const ev = try hs.handleRecord(record, &out);
             switch (ev) {
                 .write => |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                     if (try hs.sendPreparedServerFlight(&out)) |flight| {
-                        try ztls.io.writeAll(testing.io, stream, flight);
+                        try tls.io.writeAll(testing.io, stream, flight);
                         hs.completeWrite();
                     }
                 },
                 .key_update => |ku| {
                     if (ku.response) |w| {
-                        try ztls.io.writeAll(testing.io, stream, w);
+                        try tls.io.writeAll(testing.io, stream, w);
                         hs.completeWrite();
                     }
                 },
@@ -1375,17 +1375,17 @@ fn serveClientAuth(stream: Stream) !void {
     }
 
     while (true) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ClientClosed;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .application_data => |data| return sendResponse(stream, &hs, data, &out),
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -1420,7 +1420,7 @@ fn startClientWithCert(
     });
 }
 
-// RFC 8446 §4.7.2 — ztls client presenting credentials to `openssl s_server
+// RFC 8446 §4.7.2 — tls client presenting credentials to `openssl s_server
 // -Verify -CAfile`. The client reuses the self-signed ECDSA fixture as its
 // client certificate; the CAfile is the fixture cert PEM (self-signed = its
 // own CA). The client skips server chain validation (insecure_no_chain_anchor)
@@ -1474,11 +1474,11 @@ fn startServerVerify(
 }
 
 fn clientInteropWithCreds(stream: Stream) !void {
-    const kp: ztls.x25519.KeyPair = .generate();
-    var random: ztls.Random = .empty;
+    const kp: tls.x25519.KeyPair = .generate();
+    var random: tls.Random = .empty;
     entropy.fill(&random.data);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(kp),
         .host_name = "localhost",
         .now_sec = 0,
@@ -1488,28 +1488,28 @@ fn clientInteropWithCreds(stream: Stream) !void {
     });
     defer hs.deinit();
     // Present the self-signed ECDSA fixture as the client certificate.
-    var client_signer = try ztls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
+    var client_signer = try tls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
     defer client_signer.deinit();
     hs.setCredentials(&.{server_cert_der}, client_signer.signer());
 
     var out: [4096]u8 = undefined;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
-    try ztls.io.writeAll(testing.io, stream, try hs.start(&out));
+    try tls.io.writeAll(testing.io, stream, try hs.start(&out));
     hs.completeWrite();
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) return error.ServerClosed;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -1523,21 +1523,21 @@ fn clientInteropWithCreds(stream: Stream) !void {
     try testing.expectEqualStrings(alpn_protocol, hs.selectedAlpnProtocol().?);
 
     const request = try hs.sendApplicationData("GET / HTTP/1.0\r\n\r\n", &out);
-    try ztls.io.writeAll(testing.io, stream, request);
+    try tls.io.writeAll(testing.io, stream, request);
     hs.completeWrite();
 
     while (true) {
-        const n = try ztls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, &rb);
         if (n == 0) break;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
             .application_data => |data| if (mem.startsWith(u8, data, "HTTP/1.0 200")) return,
             .write => |w| {
-                try ztls.io.writeAll(testing.io, stream, w);
+                try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(testing.io, stream, w);
+                    try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
                 }
             },
@@ -1550,7 +1550,7 @@ fn clientInteropWithCreds(stream: Stream) !void {
 }
 
 /// Write the self-signed ECDSA fixture certificate (&fixtures.server_ecdsa_cert_der)
-/// as a PEM file so `openssl s_server -Verify -CAfile` trusts the ztls client's
+/// as a PEM file so `openssl s_server -Verify -CAfile` trusts the tls client's
 /// client certificate (the fixture is self-signed, so it is its own CA).
 fn writeFixtureCertPem(arena: Allocator, pem_path: []const u8) !void {
     // PEM is base64 of the DER wrapped in BEGIN/END CERTIFICATE lines.
@@ -1570,14 +1570,14 @@ fn writeFixtureCertPem(arena: Allocator, pem_path: []const u8) !void {
 }
 
 fn sendBestEffortAlert(
-    hs: *ztls.ServerHandshake,
+    hs: *tls.ServerHandshake,
     stream: Stream,
     err: anyerror,
     out: []u8,
 ) void {
-    const description = ztls.alert.alertForError(err);
+    const description = tls.alert.alertForError(err);
     const alert_record = hs.sendAlert(description, out) catch return;
-    ztls.io.writeAll(testing.io, stream, alert_record) catch return;
+    tls.io.writeAll(testing.io, stream, alert_record) catch return;
 }
 
 fn connectWithRetry(port: u16) !Stream {

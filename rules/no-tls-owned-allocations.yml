@@ -1,0 +1,19 @@
+id: no-tls-owned-allocations
+language: zig
+severity: error
+message: tls-owned TLS engine code must be allocator-free; see docs/research/DESIGN.md
+rule:
+  any:
+    - pattern: std.heap
+    - pattern: std.mem.Allocator
+    - pattern: mem.Allocator
+    - pattern: "@import(\"std\").heap"
+    - pattern: "@import(\"std\").mem.Allocator"
+    - pattern: malloc($$$ARGS)
+    - pattern: c.malloc($$$ARGS)
+    - pattern: calloc($$$ARGS)
+    - pattern: c.calloc($$$ARGS)
+    - pattern: realloc($$$ARGS)
+    - pattern: c.realloc($$$ARGS)
+    - pattern: free($$$ARGS)
+    - pattern: c.free($$$ARGS)

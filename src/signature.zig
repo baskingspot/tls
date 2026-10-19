@@ -27,7 +27,7 @@ pub const Signer = struct {
 pub const PrivateKey = struct {
     scheme: SignatureScheme,
     key: *backend.sign.pkey,
-    /// RFC 6979 nonce strategy (mattrobenolt/ztls#82): `.deterministic`
+    /// RFC 6979 nonce strategy (mattrobenolt/tls#82): `.deterministic`
     /// makes identical key and message yield identical signature bytes for
     /// byte-reproducible seeded transcripts. Requires compiled nonce-type
     /// provider support and an ECDSA scheme; unsupported requests fail

@@ -2,19 +2,19 @@ const std = @import("std");
 const testing = std.testing;
 
 const hex = @import("test.zig").hex;
-const ztls = @import("root.zig");
+const tls = @import("root.zig");
 
 // Wrapper-level Wycheproof coverage notes (#60 slice 60-A):
 //
 // This file covers Wycheproof vectors for the public wrapper-level API
-// exposed by ztls: x25519.sharedSecret and aead encrypt/decrypt. P-256/P-384
+// exposed by tls: x25519.sharedSecret and aead encrypt/decrypt. P-256/P-384
 // ECDH and signature verify (RSA-PSS, ECDSA) are covered facade-direct in
 // src/crypto/backend_primitive_tests.zig because:
-//   - ztls.p256.sharedSecret is a thin wrapper over backend.p256 and could
+//   - tls.p256.sharedSecret is a thin wrapper over backend.p256 and could
 //     be tested here, but the facade-direct tests already exercise the same
 //     code path under both OpenSSL and AWS-LC lanes. Adding wrapper-level
 //     duplicates would not increase coverage.
-//   - ztls.signature (PrivateKey) only exposes signing, not standalone
+//   - tls.signature (PrivateKey) only exposes signing, not standalone
 //     verification. Signature verification is only reachable through the
 //     certificate verify path (certificate.zig), not as a standalone public
 //     API. Therefore facade-direct backend.sign.verify in
@@ -26,64 +26,64 @@ const ztls = @import("root.zig");
 
 // Wycheproof v1 (google-wycheproof 0.9rc5) — X25519 tcId 1, normal case.
 test "Wycheproof: X25519 shared secret tcId 1" {
-    const private: ztls.x25519.SecretKey = .init(
+    const private: tls.x25519.SecretKey = .init(
         hex(32, "c8a9d5a91091ad851c668b0736c1c9a02936c0d3ad62670858088047ba057475"),
     );
-    const public: ztls.x25519.PublicKey = .init(
+    const public: tls.x25519.PublicKey = .init(
         hex(32, "504a36999f489cd2fdbc08baff3d88fa00569ba986cba22548ffde80f9806829"),
     );
-    var shared: [ztls.x25519.secret_length]u8 = undefined;
+    var shared: [tls.x25519.secret_length]u8 = undefined;
     defer std.crypto.secureZero(u8, &shared);
-    try ztls.x25519.sharedSecret(private, public, &shared);
+    try tls.x25519.sharedSecret(private, public, &shared);
     const expected = hex(32, "436a2c040cf45fea9b29a0cb81b1f41458f863d0d61b453d0a982720d6d61320");
     try testing.expectEqualSlices(u8, &expected, &shared);
 }
 
 // RFC 7748 §6.1 / Wycheproof low-order public keys — all-zero shared secret is rejected.
 test "Wycheproof boundary: X25519 identity element is rejected" {
-    const private: ztls.x25519.SecretKey = .init(
+    const private: tls.x25519.SecretKey = .init(
         hex(32, "c8a9d5a91091ad851c668b0736c1c9a02936c0d3ad62670858088047ba057475"),
     );
-    const public: ztls.x25519.PublicKey = .init(@splat(0));
-    var shared: [ztls.x25519.secret_length]u8 = @splat(0xa5);
+    const public: tls.x25519.PublicKey = .init(@splat(0));
+    var shared: [tls.x25519.secret_length]u8 = @splat(0xa5);
     try testing.expectError(
         error.IdentityElement,
-        ztls.x25519.sharedSecret(private, public, &shared),
+        tls.x25519.sharedSecret(private, public, &shared),
     );
     try testing.expect(std.mem.allEqual(u8, &shared, 0));
 }
 
 // RFC 7748 §6.1 / Wycheproof — small-order (order-2) public key is rejected.
 test "Wycheproof boundary: X25519 small-order public key is rejected" {
-    const private: ztls.x25519.SecretKey = .init(
+    const private: tls.x25519.SecretKey = .init(
         hex(32, "c8a9d5a91091ad851c668b0736c1c9a02936c0d3ad62670858088047ba057475"),
     );
-    const public: ztls.x25519.PublicKey = .init(
+    const public: tls.x25519.PublicKey = .init(
         hex(32, "0100000000000000000000000000000000000000000000000000000000000000"),
     );
-    var shared: [ztls.x25519.secret_length]u8 = @splat(0xa5);
+    var shared: [tls.x25519.secret_length]u8 = @splat(0xa5);
     try testing.expectError(
         error.IdentityElement,
-        ztls.x25519.sharedSecret(private, public, &shared),
+        tls.x25519.sharedSecret(private, public, &shared),
     );
     try testing.expect(std.mem.allEqual(u8, &shared, 0));
 }
 
 // Wycheproof v1 (google-wycheproof 0.9rc5) — AES-GCM tcId 2.
 test "Wycheproof: AES-128-GCM AAD/tag handling tcId 2" {
-    const key: ztls.aead.Aes128GcmKey = .init(hex(16, "5b9604fe14eadba931b0ccf34843dab9"));
-    const nonce: ztls.aead.Nonce = .init(hex(12, "921d2507fa8007b7bd067d34"));
+    const key: tls.aead.Aes128GcmKey = .init(hex(16, "5b9604fe14eadba931b0ccf34843dab9"));
+    const nonce: tls.aead.Nonce = .init(hex(12, "921d2507fa8007b7bd067d34"));
     const aad = hex(16, "00112233445566778899aabbccddeeff");
     const msg = hex(16, "001d0c231287c1182784554ca3a21908");
     const expected_ct = hex(16, "49d8b9783e911913d87094d1f63cc765");
-    const expected_tag: ztls.aead.Tag = .init(hex(16, "1e348ba07cca2cf04c618cb4d43a5b92"));
+    const expected_tag: tls.aead.Tag = .init(hex(16, "1e348ba07cca2cf04c618cb4d43a5b92"));
 
-    const aead: ztls.aead.Aead = .{ .aes_128_gcm_sha256 = key };
-    var ctx = try ztls.aead.Context.init(aead);
+    const aead: tls.aead.Aead = .{ .aes_128_gcm_sha256 = key };
+    var ctx = try tls.aead.Context.init(aead);
     defer ctx.deinit();
 
     var ct: [msg.len]u8 = undefined;
-    var tag: ztls.aead.Tag = undefined;
+    var tag: tls.aead.Tag = undefined;
     try aead.encrypt(&ctx, &ct, &tag, &msg, &aad, &nonce);
     try testing.expectEqualSlices(u8, &expected_ct, &ct);
     try testing.expectEqualSlices(u8, &expected_tag.data, &tag.data);
@@ -101,21 +101,21 @@ test "Wycheproof: AES-128-GCM AAD/tag handling tcId 2" {
 
 // Wycheproof v1 (google-wycheproof 0.9rc5) — AES-256-GCM non-empty AAD boundary vector.
 test "Wycheproof boundary: AES-256-GCM AAD/tag handling" {
-    const key: ztls.aead.Aes256GcmKey = .init(
+    const key: tls.aead.Aes256GcmKey = .init(
         hex(32, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
     );
-    const nonce: ztls.aead.Nonce = .init(hex(12, "000102030405060708090a0b"));
+    const nonce: tls.aead.Nonce = .init(hex(12, "000102030405060708090a0b"));
     const aad = hex(16, "00112233445566778899aabbccddeeff");
     const msg = hex(16, "001d0c231287c1182784554ca3a21908");
     const expected_ct = hex(16, "471fda38d7620303aac5c2c7124b6165");
-    const expected_tag: ztls.aead.Tag = .init(hex(16, "01af015e2daf8b415dc2027e8d51aa80"));
+    const expected_tag: tls.aead.Tag = .init(hex(16, "01af015e2daf8b415dc2027e8d51aa80"));
 
-    const aead: ztls.aead.Aead = .{ .aes_256_gcm_sha384 = key };
-    var ctx = try ztls.aead.Context.init(aead);
+    const aead: tls.aead.Aead = .{ .aes_256_gcm_sha384 = key };
+    var ctx = try tls.aead.Context.init(aead);
     defer ctx.deinit();
 
     var ct: [msg.len]u8 = undefined;
-    var tag: ztls.aead.Tag = undefined;
+    var tag: tls.aead.Tag = undefined;
     try aead.encrypt(&ctx, &ct, &tag, &msg, &aad, &nonce);
     try testing.expectEqualSlices(u8, &expected_ct, &ct);
     try testing.expectEqualSlices(u8, &expected_tag.data, &tag.data);
@@ -133,20 +133,20 @@ test "Wycheproof boundary: AES-256-GCM AAD/tag handling" {
 
 // Wycheproof v1 (google-wycheproof 0.9rc5) — ChaCha20-Poly1305 tcId 4.
 test "Wycheproof: ChaCha20-Poly1305 one-byte message tcId 4" {
-    const key: ztls.aead.ChaCha20Poly1305Key = .init(
+    const key: tls.aead.ChaCha20Poly1305Key = .init(
         hex(32, "cc56b680552eb75008f5484b4cb803fa5063ebd6eab91f6ab6aef4916a766273"),
     );
-    const nonce: ztls.aead.Nonce = .init(hex(12, "99e23ec48985bccdeeab60f1"));
+    const nonce: tls.aead.Nonce = .init(hex(12, "99e23ec48985bccdeeab60f1"));
     const msg = hex(1, "2a");
     const expected_ct = hex(1, "3a");
-    const expected_tag: ztls.aead.Tag = .init(hex(16, "cac27dec0968801e9f6eded69d807522"));
+    const expected_tag: tls.aead.Tag = .init(hex(16, "cac27dec0968801e9f6eded69d807522"));
 
-    const aead: ztls.aead.Aead = .{ .chacha20_poly1305_sha256 = key };
-    var ctx = try ztls.aead.Context.init(aead);
+    const aead: tls.aead.Aead = .{ .chacha20_poly1305_sha256 = key };
+    var ctx = try tls.aead.Context.init(aead);
     defer ctx.deinit();
 
     var ct: [msg.len]u8 = undefined;
-    var tag: ztls.aead.Tag = undefined;
+    var tag: tls.aead.Tag = undefined;
     try aead.encrypt(&ctx, &ct, &tag, &msg, &.{}, &nonce);
     try testing.expectEqualSlices(u8, &expected_ct, &ct);
     try testing.expectEqualSlices(u8, &expected_tag.data, &tag.data);
@@ -164,21 +164,21 @@ test "Wycheproof: ChaCha20-Poly1305 one-byte message tcId 4" {
 
 // Wycheproof v1 (google-wycheproof 0.9rc5) — ChaCha20-Poly1305 non-empty AAD boundary vector.
 test "Wycheproof boundary: ChaCha20-Poly1305 AAD handling" {
-    const key: ztls.aead.ChaCha20Poly1305Key = .init(
+    const key: tls.aead.ChaCha20Poly1305Key = .init(
         hex(32, "cc56b680552eb75008f5484b4cb803fa5063ebd6eab91f6ab6aef4916a766273"),
     );
-    const nonce: ztls.aead.Nonce = .init(hex(12, "99e23ec48985bccdeeab60f1"));
+    const nonce: tls.aead.Nonce = .init(hex(12, "99e23ec48985bccdeeab60f1"));
     const aad = hex(16, "00112233445566778899aabbccddeeff");
     const msg = hex(1, "2a");
     const expected_ct = hex(1, "3a");
-    const expected_tag: ztls.aead.Tag = .init(hex(16, "d7d9204f3da54c5438a2454128a7438e"));
+    const expected_tag: tls.aead.Tag = .init(hex(16, "d7d9204f3da54c5438a2454128a7438e"));
 
-    const aead: ztls.aead.Aead = .{ .chacha20_poly1305_sha256 = key };
-    var ctx = try ztls.aead.Context.init(aead);
+    const aead: tls.aead.Aead = .{ .chacha20_poly1305_sha256 = key };
+    var ctx = try tls.aead.Context.init(aead);
     defer ctx.deinit();
 
     var ct: [msg.len]u8 = undefined;
-    var tag: ztls.aead.Tag = undefined;
+    var tag: tls.aead.Tag = undefined;
     try aead.encrypt(&ctx, &ct, &tag, &msg, &aad, &nonce);
     try testing.expectEqualSlices(u8, &expected_ct, &ct);
     try testing.expectEqualSlices(u8, &expected_tag.data, &tag.data);

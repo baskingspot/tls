@@ -173,7 +173,7 @@ test "Header.init round-trips with parseHeader" {
     try testing.expectEqual(@as(u16, 512), h.length());
 }
 
-// RFC 8446 §5.1 — records ztls emits use TLS 1.2 legacy_record_version.
+// RFC 8446 §5.1 — records tls emits use TLS 1.2 legacy_record_version.
 test "Header.write: emits TLS 1.2 legacy_record_version" {
     var buf: [header_len]u8 = undefined;
     Header.init(.handshake, 512).write(&buf);

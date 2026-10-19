@@ -1,6 +1,6 @@
 # Examples
 
-Runnable programs that drive the ztls Sans-I/O API. Run any of them with
+Runnable programs that drive the tls Sans-I/O API. Run any of them with
 `zig build example-<name>` (the name is the file stem, e.g.
 `zig build example-tcp_loopback`).
 
@@ -8,8 +8,8 @@ Three groups, by what they're for.
 
 ## Adoption examples — start here
 
-These show ztls composed into real I/O. They run in CI, so they stay working.
-If you're wiring ztls into something, read these first.
+These show tls composed into real I/O. They run in CI, so they stay working.
+If you're wiring tls into something, read these first.
 
 - **`in_memory_handshake`** — client and server in one process, connected by
   buffer passing. No sockets. The simplest end-to-end proof.
@@ -19,7 +19,7 @@ If you're wiring ztls into something, read these first.
   non-blocking socket, handshake and exchange messages. No blocking I/O.
 - **`iouring_pingpong`** — deterministic io_uring client/server in one process;
   all socket reads/writes go through io_uring, TLS stays Sans-I/O.
-- **[`integrations/ztls-ktls`](../integrations/ztls-ktls/README.md)** — the
+- **[`integrations/tls-ktls`](../integrations/tls-ktls/README.md)** — the
   Linux kTLS package and loopback example own handoff, data-plane I/O,
   KeyUpdate, and closure.
 
@@ -47,4 +47,4 @@ server) and exit non-zero if the peer isn't there.
 - **`https_server`** — server-authenticated handshake over `std.net`, answers
   one HTTP/1.0 GET on `127.0.0.1:8443`.
 - **`iouring_client`** — io_uring HTTPS client proof; io_uring drives the socket
-  edge only, TLS records still move through ztls.
+  edge only, TLS records still move through tls.

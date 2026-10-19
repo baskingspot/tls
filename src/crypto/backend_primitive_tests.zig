@@ -1082,7 +1082,7 @@ test "backend.sign: Wycheproof ECDSA P-384 tcId 6 invalid signature" {
 // ---------------------------------------------------------------------------
 //
 // Failed libcrypto calls may push per-thread error-queue entries. Nothing in
-// ztls reads the queue, so without a guard every attacker-reachable failure
+// tls reads the queue, so without a guard every attacker-reachable failure
 // (malformed key_share, bad CertificateVerify, failed record decrypt) leaves
 // residue that persists for the life of the thread. Every outermost public
 // fallible wrapper — AEAD seal/open included — brackets its libcrypto calls
@@ -1158,7 +1158,7 @@ test "backend error-queue hygiene: malformed EC public key leaves no residue (#8
 }
 
 // #88 finding 2 — pre-existing caller entries (an embedder's own unread
-// errors) must survive a failing ztls wrapper call, and the wrapper's own
+// errors) must survive a failing tls wrapper call, and the wrapper's own
 // entries must not linger above them.
 test "backend error-queue hygiene: caller queue entries survive a failing wrapper (#88)" {
     c.ERR_clear_error();

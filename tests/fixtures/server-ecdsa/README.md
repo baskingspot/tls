@@ -1,6 +1,6 @@
 # Server ECDSA fixture
 
-P-256 self-signed server certificate for in-memory ztls server handshake tests.
+P-256 self-signed server certificate for in-memory tls server handshake tests.
 The private scalar is committed because this is a public test fixture, not a
 trust anchor or production credential.
 

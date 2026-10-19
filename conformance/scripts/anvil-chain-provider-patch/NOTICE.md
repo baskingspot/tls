@@ -1,6 +1,6 @@
 # NOTICE — vendored and modified TLS-Anvil / TLS-Test-Framework Java artifact
 
-The ztls conformance tools build installs and **locally modifies** a Java
+The tls conformance tools build installs and **locally modifies** a Java
 artifact from the pinned zig dependency `tlsanvil`
 (TLS-Anvil v1.5.3 release zip,
 https://github.com/tls-attacker/TLS-Anvil/releases/download/v1.5.3/TLS-Anvil-v1.5.3.zip,
@@ -33,7 +33,7 @@ upstream repository https://github.com/tls-attacker/TLS-Anvil).
   marshals `DateTime` as its ISO string and parses it back, preserving the
   configured instants exactly (default 2026–2028 window, non-default windows
   with milliseconds and UTC offsets, and deliberately expired/future
-  windows). No ztls-side certificate validation is relaxed; only the
+  windows). No tls-side certificate validation is relaxed; only the
   conformance tool's fixture serialization is fixed.
 
 ### `lib/tls-test-framework-1.5.3.jar` — unmodified

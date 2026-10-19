@@ -1,10 +1,10 @@
 const std = @import("std");
-const ztls = @import("ztls");
+const tls = @import("tls");
 const integration = @import("integration");
 const options = @import("consumer_options");
 
 comptime {
-    _ = ztls.RecordBuffer;
+    _ = tls.RecordBuffer;
     if (std.mem.eql(u8, options.mode, "core")) {
         _ = integration.ClientHandshake;
     } else {

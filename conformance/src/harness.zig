@@ -1,7 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 pub const Stream = Io.net.Stream;
 
@@ -9,9 +9,9 @@ const fixtures = @import("fixtures");
 const cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
 const scalar: []const u8 = &fixtures.server_ecdsa_scalar;
 
-pub const max_wire_record_len = ztls.frame.header_len +
-    ztls.frame.max_plaintext_len +
-    ztls.aead.tag_len +
+pub const max_wire_record_len = tls.frame.header_len +
+    tls.frame.max_plaintext_len +
+    tls.aead.tag_len +
     1;
 
 pub fn testCertDer() []const u8 {
@@ -22,11 +22,11 @@ pub fn testScalar() []const u8 {
     return scalar;
 }
 
-pub fn testSigner() !ztls.signature.PrivateKey {
+pub fn testSigner() !tls.signature.PrivateKey {
     return .fromP256Scalar(scalar[0..32]);
 }
 
-pub fn randomBytes(io: Io) ztls.Random {
+pub fn randomBytes(io: Io) tls.Random {
     var bytes: [32]u8 = undefined;
     io.random(&bytes);
     return .init(bytes);
@@ -53,39 +53,39 @@ pub fn readRecord(io: Io, stream: Stream, buf: []u8) ![]u8 {
     const got_header = try readAtLeast(
         io,
         stream,
-        buf[0..ztls.frame.header_len],
-        ztls.frame.header_len,
+        buf[0..tls.frame.header_len],
+        tls.frame.header_len,
     );
     if (got_header == 0) return error.EndOfStream;
-    if (got_header != ztls.frame.header_len) return error.UnexpectedEof;
-    const hdr = try ztls.frame.parseHeader(buf[0..ztls.frame.header_len]);
+    if (got_header != tls.frame.header_len) return error.UnexpectedEof;
+    const hdr = try tls.frame.parseHeader(buf[0..tls.frame.header_len]);
     const len = hdr.length();
-    if (len > ztls.frame.max_ciphertext_len) return error.RecordTooLarge;
-    const got_payload = try readAtLeast(io, stream, buf[ztls.frame.header_len..][0..len], len);
+    if (len > tls.frame.max_ciphertext_len) return error.RecordTooLarge;
+    const got_payload = try readAtLeast(io, stream, buf[tls.frame.header_len..][0..len], len);
     if (got_payload != len) return error.UnexpectedEof;
-    return buf[0 .. ztls.frame.header_len + len];
+    return buf[0 .. tls.frame.header_len + len];
 }
 
 pub fn sendBestEffortCloseNotify(
     io: Io,
-    hs: *ztls.ServerHandshake,
+    hs: *tls.ServerHandshake,
     stream: Stream,
     out: []u8,
 ) void {
     const alert_record = hs.sendAlert(.close_notify, out) catch return;
-    ztls.io.writeAll(io, stream, alert_record) catch return;
+    tls.io.writeAll(io, stream, alert_record) catch return;
 }
 
 pub fn sendBestEffortAlert(
     io: Io,
-    hs: *ztls.ServerHandshake,
+    hs: *tls.ServerHandshake,
     stream: Stream,
     err: anyerror,
     out: []u8,
 ) void {
-    const description = ztls.alert.alertForError(err);
+    const description = tls.alert.alertForError(err);
     const alert_record = hs.sendAlert(description, out) catch return;
-    ztls.io.writeAll(io, stream, alert_record) catch return;
+    tls.io.writeAll(io, stream, alert_record) catch return;
 }
 
 pub fn connectWithRetry(io: Io, port: u16) !Stream {

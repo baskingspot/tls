@@ -1,6 +1,6 @@
 # nix
 
-DevShell helpers for the ztls flake.
+DevShell helpers for the tls flake.
 
 ## Layout
 

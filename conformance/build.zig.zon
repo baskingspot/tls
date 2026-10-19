@@ -1,10 +1,10 @@
 .{
-    .name = .ztls_conformance,
+    .name = .tls_conformance,
     .version = "0.0.0",
-    .fingerprint = 0x27259297da489a11,
+    .fingerprint = 0x3798d310a047b0e3,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .ztls = .{
+        .tls = .{
             .path = "../",
         },
         // Development-only: comptime txtar fixtures. Lazy so consumers of this

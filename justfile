@@ -15,7 +15,7 @@ default:
 example EXAMPLE *ARGS:
     zig build example-{{ EXAMPLE }} -- {{ ARGS }}
 
-# ztls is Zig 0.16-only. This is the single CI lane.
+# tls is Zig 0.16-only. This is the single CI lane.
 [doc("Run all CI gates")]
 [group("check")]
 ci: test check-backend-aws-lc check-backends check-fips-builds lint consumer-gate-selftest examples-ci capi-ci distribution-ci integrations-ci

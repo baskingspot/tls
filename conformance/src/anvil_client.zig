@@ -13,7 +13,7 @@ const print = std.debug.print;
 const ascii = std.ascii;
 const builtin = @import("builtin");
 
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 /// Connect to a host:port with retry. TLS-Anvil starts the trigger script
 /// (the client) before opening its server socket, so the first connect attempt
@@ -43,17 +43,17 @@ pub fn main(init: std.process.Init) !void {
         break :blk try std.fmt.parseInt(u16, port_str, 10);
     };
 
-    const insecure_no_host_name = if (env_map.get("ZTLS_INSECURE_NO_HOST_NAME")) |value|
+    const insecure_no_host_name = if (env_map.get("TLS_INSECURE_NO_HOST_NAME")) |value|
         mem.eql(u8, value, "1") or ascii.eqlIgnoreCase(value, "true")
     else
         false;
     const cert_host_name: ?[]const u8 = if (insecure_no_host_name)
         null
-    else if (env_map.get("ZTLS_HOST_NAME")) |name|
+    else if (env_map.get("TLS_HOST_NAME")) |name|
         if (name.len == 0) null else name
     else
         host;
-    const insecure_no_chain_anchor = if (env_map.get("ZTLS_INSECURE_NO_CHAIN_ANCHOR")) |value|
+    const insecure_no_chain_anchor = if (env_map.get("TLS_INSECURE_NO_CHAIN_ANCHOR")) |value|
         mem.eql(u8, value, "1") or ascii.eqlIgnoreCase(value, "true")
     else
         false;
@@ -62,7 +62,7 @@ pub fn main(init: std.process.Init) !void {
     // record bytes holding the server Certificate message. Scoped to
     // connection-establishment validity failures only; never enabled by
     // default. Never captures application plaintext or keys.
-    const diagnostics = if (env_map.get("ZTLS_ANVIL_DIAGNOSTICS")) |value|
+    const diagnostics = if (env_map.get("TLS_ANVIL_DIAGNOSTICS")) |value|
         mem.eql(u8, value, "1") or ascii.eqlIgnoreCase(value, "true")
     else
         false;
@@ -72,11 +72,11 @@ pub fn main(init: std.process.Init) !void {
 
     if (diagnostics) logLocalPort(stream);
 
-    const kp: ztls.x25519.KeyPair = .generate();
-    var random: ztls.Random = .empty;
+    const kp: tls.x25519.KeyPair = .generate();
+    var random: tls.Random = .empty;
     io.random(&random.data);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(kp),
         .host_name = cert_host_name,
         .now_sec = Io.Timestamp.now(io, .real).toSeconds(),
@@ -87,17 +87,17 @@ pub fn main(init: std.process.Init) !void {
     if (insecure_no_chain_anchor) hs.policy.leaf_usage = .none;
     defer hs.deinit();
 
-    var out: [ztls.ClientHandshake.max_out_len]u8 = undefined;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var out: [tls.ClientHandshake.max_out_len]u8 = undefined;
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
     // ClientHello.
-    try ztls.io.writeAll(io, stream, try hs.start(&out));
+    try tls.io.writeAll(io, stream, try hs.start(&out));
     hs.completeWrite();
 
     // Drive handshake.
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(io, stream, &rb);
+        const n = try tls.io.fill(io, stream, &rb);
         if (n == 0) return error.ServerClosed;
         while (true) {
             const record = (rb.next() catch |err| {
@@ -112,7 +112,7 @@ pub fn main(init: std.process.Init) !void {
             };
             switch (ev) {
                 .write => |w| {
-                    try ztls.io.writeAll(io, stream, w);
+                    try tls.io.writeAll(io, stream, w);
                     hs.completeWrite();
                 },
                 .application_data,
@@ -127,7 +127,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Echo application data until close_notify.
     while (true) {
-        const n = try ztls.io.fill(io, stream, &rb);
+        const n = try tls.io.fill(io, stream, &rb);
         // Bare transport EOF is truncation or a transport close, not an
         // orderly TLS close. Do not send close_notify here — only the
         // `.closed` branch below (peer sent close_notify) sends a reciprocal
@@ -143,11 +143,11 @@ pub fn main(init: std.process.Init) !void {
             switch (ev) {
                 .application_data => |data| {
                     const rec = try hs.sendApplicationData(data, &out);
-                    try ztls.io.writeAll(io, stream, rec);
+                    try tls.io.writeAll(io, stream, rec);
                     hs.completeWrite();
                 },
                 .write => |w| {
-                    try ztls.io.writeAll(io, stream, w);
+                    try tls.io.writeAll(io, stream, w);
                     hs.completeWrite();
                 },
                 .key_update => |ku| {
@@ -155,7 +155,7 @@ pub fn main(init: std.process.Init) !void {
                     // keys. Write the response (if any) and acknowledge it; the
                     // anvil echo loop keeps running under the new epoch.
                     if (ku.response) |w| {
-                        try ztls.io.writeAll(io, stream, w);
+                        try tls.io.writeAll(io, stream, w);
                         hs.completeWrite();
                     }
                 },
@@ -163,7 +163,7 @@ pub fn main(init: std.process.Init) !void {
                 .closed => {
                     // RFC 8446 §6.1 — close_notify is bidirectional on orderly shutdown.
                     const rec = try hs.sendAlert(.close_notify, &out);
-                    try ztls.io.writeAll(io, stream, rec);
+                    try tls.io.writeAll(io, stream, rec);
                     hs.completeWrite();
                     return;
                 },
@@ -176,7 +176,7 @@ pub fn main(init: std.process.Init) !void {
 fn sendAlertAndReturnError(
     io: Io,
     stream: Io.net.Stream,
-    hs: *ztls.ClientHandshake,
+    hs: *tls.ClientHandshake,
     err: anyerror,
     out: []u8,
 ) anyerror {
@@ -184,8 +184,8 @@ fn sendAlertAndReturnError(
     // would be wrong (and would emit a spurious internal_error). Just
     // propagate the original error. RFC 8446 §6.
     if (err == error.PeerAlert) return err;
-    const rec = hs.sendAlert(ztls.alert.alertForError(err), out) catch return err;
-    ztls.io.writeAll(io, stream, rec) catch return err;
+    const rec = hs.sendAlert(tls.alert.alertForError(err), out) catch return err;
+    tls.io.writeAll(io, stream, rec) catch return err;
     hs.completeWrite();
     return err;
 }
@@ -232,7 +232,7 @@ fn logLocalPort(stream: Io.net.Stream) void {
 /// Only CertificateExpired/CertificateNotYetValid — no other failure class.
 fn logValidityProbe(
     io: Io,
-    hs: *const ztls.ClientHandshake,
+    hs: *const tls.ClientHandshake,
     err: anyerror,
     record: []const u8,
 ) void {

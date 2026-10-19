@@ -1,7 +1,7 @@
 //! rustls in-memory benchmark.
 //!
 //! Emits Go-testing-style benchmark output so it flows through the same
-//! `normalize_go` path as the ztls/EVP/libssl benchmarks:
+//! `normalize_go` path as the tls/EVP/libssl benchmarks:
 //!
 //!     Benchmark<Name>/impl=rustls/suite=<suite>/size=<size>\t<iters>\t<ns/op>[\t<MB/s>]
 //!
@@ -675,7 +675,7 @@ fn main() {
             });
         }
 
-        // Split handshake rows. Not comparable to the ztls/libssl Handshake
+        // Split handshake rows. Not comparable to the tls/libssl Handshake
         // row (different measurement boundary) and excluded from the
         // comparable benchstat set, but share the same calibration/sampling.
         // Calibrate the split bundle as a unit: one iteration runs all five

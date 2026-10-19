@@ -10,9 +10,9 @@ pub fn addSteps(b: *Build, opts: struct {
     /// one line per test to stderr instead of Zig's TUI. Null when the lazy
     /// dependency has not been fetched (e.g. when building non-test steps).
     testingx: ?*Build.Dependency = null,
-    /// The ztls library module, for standalone check executables that must
+    /// The tls library module, for standalone check executables that must
     /// control the process environment before any libcrypto call.
-    ztls_mod: *Build.Module,
+    tls_mod: *Build.Module,
     /// Fixtures module — the #114 non-interaction check loads the encrypted
     /// PEM fixtures directly.
     fixtures_mod: *Build.Module,
@@ -61,7 +61,7 @@ pub fn addSteps(b: *Build, opts: struct {
         .target = opts.target,
         .optimize = opts.optimize,
     });
-    errq_mod.addImport("ztls", opts.ztls_mod);
+    errq_mod.addImport("tls", opts.tls_mod);
     errq_mod.addImport("fixtures", opts.fixtures_mod);
     errq_mod.addImport("openssl_c", opts.openssl_c);
     errq_mod.link_libc = true;
@@ -89,7 +89,7 @@ pub fn addSteps(b: *Build, opts: struct {
         .target = opts.target,
         .optimize = opts.optimize,
     });
-    pem_mod.addImport("ztls", opts.ztls_mod);
+    pem_mod.addImport("tls", opts.tls_mod);
     pem_mod.addImport("fixtures", opts.fixtures_mod);
     pem_mod.addImport("pty_c", opts.pty_c);
     pem_mod.link_libc = true;

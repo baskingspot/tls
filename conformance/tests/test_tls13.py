@@ -108,8 +108,8 @@ def close_notify(node):
     send.next_sibling = ExpectClose()
 
 
-def raw_connect(ztls_server):
-    sock = socket.create_connection((ztls_server["host"], ztls_server["port"]), timeout=2)
+def raw_connect(tls_server):
+    sock = socket.create_connection((tls_server["host"], tls_server["port"]), timeout=2)
     sock.settimeout(1)
     return sock
 
@@ -142,24 +142,24 @@ def minimal_client_hello_with_ext(ext_type: int, ext_body: bytes) -> bytes:
     return record(ContentType.handshake, handshake)
 
 
-def run_echo_conversation(ztls_server, ciphers):
-    conversation = Connect(ztls_server["host"], ztls_server["port"])
+def run_echo_conversation(tls_server, ciphers):
+    conversation = Connect(tls_server["host"], tls_server["port"])
     node = conversation.add_child(ClientHelloGenerator(ciphers, extensions=tls13_extensions()))
     node = tls13_handshake(node)
-    node = node.add_child(ApplicationDataGenerator(bytearray(b"ztls tlsfuzzer smoke\n")))
+    node = node.add_child(ApplicationDataGenerator(bytearray(b"tls tlsfuzzer smoke\n")))
     node = node.add_child(ExpectApplicationData())
     close_notify(node)
     Runner(conversation).run()
 
 
 @pytest.mark.lockstep
-def test_tls13_handshake_and_application_echo(ztls_server):
-    run_echo_conversation(ztls_server, CIPHERS)
+def test_tls13_handshake_and_application_echo(tls_server):
+    run_echo_conversation(tls_server, CIPHERS)
 
 
-def test_tls13_aes256_gcm_echo(ztls_server):
+def test_tls13_aes256_gcm_echo(tls_server):
     run_echo_conversation(
-        ztls_server,
+        tls_server,
         [
             CipherSuite.TLS_AES_256_GCM_SHA384,
             CipherSuite.TLS_EMPTY_RENEGOTIATION_INFO_SCSV,
@@ -167,9 +167,9 @@ def test_tls13_aes256_gcm_echo(ztls_server):
     )
 
 
-def test_tls13_chacha20_poly1305_echo(ztls_server):
+def test_tls13_chacha20_poly1305_echo(tls_server):
     run_echo_conversation(
-        ztls_server,
+        tls_server,
         [
             CipherSuite.TLS_CHACHA20_POLY1305_SHA256,
             CipherSuite.TLS_EMPTY_RENEGOTIATION_INFO_SCSV,
@@ -178,8 +178,8 @@ def test_tls13_chacha20_poly1305_echo(ztls_server):
 
 
 @pytest.mark.lockstep
-def test_tls13_keyupdate_update_requested(ztls_server):
-    conversation = Connect(ztls_server["host"], ztls_server["port"])
+def test_tls13_keyupdate_update_requested(tls_server):
+    conversation = Connect(tls_server["host"], tls_server["port"])
     node = conversation.add_child(ClientHelloGenerator(CIPHERS, extensions=tls13_extensions()))
     node = tls13_handshake(node)
     node = node.add_child(KeyUpdateGenerator(message_type=KeyUpdateMessageType.update_requested))
@@ -190,8 +190,8 @@ def test_tls13_keyupdate_update_requested(ztls_server):
     Runner(conversation).run()
 
 
-def test_tls13_corrupted_app_data_record_is_rejected(ztls_server):
-    conversation = Connect(ztls_server["host"], ztls_server["port"])
+def test_tls13_corrupted_app_data_record_is_rejected(tls_server):
+    conversation = Connect(tls_server["host"], tls_server["port"])
     node = conversation.add_child(ClientHelloGenerator(CIPHERS, extensions=tls13_extensions()))
     node = tls13_handshake(node)
     node = node.add_child(
@@ -201,8 +201,8 @@ def test_tls13_corrupted_app_data_record_is_rejected(ztls_server):
     Runner(conversation).run()
 
 
-def test_tls13_rejects_truncated_keyupdate(ztls_server):
-    conversation = Connect(ztls_server["host"], ztls_server["port"])
+def test_tls13_rejects_truncated_keyupdate(tls_server):
+    conversation = Connect(tls_server["host"], tls_server["port"])
     node = conversation.add_child(ClientHelloGenerator(CIPHERS, extensions=tls13_extensions()))
     node = tls13_handshake(node)
     node = node.add_child(
@@ -212,8 +212,8 @@ def test_tls13_rejects_truncated_keyupdate(ztls_server):
     Runner(conversation).run()
 
 
-def test_tls13_rejects_invalid_keyupdate_request(ztls_server):
-    conversation = Connect(ztls_server["host"], ztls_server["port"])
+def test_tls13_rejects_invalid_keyupdate_request(tls_server):
+    conversation = Connect(tls_server["host"], tls_server["port"])
     node = conversation.add_child(ClientHelloGenerator(CIPHERS, extensions=tls13_extensions()))
     node = tls13_handshake(node)
     node = node.add_child(
@@ -223,12 +223,12 @@ def test_tls13_rejects_invalid_keyupdate_request(ztls_server):
     Runner(conversation).run()
 
 
-def test_tls13_oversized_record_is_rejected(ztls_server):
+def test_tls13_oversized_record_is_rejected(tls_server):
     oversized_len = 0x4101
     oversized_record = bytearray(bytes([ContentType.application_data]) + b"\x03\x03")
     oversized_record.extend(oversized_len.to_bytes(2, "big"))
     oversized_record.extend(b"\x00" * 16)
-    conversation = Connect(ztls_server["host"], ztls_server["port"])
+    conversation = Connect(tls_server["host"], tls_server["port"])
     node = conversation.add_child(ClientHelloGenerator(CIPHERS, extensions=tls13_extensions()))
     node = tls13_handshake(node)
     node = node.add_child(RawSocketWriteGenerator(data=oversized_record))
@@ -240,8 +240,8 @@ def test_tls13_oversized_record_is_rejected(ztls_server):
     Runner(conversation).run()
 
 
-def test_tls13_close_notify_before_handshake(ztls_server):
-    sock = raw_connect(ztls_server)
+def test_tls13_close_notify_before_handshake(tls_server):
+    sock = raw_connect(tls_server)
     try:
         sock.sendall(record(ContentType.alert, b"\x01\x00"))
         expect_closed_or_alert(sock)
@@ -249,8 +249,8 @@ def test_tls13_close_notify_before_handshake(ztls_server):
         sock.close()
 
 
-def test_tls13_rejects_garbage_pre_handshake(ztls_server):
-    sock = raw_connect(ztls_server)
+def test_tls13_rejects_garbage_pre_handshake(tls_server):
+    sock = raw_connect(tls_server)
     try:
         sock.sendall(b"this is not a TLS record\r\n")
         expect_closed_or_alert(sock)
@@ -258,8 +258,8 @@ def test_tls13_rejects_garbage_pre_handshake(ztls_server):
         sock.close()
 
 
-def test_tls13_rejects_finished_before_handshake(ztls_server):
-    sock = raw_connect(ztls_server)
+def test_tls13_rejects_finished_before_handshake(tls_server):
+    sock = raw_connect(tls_server)
     try:
         sock.sendall(record(ContentType.handshake, b"\x14\x00\x00\x20" + b"\x00" * 32))
         expect_closed_or_alert(sock)
@@ -267,8 +267,8 @@ def test_tls13_rejects_finished_before_handshake(ztls_server):
         sock.close()
 
 
-def test_tls13_rejects_truncated_client_hello_record(ztls_server):
-    sock = raw_connect(ztls_server)
+def test_tls13_rejects_truncated_client_hello_record(tls_server):
+    sock = raw_connect(tls_server)
     try:
         sock.sendall(b"\x16\x03\x03\x00\xc8")
         sock.close()
@@ -276,8 +276,8 @@ def test_tls13_rejects_truncated_client_hello_record(ztls_server):
         sock.close()
 
 
-def test_tls13_rejects_empty_client_hello_record(ztls_server):
-    sock = raw_connect(ztls_server)
+def test_tls13_rejects_empty_client_hello_record(tls_server):
+    sock = raw_connect(tls_server)
     try:
         sock.sendall(record(ContentType.handshake, b""))
         expect_closed_or_alert(sock)
@@ -285,8 +285,8 @@ def test_tls13_rejects_empty_client_hello_record(ztls_server):
         sock.close()
 
 
-def test_tls13_rejects_truncated_key_share_extension(ztls_server):
-    sock = raw_connect(ztls_server)
+def test_tls13_rejects_truncated_key_share_extension(tls_server):
+    sock = raw_connect(tls_server)
     try:
         sock.sendall(minimal_client_hello_with_ext(ExtensionType.key_share, b"\x00\x04\x00\x1d"))
         expect_closed_or_alert(sock)
@@ -295,8 +295,8 @@ def test_tls13_rejects_truncated_key_share_extension(ztls_server):
 
 
 @pytest.mark.lockstep
-def test_tls13_rejects_unshared_alpn(ztls_server):
-    conversation = Connect(ztls_server["host"], ztls_server["port"])
+def test_tls13_rejects_unshared_alpn(tls_server):
+    conversation = Connect(tls_server["host"], tls_server["port"])
     node = conversation.add_child(
         ClientHelloGenerator(
             CIPHERS,
@@ -308,8 +308,8 @@ def test_tls13_rejects_unshared_alpn(ztls_server):
     Runner(conversation).run()
 
 
-def test_tls13_rejects_unsupported_cipher_suite(ztls_server):
-    conversation = Connect(ztls_server["host"], ztls_server["port"])
+def test_tls13_rejects_unsupported_cipher_suite(tls_server):
+    conversation = Connect(tls_server["host"], tls_server["port"])
     node = conversation.add_child(
         ClientHelloGenerator(
             [

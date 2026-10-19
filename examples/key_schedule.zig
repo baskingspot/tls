@@ -11,9 +11,9 @@
 const std = @import("std");
 const Io = std.Io;
 
-const ztls = @import("ztls");
-const hkdf = ztls.hkdf.HkdfSha256;
-const RecordLayer = ztls.RecordLayer;
+const tls = @import("tls");
+const hkdf = tls.hkdf.HkdfSha256;
+const RecordLayer = tls.RecordLayer;
 
 pub fn main(init: std.process.Init) !void {
     var stdout_buf: [4096]u8 = undefined;
@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("client_write_iv:  {x}\n", .{client_write_iv.data});
 
     // Wire up RecordLayers with derived keys.
-    const server_aead: ztls.aead.Aead = .{ .aes_128_gcm_sha256 = server_write_key };
+    const server_aead: tls.aead.Aead = .{ .aes_128_gcm_sha256 = server_write_key };
     var server_tx: RecordLayer = try .init(server_aead, server_write_iv);
     defer server_tx.deinit();
     var client_rx: RecordLayer = try .init(server_aead, server_write_iv);

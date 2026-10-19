@@ -55,7 +55,7 @@ pub const capabilities = struct {
 /// FIPS 140-3 narrowed capability table. `-Dcrypto-fips=true` selects this
 /// table when OpenSSL headers are active. The caller is responsible for ensuring
 /// the linked libcrypto is actually in FIPS mode (e.g. FIPS provider loaded).
-/// No runtime provider probing is performed by ztls.
+/// No runtime provider probing is performed by tls.
 pub const capabilities_fips = struct {
     // FIPS 140-3 does not approve ChaCha20-Poly1305 for TLS 1.3.
     pub const cipher_suites: []const CipherSuite = &.{
@@ -100,7 +100,7 @@ pub const Error = error{ LibcryptoFailed, IdentityElement };
 // ---------------------------------------------------------------------------
 //
 // Failed libcrypto calls may push per-thread error-queue entries, and
-// nothing in ztls ever reads the queue: without a guard, every
+// nothing in tls ever reads the queue: without a guard, every
 // attacker-reachable failure (malformed key_share, bad CertificateVerify,
 // failed record decrypt) leaves residue for the life of the thread. Every
 // outermost public fallible wrapper — AEAD seal/open included — brackets
@@ -116,7 +116,7 @@ pub const Error = error{ LibcryptoFailed, IdentityElement };
 // - DER/PEM key loads (privateKeyFromDer/Pem) cannot preserve pre-existing
 //   caller entries on the BoringSSL-family backends: their d2i key parsers
 //   call ERR_clear_error between parse fallbacks, destroying the caller's
-//   entries and ztls's mark before errqExit runs. The wrapper still leaves
+//   entries and tls's mark before errqExit runs. The wrapper still leaves
 //   no residue of its own there; pinned by a lane-dependent test.
 // - The X509 leaf parse inside privateKeyPairsWithCertificate (#113) has
 //   the same caveat class by a different mechanism: the family's d2i_X509
@@ -158,7 +158,7 @@ pub inline fn errqExit() void {
     _ = c.ERR_pop_to_mark();
 }
 
-/// Provider-backed pure ML-KEM types. TLS hybrid composition remains in ztls
+/// Provider-backed pure ML-KEM types. TLS hybrid composition remains in tls
 /// so the three RFC 10024 groups have identical wire behavior across backends.
 pub const KemKey = *pkey;
 pub const KemPeerKey = *pkey;
@@ -188,7 +188,7 @@ pub fn kemPublic(key: KemKey, out: []u8) Error![]u8 {
     return out[0..len];
 }
 
-/// Load a peer's raw ML-KEM encapsulation key after ztls validation.
+/// Load a peer's raw ML-KEM encapsulation key after tls validation.
 pub fn kemLoadPublic(
     parameter_set: ParameterSet,
     public_key: []const u8,
@@ -723,10 +723,10 @@ pub const SignatureError = error{
 
 /// signatureSign-only extension: verification and key loading can never
 /// fail this way, so the deterministic-nonce error stays out of their
-/// error sets (mattrobenolt/ztls#82).
+/// error sets (mattrobenolt/tls#82).
 pub const SignError = SignatureError || error{DeterministicNonceUnsupported};
 
-/// ECDSA nonce strategy for the sign seam (mattrobenolt/ztls#82):
+/// ECDSA nonce strategy for the sign seam (mattrobenolt/tls#82):
 /// `.random` (default) or `.deterministic` RFC 6979 deterministic-k.
 pub const NonceMode = enum {
     random,
@@ -823,7 +823,7 @@ pub const KeySchemeError = error{UnsupportedKeyScheme};
 
 /// Infer the CertificateVerify SignatureScheme from a loaded private key
 /// (#112). Uses the exact key type (`EVP_PKEY_id`), not the base type. RFC
-/// 8446 §4.2.3 assigns rsassaPss-OID keys to rsa_pss_pss_*, which ztls does
+/// 8446 §4.2.3 assigns rsassaPss-OID keys to rsa_pss_pss_*, which tls does
 /// not implement or advertise; preserving EVP_PKEY_RSA_PSS therefore rejects
 /// those keys instead of mislabeling them rsa_pss_rsae_*. Ed25519 and P-521
 /// map to their schemes here; whether the active backend can sign them is a
@@ -925,7 +925,7 @@ pub fn rsaPublicKeyFromDer(pub_key: []const u8) SignatureError!*pkey {
     return key;
 }
 
-// RFC 6979 deterministic ECDSA nonces (mattrobenolt/ztls#82). The comptime
+// RFC 6979 deterministic ECDSA nonces (mattrobenolt/tls#82). The comptime
 // gate prunes the provider-parameter path when the headers lack the macro;
 // the per-key settable-params probe stays because compiled support does not
 // bind the provider, and a silently random nonce is the failure this option

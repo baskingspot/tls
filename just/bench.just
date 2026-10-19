@@ -1,9 +1,9 @@
-[doc("Run ztls benchmarks")]
+[doc("Run tls benchmarks")]
 [group("bench")]
 bench *ARGS:
     zig build bench -- {{ ARGS }}
 
-[doc("Capture ztls/EVP/libssl/rustls benchmark comparison outputs")]
+[doc("Capture tls/EVP/libssl/rustls benchmark comparison outputs")]
 [group("bench")]
 bench-capture *ARGS:
     @scripts/bench-capture.sh {{ ARGS }}
@@ -43,20 +43,20 @@ bench-analyze CAPTURE="":
 bench-bin:
     zig build bench-bin
 
-[doc("Disassemble the ztls benchmark binary")]
+[doc("Disassemble the tls benchmark binary")]
 [group("bench")]
 bench-disasm: bench-bin
     objdump -d zig-out/bin/benchmark > zig-out/benchmark.asm
     @echo zig-out/benchmark.asm
 
-[doc("Disassemble libcrypto linked by the ztls benchmark binary")]
+[doc("Disassemble libcrypto linked by the tls benchmark binary")]
 [group("bench")]
 [linux]
 bench-disasm-libcrypto: bench-bin
     objdump -d $(ldd zig-out/bin/benchmark | awk '/libcrypto/{print $3; exit}') > zig-out/libcrypto.asm
     @echo zig-out/libcrypto.asm
 
-[doc("Record a perf profile for the ztls benchmark binary")]
+[doc("Record a perf profile for the tls benchmark binary")]
 [group("bench")]
 [linux]
 bench-perf *ARGS: bench-bin

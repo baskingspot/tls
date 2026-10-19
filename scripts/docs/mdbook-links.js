@@ -10,7 +10,7 @@
 
 const fs = require("node:fs");
 
-const REPO = "https://github.com/mattrobenolt/ztls";
+const REPO = "https://github.com/baskingspot/tls";
 
 // absolute GitHub URL -> in-book chapter
 const IN_BOOK = {
@@ -51,6 +51,6 @@ try {
   walk(book.items ?? book.sections ?? []);
   process.stdout.write(JSON.stringify(book));
 } catch (e) {
-  process.stderr.write(`ztls-links: ${e && e.stack ? e.stack : e}\n`);
+  process.stderr.write(`tls-links: ${e && e.stack ? e.stack : e}\n`);
   process.exit(1);
 }

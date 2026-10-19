@@ -16,7 +16,7 @@ pub const active_backend: Backend = backend.active;
 /// True for a compile-time FIPS capability identity.
 pub const is_fips: bool = backend.is_fips;
 
-/// RFC 10024 groups that ztls implements. Backend support remains selectable.
+/// RFC 10024 groups that tls implements. Backend support remains selectable.
 pub const hybrid_groups = [_]NamedGroup{
     .x25519_mlkem768,
     .secp256r1_mlkem768,

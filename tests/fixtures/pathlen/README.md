@@ -1,7 +1,7 @@
 # X.509 pathLenConstraint fixtures (#118)
 
 P-256 certificate families exercising RFC 5280 §4.2.1.9 / §6.1 path-length
-enforcement during ztls chain verification (#118). Four roots live here as
+enforcement during tls chain verification (#118). Four roots live here as
 loose PEM (loaded into test bundles via `addCertsFromFilePath`); every
 presented-chain certificate is a `pathlen_*` DER section in `../fixtures.txtar`
 with an extractor in `../fixtures.zig`.
@@ -49,53 +49,53 @@ The parent repeated all 13 cases below on 2026-09-19 with OpenSSL 3.6.4 on Linux
 The client-auth acceptance and rejection cases also matched.
 The commands used `-attime 1800000000`, which matches the Zig tests.
 Every reject is `error 25 at N depth lookup: path length constraint exceeded`,
-attributed to the constraining certificate. The ztls tests in
+attributed to the constraining certificate. The tls tests in
 `src/certificate.zig` cite these verdicts per case.
 
 ```console
 $ openssl verify -CAfile root.crt -untrusted <(cat below_zero_inter.crt zero_inter.crt) below_zero_leaf.crt
-CN=ztls pathlen zero
+CN=tls pathlen zero
 error 25 at 2 depth lookup: path length constraint exceeded      (B: zero_inter, plc:0)
 $ openssl verify -CAfile root.crt -untrusted zero_inter.crt ca_target_leaf.crt
 ca_target_leaf.crt: OK                                           (A)
 $ openssl verify -CAfile root.crt -untrusted <(cat one_inter.crt one_mid_inter.crt one_deep_inter.crt) one_deep_leaf.crt
-CN=ztls pathlen one
+CN=tls pathlen one
 error 25 at 3 depth lookup: path length constraint exceeded      (D: one_inter, plc:1)
 $ openssl verify -CAfile root.crt -untrusted <(cat one_inter.crt one_mid_inter.crt) one_leaf.crt
 one_leaf.crt: OK                                                 (C)
 $ openssl verify -CAfile root.crt -untrusted <(cat absent_a_inter.crt absent_b_inter.crt) absent_leaf.crt
 absent_leaf.crt: OK                                              (E)
 $ openssl verify -CAfile root.crt -untrusted <(cat multi_outer_inter.crt multi_inner_inter.crt multi_deep_inter.crt) multi_deep_leaf.crt
-CN=ztls pathlen multi inner
+CN=tls pathlen multi inner
 error 25 at 2 depth lookup: path length constraint exceeded      (Q2: multi_inner, plc:0)
 $ openssl verify -CAfile root.crt -untrusted <(cat multi_outer_inter.crt multi_inner_inter.crt) multi_leaf.crt
 multi_leaf.crt: OK                                               (Q1)
 $ openssl verify -CAfile root.crt -untrusted <(cat zero_inter.crt self_issued_inter.crt) self_issued_leaf.crt
 self_issued_leaf.crt: OK                                         (Q4a: self-issued not counted)
 $ openssl verify -CAfile root.crt -untrusted <(cat zero_inter.crt self_issued_inter.crt below_si_inter.crt) below_si_leaf.crt
-CN=ztls pathlen zero
+CN=tls pathlen zero
 error 25 at 3 depth lookup: path length constraint exceeded      (Q4b)
 $ openssl verify -CAfile root_plc1.crt -untrusted <(cat anchor_mid_inter.crt anchor_deep_inter.crt) anchor_deep_leaf.crt
-CN=ztls pathlen anchor root
+CN=tls pathlen anchor root
 error 25 at 3 depth lookup: path length constraint exceeded      (AN1: the trust anchor itself)
 $ openssl verify -CAfile root_plc1.crt -untrusted anchor_mid_inter.crt anchor_leaf.crt
 anchor_leaf.crt: OK                                              (AN2)
 $ openssl verify -CAfile crosssign_root.crt -untrusted <(cat cross_root_cross.crt cross_mid_inter.crt cross_deep_inter.crt) cross_leaf.crt
 cross_leaf.crt: OK                                               (CS1)
 $ openssl verify -CAfile crosssign_untrusted.crt -untrusted <(cat cross_root_cross.crt cross_mid_inter.crt cross_deep_inter.crt) cross_leaf.crt
-CN=ztls pathlen crosssign root
+CN=tls pathlen crosssign root
 error 25 at 3 depth lookup: path length constraint exceeded      (CS2: cross_root_cross in path)
 ```
 
 ## Trust-anchor semantics
 
 The trust anchor is not part of the prospective path under RFC 5280 §6.1.1.
-ztls applies its `pathLenConstraint` as local policy under §6.2, not as a requirement of the base algorithm.
+tls applies its `pathLenConstraint` as local policy under §6.2, not as a requirement of the base algorithm.
 RFC 5280 §6.2 marks applying an anchor's path-length constraint as a permitted
 local policy ("An implementation MAY ... apply a path length constraint to a
 specific trust anchor during the initialization phase"). OpenSSL 3.6.4 does
 apply it (AN1 attributes the failure to the anchor certificate at the top of
-its chain), and ztls matches that behavior for bundle anchors: the anchor's
+its chain), and tls matches that behavior for bundle anchors: the anchor's
 `pathLenConstraint` seeds the initial `max_path_length` (§6.1.2(k)). The
 anchor-first walk also means a presented self-signed root that matches the
 bundle anchor is skipped by the §6.1.4(l) budget check exactly because it is
@@ -151,16 +151,16 @@ mkleaf() { # name issuer_crt issuer_key san eku ca
     -CAcreateserial -out "$1.crt" -days 1000 -sha256 -extfile "$1.ext"
 }
 
-mkroot root "ztls pathlen root" ""
-mkroot root_plc1 "ztls pathlen anchor root" "pathlen:1"
-mkroot crosssign_root "ztls pathlen crosssign root" ""
-mkroot crosssign_untrusted "ztls pathlen crosssign untrusted" ""
+mkroot root "tls pathlen root" ""
+mkroot root_plc1 "tls pathlen anchor root" "pathlen:1"
+mkroot crosssign_root "tls pathlen crosssign root" ""
+mkroot crosssign_untrusted "tls pathlen crosssign untrusted" ""
 
-mkinter zero_inter root.crt root.key "pathlen:0" "ztls pathlen zero"
-mkinter below_zero_inter zero_inter.crt zero_inter.key "" "ztls pathlen below zero"
+mkinter zero_inter root.crt root.key "pathlen:0" "tls pathlen zero"
+mkinter below_zero_inter zero_inter.crt zero_inter.key "" "tls pathlen below zero"
 # self-issued: same subject DN as its issuer
-mkinter self_issued_inter zero_inter.crt zero_inter.key "" "ztls pathlen zero"
-mkinter below_si_inter self_issued_inter.crt self_issued_inter.key "" "ztls pathlen below si"
+mkinter self_issued_inter zero_inter.crt zero_inter.key "" "tls pathlen zero"
+mkinter below_si_inter self_issued_inter.crt self_issued_inter.key "" "tls pathlen below si"
 mkleaf below_zero_leaf below_zero_inter.crt below_zero_inter.key below-zero.test server no
 mkleaf self_issued_leaf self_issued_inter.crt self_issued_inter.key selfissued.test server no
 mkleaf below_si_leaf below_si_inter.crt below_si_inter.key below-si.test server no
@@ -168,29 +168,29 @@ mkleaf ca_target_leaf zero_inter.crt zero_inter.key catarget.test server ca
 mkleaf client_below_zero_leaf below_zero_inter.crt below_zero_inter.key client-below-zero.test none no
 mkleaf client_zero_leaf zero_inter.crt zero_inter.key client-zero.test none no
 
-mkinter one_inter root.crt root.key "pathlen:1" "ztls pathlen one"
-mkinter one_mid_inter one_inter.crt one_inter.key "" "ztls pathlen one mid"
-mkinter one_deep_inter one_mid_inter.crt one_mid_inter.key "" "ztls pathlen one deep"
+mkinter one_inter root.crt root.key "pathlen:1" "tls pathlen one"
+mkinter one_mid_inter one_inter.crt one_inter.key "" "tls pathlen one mid"
+mkinter one_deep_inter one_mid_inter.crt one_mid_inter.key "" "tls pathlen one deep"
 mkleaf one_leaf one_mid_inter.crt one_mid_inter.key one.test server no
 mkleaf one_deep_leaf one_deep_inter.crt one_deep_inter.key one-deep.test server no
 
-mkinter multi_outer_inter root.crt root.key "pathlen:2" "ztls pathlen multi outer"
-mkinter multi_inner_inter multi_outer_inter.crt multi_outer_inter.key "pathlen:0" "ztls pathlen multi inner"
-mkinter multi_deep_inter multi_inner_inter.crt multi_inner_inter.key "" "ztls pathlen multi deep"
+mkinter multi_outer_inter root.crt root.key "pathlen:2" "tls pathlen multi outer"
+mkinter multi_inner_inter multi_outer_inter.crt multi_outer_inter.key "pathlen:0" "tls pathlen multi inner"
+mkinter multi_deep_inter multi_inner_inter.crt multi_inner_inter.key "" "tls pathlen multi deep"
 mkleaf multi_leaf multi_inner_inter.crt multi_inner_inter.key multi.test server no
 mkleaf multi_deep_leaf multi_deep_inter.crt multi_deep_inter.key multi-deep.test server no
 
-mkinter absent_a_inter root.crt root.key "" "ztls pathlen absent a"
-mkinter absent_b_inter absent_a_inter.crt absent_a_inter.key "" "ztls pathlen absent b"
+mkinter absent_a_inter root.crt root.key "" "tls pathlen absent a"
+mkinter absent_b_inter absent_a_inter.crt absent_a_inter.key "" "tls pathlen absent b"
 mkleaf absent_leaf absent_b_inter.crt absent_b_inter.key absent.test server no
 
-mkinter anchor_mid_inter root_plc1.crt root_plc1.key "" "ztls pathlen anchor mid"
-mkinter anchor_deep_inter anchor_mid_inter.crt anchor_mid_inter.key "" "ztls pathlen anchor deep"
+mkinter anchor_mid_inter root_plc1.crt root_plc1.key "" "tls pathlen anchor mid"
+mkinter anchor_deep_inter anchor_mid_inter.crt anchor_mid_inter.key "" "tls pathlen anchor deep"
 mkleaf anchor_leaf anchor_mid_inter.crt anchor_mid_inter.key anchor.test server no
 mkleaf anchor_deep_leaf anchor_deep_inter.crt anchor_deep_inter.key anchor-deep.test server no
 
 # cross-signing of crosssign_root's subject+key by the untrusted anchor
-openssl req -new -key crosssign_root.key -subj '/CN=ztls pathlen crosssign root' -out cross_root_cross.csr
+openssl req -new -key crosssign_root.key -subj '/CN=tls pathlen crosssign root' -out cross_root_cross.csr
 { echo 'basicConstraints=critical,CA:TRUE,pathlen:0'
   echo 'keyUsage=critical,keyCertSign,cRLSign'
   echo 'subjectKeyIdentifier=hash'
@@ -199,7 +199,7 @@ openssl req -new -key crosssign_root.key -subj '/CN=ztls pathlen crosssign root'
 openssl x509 -req -in cross_root_cross.csr -CA crosssign_untrusted.crt \
   -CAkey crosssign_untrusted.key -CAcreateserial -out cross_root_cross.crt \
   -days 3000 -sha256 -extfile cross_root_cross.ext
-mkinter cross_mid_inter crosssign_root.crt crosssign_root.key "" "ztls pathlen cross mid"
-mkinter cross_deep_inter cross_mid_inter.crt cross_mid_inter.key "" "ztls pathlen cross deep"
+mkinter cross_mid_inter crosssign_root.crt crosssign_root.key "" "tls pathlen cross mid"
+mkinter cross_deep_inter cross_mid_inter.crt cross_mid_inter.key "" "tls pathlen cross deep"
 mkleaf cross_leaf cross_deep_inter.crt cross_deep_inter.key cross.test server no
 ```

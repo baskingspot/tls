@@ -103,9 +103,9 @@ def test_main_uses_tls_anvil_client_mode_with_trigger_script():
     assert '"-triggerScript"' in source
     assert 'env["HOST"] = "127.0.0.1"' in source
     assert 'env["PORT"] = str(port)' in source
-    assert 'env["ZTLS_HOST_NAME"] = "localhost"' in source
-    assert 'env["ZTLS_INSECURE_NO_CHAIN_ANCHOR"] = "1"' in source
-    assert 'env["ZTLS_INSECURE_NO_HOST_NAME"] = "1"' in source
+    assert 'env["TLS_HOST_NAME"] = "localhost"' in source
+    assert 'env["TLS_INSECURE_NO_CHAIN_ANCHOR"] = "1"' in source
+    assert 'env["TLS_INSECURE_NO_HOST_NAME"] = "1"' in source
 
 
 def test_trigger_script_is_executable_stdlib_python_without_shell_helpers(tmp_path: Path):

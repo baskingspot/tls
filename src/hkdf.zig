@@ -659,7 +659,7 @@ test "expandLabel at the RFC 5869 length bound matches independent HKDF-Expand-L
 }
 
 // RFC 8446 §7.1 — one keying per secret gives the same bytes as independent
-// HKDF-Expand-Label calls. The label sets are the ones ztls derives from one
+// HKDF-Expand-Label calls. The label sets are the ones tls derives from one
 // secret: the handshake secret (c hs traffic, s hs traffic, derived), the
 // master secret (c ap traffic, s ap traffic, exp master, res master), the
 // early secret (binders, c e traffic, e exp master), a traffic secret

@@ -1,4 +1,4 @@
-# Shared helpers for the ztls devShells, extracted from flake.nix.
+# Shared helpers for the tls devShells, extracted from flake.nix.
 #
 # This is a plain function file (NOT a flake-parts module): it takes the
 # overlay-configured `pkgs` and `lib` and returns the interdependent helpers as
@@ -60,7 +60,7 @@ rec {
   };
 
   # nixpkgs-unstable flipped the default openssl to the 3.5 LTS line (2026-10-06);
-  # ztls pins the 3.6 line so the default backend, the CLI interop peer, and the
+  # tls pins the 3.6 line so the default backend, the CLI interop peer, and the
   # #121 memcheck diagnostic do not silently hop lines with a lockfile refresh.
   # The name intentionally shadows pkgs.openssl below (the ast-grep pattern).
   openssl = pkgs.openssl_3_6;
@@ -82,12 +82,12 @@ rec {
     # workflows for every fresh runner since the 0.16 migration. No-op once
     # the pinned zig carries the fix; drop this line then.
     mkdir -p "$ZIG_GLOBAL_CACHE_DIR/tmp"
-    export ZTLS_OPENSSL_PKG_CONFIG_PATH=${openssl.dev}/lib/pkgconfig
-    export ZTLS_OPENSSL_LIB_DIR=${openssl.out}/lib
-    export ZTLS_AWS_LC_PKG_CONFIG_PATH=${pkgs.aws-lc.dev}/lib/pkgconfig
-    export ZTLS_AWS_LC_LIB_DIR=${pkgs.aws-lc}/lib
-    export ZTLS_BORINGSSL_PKG_CONFIG_PATH=${boringsslPc}
-    export ZTLS_BORINGSSL_LIB_DIR=${pkgs.boringssl}/lib
+    export TLS_OPENSSL_PKG_CONFIG_PATH=${openssl.dev}/lib/pkgconfig
+    export TLS_OPENSSL_LIB_DIR=${openssl.out}/lib
+    export TLS_AWS_LC_PKG_CONFIG_PATH=${pkgs.aws-lc.dev}/lib/pkgconfig
+    export TLS_AWS_LC_LIB_DIR=${pkgs.aws-lc}/lib
+    export TLS_BORINGSSL_PKG_CONFIG_PATH=${boringsslPc}
+    export TLS_BORINGSSL_LIB_DIR=${pkgs.boringssl}/lib
     # Some devShell packages propagate the nixpkgs default-line openssl into
     # PATH ahead of the pinned one. Prepend so the CLI interop peer rides the
     # pinned 3.6 line, not whatever the default propagates.
@@ -95,7 +95,7 @@ rec {
   '';
 
   # The tools the shared modules do not supply. The base, shell, terraform,
-  # and zig shells are composed in through `inputsFrom`; these are ztls's own.
+  # and zig shells are composed in through `inputsFrom`; these are tls's own.
   commonPackages =
     (with pkgs; [
       ast-grep

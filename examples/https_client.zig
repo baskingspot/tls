@@ -16,7 +16,7 @@ const print = std.debug.print;
 const CertificateBundle = std.crypto.Certificate.Bundle;
 
 const fixtures = @import("fixtures");
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 const IpAddress = Io.net.IpAddress;
 
@@ -40,11 +40,11 @@ pub fn main(init: std.process.Init) !void {
     defer stream.close(io);
     print("[https]  connected to {s}:{d}\n", .{ connect_host, port });
 
-    const client_keypair: ztls.x25519.KeyPair = .generate();
-    var random: ztls.Random = .empty;
+    const client_keypair: tls.x25519.KeyPair = .generate();
+    var random: tls.Random = .empty;
     io.random(&random.data);
 
-    var hs: ztls.ClientHandshake = .init(.{
+    var hs: tls.ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),
         .host_name = server_name,
         .now_sec = Io.Timestamp.now(io, .real).toSeconds(),
@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
     defer hs.deinit();
 
     // Certificate verification policy: pinned trust anchor.
-    // This is example-wrapper allocation, not ztls core allocation.
+    // This is example-wrapper allocation, not tls core allocation.
     var bundle: CertificateBundle = .empty;
     defer bundle.deinit(gpa);
     const cert_start: u32 = @intCast(bundle.bytes.items.len);
@@ -62,21 +62,21 @@ pub fn main(init: std.process.Init) !void {
     try bundle.parseCert(gpa, cert_start, hs.policy.now_sec);
     hs.policy.bundle = &bundle;
 
-    var out: ztls.ClientHandshake.OutBuffer = .empty;
-    var storage: ztls.RecordBuffer.Storage = .empty;
-    var rb: ztls.RecordBuffer = .init(&storage.buffer);
+    var out: tls.ClientHandshake.OutBuffer = .empty;
+    var storage: tls.RecordBuffer.Storage = .empty;
+    var rb: tls.RecordBuffer = .init(&storage.buffer);
 
-    try ztls.io.writeAll(io, stream, try hs.start(&out.buffer));
+    try tls.io.writeAll(io, stream, try hs.start(&out.buffer));
     hs.completeWrite();
     print("[https]  ClientHello sent → state={s}\n", .{@tagName(hs.state)});
 
     while (!hs.isConnected()) {
-        const n = try ztls.io.fill(io, stream, &rb);
+        const n = try tls.io.fill(io, stream, &rb);
         if (n == 0) return error.ServerClosed;
         rb.advance(n);
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out.buffer)) {
             .write => |w| {
-                try ztls.io.writeAll(io, stream, w);
+                try tls.io.writeAll(io, stream, w);
                 hs.completeWrite();
             },
             .application_data,
@@ -90,13 +90,13 @@ pub fn main(init: std.process.Init) !void {
     print("[https]  handshake complete (ALPN={s})\n", .{hs.selectedAlpnProtocol().?});
 
     const request = "GET / HTTP/1.0\r\n\r\n";
-    try ztls.io.writeAll(io, stream, try hs.sendApplicationData(request, &out.buffer));
+    try tls.io.writeAll(io, stream, try hs.sendApplicationData(request, &out.buffer));
     hs.completeWrite();
     print("[https]  sent: {s}", .{request});
 
     var response_seen = false;
     while (true) {
-        const n = try ztls.io.fill(io, stream, &rb);
+        const n = try tls.io.fill(io, stream, &rb);
         if (n == 0) break;
         rb.advance(n);
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out.buffer)) {
@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
                 response_seen = true;
             },
             .write => |w| {
-                try ztls.io.writeAll(io, stream, w);
+                try tls.io.writeAll(io, stream, w);
                 hs.completeWrite();
             },
             .closed => {
@@ -114,7 +114,7 @@ pub fn main(init: std.process.Init) !void {
             },
             .key_update => |ku| {
                 if (ku.response) |w| {
-                    try ztls.io.writeAll(io, stream, w);
+                    try tls.io.writeAll(io, stream, w);
                     hs.completeWrite();
                 }
             },

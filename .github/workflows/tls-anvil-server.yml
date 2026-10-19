@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       crypto_backend:
-        description: libcrypto-family backend to build the ztls harnesses with
+        description: libcrypto-family backend to build the tls harnesses with
         type: choice
         options:
           - openssl
@@ -55,9 +55,9 @@ jobs:
           nix develop --command bash -lc '
             set -euo pipefail
             case "$CRYPTO_BACKEND" in
-              openssl) export PKG_CONFIG_PATH="$ZTLS_OPENSSL_PKG_CONFIG_PATH" ;;
-              aws-lc) export PKG_CONFIG_PATH="$ZTLS_AWS_LC_PKG_CONFIG_PATH" ;;
-              boringssl) export PKG_CONFIG_PATH="$ZTLS_BORINGSSL_PKG_CONFIG_PATH" ;;
+              openssl) export PKG_CONFIG_PATH="$TLS_OPENSSL_PKG_CONFIG_PATH" ;;
+              aws-lc) export PKG_CONFIG_PATH="$TLS_AWS_LC_PKG_CONFIG_PATH" ;;
+              boringssl) export PKG_CONFIG_PATH="$TLS_BORINGSSL_PKG_CONFIG_PATH" ;;
               *) echo "unsupported backend: $CRYPTO_BACKEND" >&2; exit 2 ;;
             esac
             scripts/assert-libcrypto-family.sh "$CRYPTO_BACKEND"
@@ -73,9 +73,9 @@ jobs:
           nix develop --command bash -lc '
             set -euo pipefail
             case "$CRYPTO_BACKEND" in
-              openssl) export PKG_CONFIG_PATH="$ZTLS_OPENSSL_PKG_CONFIG_PATH" ;;
-              aws-lc) export PKG_CONFIG_PATH="$ZTLS_AWS_LC_PKG_CONFIG_PATH" ;;
-              boringssl) export PKG_CONFIG_PATH="$ZTLS_BORINGSSL_PKG_CONFIG_PATH" ;;
+              openssl) export PKG_CONFIG_PATH="$TLS_OPENSSL_PKG_CONFIG_PATH" ;;
+              aws-lc) export PKG_CONFIG_PATH="$TLS_AWS_LC_PKG_CONFIG_PATH" ;;
+              boringssl) export PKG_CONFIG_PATH="$TLS_BORINGSSL_PKG_CONFIG_PATH" ;;
               *) echo "unsupported backend: $CRYPTO_BACKEND" >&2; exit 2 ;;
             esac
             just conformance/ci
@@ -87,9 +87,9 @@ jobs:
           nix develop --command bash -lc '
             set -euo pipefail
             case "$CRYPTO_BACKEND" in
-              openssl) export PKG_CONFIG_PATH="$ZTLS_OPENSSL_PKG_CONFIG_PATH" ;;
-              aws-lc) export PKG_CONFIG_PATH="$ZTLS_AWS_LC_PKG_CONFIG_PATH" ;;
-              boringssl) export PKG_CONFIG_PATH="$ZTLS_BORINGSSL_PKG_CONFIG_PATH" ;;
+              openssl) export PKG_CONFIG_PATH="$TLS_OPENSSL_PKG_CONFIG_PATH" ;;
+              aws-lc) export PKG_CONFIG_PATH="$TLS_AWS_LC_PKG_CONFIG_PATH" ;;
+              boringssl) export PKG_CONFIG_PATH="$TLS_BORINGSSL_PKG_CONFIG_PATH" ;;
               *) echo "unsupported backend: $CRYPTO_BACKEND" >&2; exit 2 ;;
             esac
             cd conformance

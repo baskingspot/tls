@@ -62,7 +62,7 @@ pub const Signer = signature.Signer;
 /// Caller-provided PSK lookup for session resumption (RFC 8446 §4.2.11). The
 /// server calls `lookup` for each offered identity; a non-null result carries
 /// the PSK and the cipher suite under which it was derived (the binder hash
-/// uses that suite's hash). Caller-owned: ztls stores no heap state.
+/// uses that suite's hash). Caller-owned: tls stores no heap state.
 ///
 /// `lookup` may be called repeatedly for the same identity within one
 /// handshake: once during ClientHello PSK selection, again when a
@@ -325,7 +325,7 @@ pub const Config = struct {
     /// Optional caller-owned PSK lookup for session resumption (RFC 8446
     /// §4.2.11). When set, the server verifies offered PSK binders and, if one
     /// verifies, resumes with that PSK (psk_dhe_ke) instead of a full
-    /// handshake. Caller-owned: ztls stores no heap state.
+    /// handshake. Caller-owned: tls stores no heap state.
     psk_lookup: ?PskLookup = null,
     /// RFC 10024 hybrid groups accepted by this server, in preference order.
     /// Empty keeps hybrid negotiation disabled. A listed group with no client
@@ -415,7 +415,7 @@ tx: RecordLayer = undefined,
 /// data from silently desynchronizing traffic keys.
 pending_write: PendingWrite = .idle,
 /// Monotonic one-byte nonces structurally enforce uniqueness for the bounded
-/// ticket burst accepted by ztls clients. At most one PSK may be prepared ahead.
+/// ticket burst accepted by tls clients. At most one PSK may be prepared ahead.
 ticket_nonce_state: TicketNonceState = .{ .next = 0 },
 ticket_compatibility: TicketCompatibility = .unavailable,
 tx_owner: TxOwner = .userspace,
@@ -462,7 +462,7 @@ early_data_skip_limit: u32 = default_early_data_skip_limit,
 psk_lookup: ?PskLookup = null,
 /// Caller-owned certificate DER slices and signer used for the authenticated
 /// server flight. The DER bytes, slice-of-slices, and PrivateKey backing the
-/// Signer must outlive this handshake. ztls stores references and does not copy
+/// Signer must outlive this handshake. tls stores references and does not copy
 /// or own credential memory.
 server_credentials: ?ServerCredentials = null,
 /// Set before server-flight assembly mutates the transcript, so a terminal
@@ -663,7 +663,7 @@ fn verifyBinderSha(
 
 /// Store caller-owned credentials for the authenticated server flight.
 /// The certificate DER slices and the PrivateKey backing `signer` must outlive
-/// this handshake. ztls keeps references; it does not copy or own credentials.
+/// this handshake. tls keeps references; it does not copy or own credentials.
 pub fn setCredentials(
     self: *ServerHandshake,
     certs_der: []const []const u8,
@@ -839,7 +839,7 @@ pub fn isResumed(self: *const ServerHandshake) bool {
     return self.selected_psk != null;
 }
 
-/// Prepare caller-owned key material for one NewSessionTicket. ztls assigns a
+/// Prepare caller-owned key material for one NewSessionTicket. tls assigns a
 /// unique nonce from a bounded 32-ticket sequence and derives the matching PSK;
 /// the caller uses the PSK to stage a stateful lookup row or build an
 /// authenticated stateless identity, then passes this object unchanged to
@@ -1144,7 +1144,7 @@ fn processClientHelloMessage(
     self.client_server_name = ch.server_name;
 
     // RFC 8446 §4.2.9 — issue and accept tickets only for the forward-secret
-    // psk_dhe_ke mode ztls implements. Preserve the offer through the handshake
+    // psk_dhe_ke mode tls implements. Preserve the offer through the handshake
     // so post-handshake emission cannot create an unusable ticket.
     const offers_psk_dhe_ke = if (ch.psk_key_exchange_modes) |modes|
         mem.indexOfScalar(
@@ -4839,8 +4839,8 @@ test "NewSessionTicket emission rejects stale prepared PSK objects" {
     try pair.server.discardTicketPsk(&prepared);
 }
 
-// RFC 8446 §4.2.11, §4.6.1, §7.1 — a ztls-issued ticket resumes against a
-// ztls server, and the resumed connection can derive and emit a fresh ticket.
+// RFC 8446 §4.2.11, §4.6.1, §7.1 — a tls-issued ticket resumes against a
+// tls server, and the resumed connection can derive and emit a fresh ticket.
 test "server-issued NewSessionTicket resumes and can be renewed" {
     var initial = try connectedTestPair();
     defer initial.client.deinit();
@@ -4854,7 +4854,7 @@ test "server-issued NewSessionTicket resumes and can be renewed" {
         .{
             .ticket_lifetime = 3600,
             .ticket_age_add = 0x12345678,
-            .ticket = "issued-by-ztls",
+            .ticket = "issued-by-tls",
         },
         &initial_server_out,
     );
@@ -4948,7 +4948,7 @@ test "server-issued NewSessionTicket resumes and can be renewed" {
         .{
             .ticket_lifetime = 3600,
             .ticket_age_add = 0x87654321,
-            .ticket = "renewed-by-ztls",
+            .ticket = "renewed-by-tls",
         },
         &server_out,
     );
@@ -4970,7 +4970,7 @@ test "server-issued NewSessionTicket resumes and can be renewed" {
 }
 
 // RFC 8446 §4.6.1 — ticket nonces and derived PSKs are unique per connection,
-// and server emission is bounded to the 32-ticket receive limit ztls enforces.
+// and server emission is bounded to the 32-ticket receive limit tls enforces.
 test "NewSessionTicket emission owns unique bounded nonces" {
     var pair = try connectedTestPair();
     defer pair.client.deinit();
@@ -7518,7 +7518,7 @@ test "PSK offer without psk_key_exchange_modes aborts" {
     );
 }
 
-// RFC 8446 §4.2.9, §4.6.1 — ztls implements psk_dhe_ke only. A valid PSK
+// RFC 8446 §4.2.9, §4.6.1 — tls implements psk_dhe_ke only. A valid PSK
 // offer with only psk_ke falls back to a full handshake and cannot receive a
 // ticket for a mode it did not advertise.
 test "PSK offer with only psk_ke disables resumption and ticket issuance" {

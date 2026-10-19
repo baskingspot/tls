@@ -1,6 +1,6 @@
 //! Provider-backed pure ML-KEM primitives used by RFC 10024 hybrid groups.
 //!
-//! ztls owns the hybrid construction: this module only generates ML-KEM keys,
+//! tls owns the hybrid construction: this module only generates ML-KEM keys,
 //! validates encapsulation keys, and encapsulates/decapsulates fixed-size
 //! ciphertexts. Keeping the combiner above the provider seam makes the TLS wire
 //! construction identical for OpenSSL, AWS-LC, and BoringSSL.

@@ -5,7 +5,7 @@ mkdir -p "$out"
 cd "$out"
 openssl ecparam -name prime256v1 -genkey -noout -out root.key
 openssl req -x509 -new -key root.key -sha256 -days 3650 \
-  -subj '/CN=ztls extension root' -out root.crt \
+  -subj '/CN=tls extension root' -out root.crt \
   -addext 'basicConstraints=critical,CA:TRUE' \
   -addext 'keyUsage=critical,keyCertSign,cRLSign'
 openssl ecparam -name prime256v1 -genkey -noout -out leaf.key

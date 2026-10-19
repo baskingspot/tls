@@ -70,7 +70,7 @@ pub const capabilities = struct {
 /// FIPS 140-3 narrowed capability table. `-Dcrypto-fips=true` selects this
 /// table when AWS-LC headers are active. The caller is responsible for ensuring
 /// the linked AWS-LC libcrypto is actually a FIPS-validated build. No runtime
-/// provider probing is performed by ztls.
+/// provider probing is performed by tls.
 pub const capabilities_fips = struct {
     // FIPS 140-3 does not approve ChaCha20-Poly1305 for TLS 1.3.
     pub const cipher_suites: []const CipherSuite = &.{

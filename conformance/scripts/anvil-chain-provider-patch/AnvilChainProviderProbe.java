@@ -7,7 +7,7 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * ztls #91 regression probe (CONFIG level: it asserts on the generated
+ * tls #91 regression probe (CONFIG level: it asserts on the generated
  * X509CertificateConfig objects, not on encoded certificates; a built
  * signing cert decodes with a critical CA:TRUE basicConstraints — verified
  * against the v1.5.3 native provider during #146 — and the single-case

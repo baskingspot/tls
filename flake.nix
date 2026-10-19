@@ -62,7 +62,7 @@
             openssl
             opensslBackend
             ;
-          # Every ztls shell carries the shared tool contract. Qualify each
+          # Every tls shell carries the shared tool contract. Qualify each
           # name: `zig` in this scope is the toolchain helper below.
           tooling = [
             config.devShells.base
@@ -79,23 +79,23 @@
           });
 
           devShells = rec {
-            # The repo's own toolset. The attr is `ztls-base` because the
+            # The repo's own toolset. The attr is `tls-base` because the
             # shared flake module owns `base`.
-            ztls-base = pkgs.mkShell {
-              name = "ztls-base";
+            tls-base = pkgs.mkShell {
+              name = "tls-base";
               inputsFrom = tooling;
               packages = commonPackages;
               shellHook = commonHook zig;
             };
 
             openssl = backendShell {
-              name = "ztls-openssl";
+              name = "tls-openssl";
               inputsFrom = tooling;
               inherit (opensslBackend) pkgConfigPath packages;
             };
 
             aws-lc = backendShell {
-              name = "ztls-aws-lc";
+              name = "tls-aws-lc";
               inputsFrom = tooling;
               pkgConfigPath = "${pkgs.aws-lc.dev}/lib/pkgconfig";
               packages = [
@@ -105,7 +105,7 @@
             };
 
             boringssl = backendShell {
-              name = "ztls-boringssl";
+              name = "tls-boringssl";
               inputsFrom = tooling;
               pkgConfigPath = "${boringsslPc}";
               packages = [
@@ -119,7 +119,7 @@
             # OpenSSL backend shell. The org's `docs` module is Zola, so this
             # stays repo-local until the site moves in a later phase.
             docs = backendShell {
-              name = "ztls-docs";
+              name = "tls-docs";
               inputsFrom = tooling;
               inherit (opensslBackend) pkgConfigPath;
               packages = opensslBackend.packages ++ [
@@ -130,16 +130,16 @@
             };
 
             # Brand asset tooling (wordmark/logo generation). Kept out of the
-            # common dev shell so ztls devs don't carry font/Python deps.
+            # common dev shell so tls devs don't carry font/Python deps.
             brand = pkgs.mkShell {
-              name = "ztls-brand";
+              name = "tls-brand";
               inputsFrom = [ config.devShells.base ];
               packages = [
                 (pkgs.python3.withPackages (ps: [ ps.fonttools ]))
                 pkgs.jetbrains-mono
               ];
               shellHook = ''
-                export ZTLS_BRAND_FONT_DIR=${pkgs.jetbrains-mono}/share/fonts
+                export TLS_BRAND_FONT_DIR=${pkgs.jetbrains-mono}/share/fonts
               '';
             };
 

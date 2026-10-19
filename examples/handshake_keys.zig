@@ -8,7 +8,7 @@
 const std = @import("std");
 const Io = std.Io;
 
-const ztls = @import("ztls");
+const tls = @import("tls");
 
 pub fn main(init: std.process.Init) !void {
     var stdout_buf: [4096]u8 = undefined;
@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
     // ── X25519 key exchange ──────────────────────
 
     // Use the RFC 8448 §3 client private key for deterministic output.
-    const kp: ztls.x25519.KeyPair = .{
+    const kp: tls.x25519.KeyPair = .{
         .secret_key = .init(.{
             0x49, 0xaf, 0x42, 0xba, 0x7f, 0x79, 0x94, 0x85,
             0x2d, 0x71, 0x3e, 0xf2, 0x78, 0x4b, 0xcb, 0xca,
@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
 
     // ── ClientHello ────────────────────────
 
-    const random: ztls.Random = .init(.{
+    const random: tls.Random = .init(.{
         0xcb, 0x34, 0xec, 0xb1, 0xe7, 0x81, 0x63, 0xba,
         0x1c, 0x38, 0xc6, 0xda, 0xcb, 0x19, 0x6a, 0x6d,
         0xff, 0xa2, 0x1a, 0x8d, 0x99, 0x12, 0xec, 0x18,
@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     });
 
     var ch_buf: [512]u8 = undefined;
-    const client_hello = try ztls.client_hello.encode(
+    const client_hello = try tls.client_hello.encode(
         &ch_buf,
         random,
         kp.public_key,
@@ -64,7 +64,7 @@ pub fn main(init: std.process.Init) !void {
         0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04,
     };
 
-    const sh = try ztls.server_hello.parse(server_hello_bytes);
+    const sh = try tls.server_hello.parse(server_hello_bytes);
     try stdout.print("cipher_suite:      {s}\n", .{@tagName(sh.cipher_suite)});
     const server_public_key = switch (sh.key_share) {
         .x25519 => |pk| pk,
@@ -74,14 +74,14 @@ pub fn main(init: std.process.Init) !void {
 
     // ── DHE shared secret ──────────────────────
 
-    var dhe: [ztls.x25519.secret_length]u8 = undefined;
+    var dhe: [tls.x25519.secret_length]u8 = undefined;
     defer std.crypto.secureZero(u8, &dhe);
-    try ztls.x25519.sharedSecret(kp.secret_key, server_public_key, &dhe);
+    try tls.x25519.sharedSecret(kp.secret_key, server_public_key, &dhe);
     try stdout.print("shared_secret:     {x}\n", .{dhe});
 
     // ── Key schedule ────────────────────────
 
-    const hkdf = ztls.hkdf.HkdfSha256;
+    const hkdf = tls.hkdf.HkdfSha256;
 
     const handshake = hkdf.handshakeSecret(hkdf.early_secret, &dhe);
     const master = hkdf.masterSecret(handshake);
@@ -116,13 +116,13 @@ pub fn main(init: std.process.Init) !void {
 
     // ── RecordLayer round-trip ─────────────────────
 
-    var server_tx: ztls.RecordLayer = try .init(.{ .aes_128_gcm_sha256 = server_key }, server_iv);
+    var server_tx: tls.RecordLayer = try .init(.{ .aes_128_gcm_sha256 = server_key }, server_iv);
     defer server_tx.deinit();
-    var client_rx: ztls.RecordLayer = try .init(.{ .aes_128_gcm_sha256 = server_key }, server_iv);
+    var client_rx: tls.RecordLayer = try .init(.{ .aes_128_gcm_sha256 = server_key }, server_iv);
     defer client_rx.deinit();
 
     const plaintext = "EncryptedExtensions";
-    var out: [plaintext.len + ztls.RecordLayer.overhead]u8 = undefined;
+    var out: [plaintext.len + tls.RecordLayer.overhead]u8 = undefined;
     const wire = try server_tx.encrypt(.handshake, plaintext, &out);
     const received = try client_rx.decrypt(wire);
 

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This is ztls: a Sans-I/O TLS 1.3 library in Zig. No transport I/O. Caller-owned buffers.
+This is tls: a Sans-I/O TLS 1.3 library in Zig. No transport I/O. Caller-owned buffers.
 Read `docs/research/DESIGN.md` before writing any code.
 
 ---
@@ -8,7 +8,7 @@ Read `docs/research/DESIGN.md` before writing any code.
 ## What This Is
 
 A pure TLS 1.3 state machine. The engine consumes and produces byte slices.
-Core library code does not open sockets. ztls-owned protocol/state-machine code
+Core library code does not open sockets. tls-owned protocol/state-machine code
 must not allocate. Higher-level wrappers that add I/O belong outside the core
 engine; repo examples and test shims may use sockets to exercise the Sans-I/O
 API.
@@ -24,7 +24,7 @@ fast." Both are first-class from the start. A working slow implementation is
 not an acceptable intermediate state — correctness decisions shape performance
 decisions and vice versa.
 
-**No ztls-owned allocations in the TLS engine.** If you find yourself reaching
+**No tls-owned allocations in the TLS engine.** If you find yourself reaching
 for an allocator in protocol/framing code, stop. Caller owns all TLS buffers.
 The engine holds no heap state. Production crypto backends may perform
 documented backend-owned libc/libcrypto allocations; do not hide those behind a
@@ -104,7 +104,7 @@ stop and report it. Do not change Git identity configuration or override identit
 through environment variables. Before publication, inspect the raw author and
 committer fields with `git log --format=fuller` for every new commit.
 
-**Respect workspace ownership.** The root is the ztls library workspace; domain
+**Respect workspace ownership.** The root is the tls library workspace; domain
 subprojects such as `conformance/` own their local build/test/fmt/lint workflows
 and should be usable from inside that directory. Root just recipes may delegate
 to subprojects, but don't smear subproject details back into the root.
@@ -157,7 +157,7 @@ over ad hoc prompts:
   against the `PRODUCTION_READINESS.md` spine, applies surgical corrections,
   and proposes guardrails. Status lives in the spine, nowhere else.
 - `herald` — owns public-facing voice, branding, positioning, and user-facing
-  docs (README, why-ztls, the front door). Internal doc consistency belongs to
+  docs (README, why-tls, the front door). Internal doc consistency belongs to
   `docs-librarian`; herald speaks outward and is allowed voice and opinion.
 - `matt-nits` — mechanical auto-applier for the Matt-style checklist. Runs a
   fixed list of pattern edits in place; never invents rules, never styles
@@ -253,7 +253,7 @@ a suite to shake out the first kind; only forcing the condition fixes the second
 **Unit tests** usually live in the same file as the code they test (`test` blocks).
 
 **Integration tests** live in `src/test/` and examples. The harnesses connect a
-ztls client to a ztls server in memory and exercise both directions against
+tls client to a tls server in memory and exercise both directions against
 `openssl s_server` / `openssl s_client` as ground-truth peers.
 
 **Conformance tests** live under `conformance/` as a discrete subproject with
@@ -283,7 +283,7 @@ exclude `docs/research/perf/` from any "no references to X" grep validation.
 If a path rename makes a historical citation ambiguous, add a forward pointer,
 do not rewrite the capture.
 
-Before claiming ztls is faster or slower, identify the comparable row in
+Before claiming tls is faster or slower, identify the comparable row in
 `docs/research/PERFORMANCE.md`, confirm what each implementation does inside the
 timed loop, and explain the delta with objective evidence. Wall-time alone is
 not enough for performance claims: collect `perf` data and disassembly for hot
@@ -291,7 +291,7 @@ rows so the result can be tied to instruction counts, symbols, cache/branch
 behavior, copies avoided, or library overhead. If you cannot explain why a row is
 faster or slower, call it a measurement, not a conclusion.
 
-Ignore mixed geomeans when benchmark sets differ. Keep ztls-only rows,
+Ignore mixed geomeans when benchmark sets differ. Keep tls-only rows,
 EVP/raw-crypto rows, libssl rows, and rustls rows labeled by their measurement
 boundary. A pretty `benchstat` table is not proof of apples-to-apples work.
 
@@ -308,11 +308,11 @@ Do not add or preserve a `std.crypto` backend as a parallel product path. This
 is pre-alpha software; there is no compatibility reason to keep transitional
 backend scaffolding once the production direction is chosen.
 
-The strict no-allocation invariant applies to ztls-owned framing, state machine,
+The strict no-allocation invariant applies to tls-owned framing, state machine,
 record buffers, and caller-visible TLS I/O. A libcrypto-family production build
 may link libc and may execute backend/provider-owned allocations during setup or
-primitive initialization. Keep ztls itself allocator-free: no `std.heap` in
-`src/`, no malloc/free owned by ztls, and all TLS input/output buffers remain
+primitive initialization. Keep tls itself allocator-free: no `std.heap` in
+`src/`, no malloc/free owned by tls, and all TLS input/output buffers remain
 caller-owned.
 
 Do not use libssl in core. Do not implement your own primitive crypto. Post-

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate TLS test fixtures for the ztls test suite. This is a provenance
+# Generate TLS test fixtures for the tls test suite. This is a provenance
 # script — committed outputs should only be regenerated if the test key expires
 # (10-year cert, ~2036) or the fixture format changes. RFC 8446 §4.4.3 defines
 # the CertificateVerify content.

@@ -93,7 +93,7 @@ def _install_synthetic_paths(monkeypatch, tmp_path: Path) -> None:
     )
 
 
-# ztls #146 provenance invariant: the tls-test-framework jar is upstream-native
+# tls #146 provenance invariant: the tls-test-framework jar is upstream-native
 # since v1.5.3, so run metadata binds each run to the exact installed jar and
 # the effective X509CertificateChainProvider class bytes — a jar swap or an
 # upstream regression in that class is visible in the manifest.
@@ -134,7 +134,7 @@ def test_write_run_metadata_records_chain_provider_provenance(tmp_path, monkeypa
     assert metadata["chain_provider"]["chain_provider_class_sha256"] is not None
 
 
-# ztls #91 validity-patch provenance invariant: run metadata must be able to
+# tls #91 validity-patch provenance invariant: run metadata must be able to
 # distinguish a jar with the DateTimeAdapter/package-info patch actually
 # installed from a pristine upstream jar, a tampered patch, or a patch source
 # edited after the jar was built — for BOTH injected classes, not just one.

@@ -32,13 +32,13 @@
 //! assertions are vacuous there by construction; it exists to catch a
 //! future guard change that allocates per record.
 //!
-//! No ztls-owned allocation is involved: the hooks are libc pass-throughs
+//! No tls-owned allocation is involved: the hooks are libc pass-throughs
 //! that count, and all buffers are stack-owned. BoringSSL builds skip at
 //! comptime because the API is absent. Its err.c uses system malloc directly;
 //! queue hygiene still applies there.
 const std = @import("std");
 const mem = std.mem;
-const ztls = @import("ztls");
+const tls = @import("tls");
 const fixtures = @import("fixtures");
 
 /// #114 — the PKCS#8-encrypted form of the RSA fixture key, re-loaded under
@@ -97,12 +97,12 @@ const CheckError = error{
 /// Run the guarded-EC path: a malformed uncompressed P-256 point
 /// (0x04 || 0xff×64), the shape an attacker sends in a bad key_share.
 fn failMalformedKeyShare() CheckError!void {
-    const secret: ztls.p256.SecretKey = .init(@splat(0x01));
-    var peer: ztls.p256.PublicKey = .{ .data = @splat(0xff) };
+    const secret: tls.p256.SecretKey = .init(@splat(0x01));
+    var peer: tls.p256.PublicKey = .{ .data = @splat(0xff) };
     peer.data[0] = 0x04;
 
-    var out: [ztls.p256.secret_length]u8 = undefined;
-    ztls.p256.sharedSecret(secret, peer, &out) catch |err| return switch (err) {
+    var out: [tls.p256.secret_length]u8 = undefined;
+    tls.p256.sharedSecret(secret, peer, &out) catch |err| return switch (err) {
         error.IdentityElement => {},
         error.LibcryptoFailed => error.UnexpectedBackendResult,
     };
@@ -112,15 +112,15 @@ fn failMalformedKeyShare() CheckError!void {
 /// Run the per-record AEAD guard path: one good record, then a record with a
 /// corrupted tag.
 fn failBadTagRecord() CheckError!void {
-    const aead: ztls.aead.Aead = .{ .aes_128_gcm_sha256 = .init(@splat(0xab)) };
-    var ctx: ztls.aead.Context = ztls.aead.Context.init(aead) catch
+    const aead: tls.aead.Aead = .{ .aes_128_gcm_sha256 = .init(@splat(0xab)) };
+    var ctx: tls.aead.Context = tls.aead.Context.init(aead) catch
         return error.UnexpectedBackendResult;
     defer ctx.deinit();
 
-    const nonce: ztls.aead.Nonce = .init(@splat(0xcd));
+    const nonce: tls.aead.Nonce = .init(@splat(0xcd));
     const plaintext = "errq-alloc-check";
     var ciphertext: [plaintext.len]u8 = undefined;
-    var tag: ztls.aead.Tag = undefined;
+    var tag: tls.aead.Tag = undefined;
     aead.encrypt(&ctx, &ciphertext, &tag, plaintext, "record-header", &nonce) catch
         return error.UnexpectedBackendResult;
 
@@ -137,7 +137,7 @@ fn failBadTagRecord() CheckError!void {
 /// Run the #114 declined encrypted-PEM load path: an encrypted PKCS#8 fixture
 /// with no password input, so the callback declines before any decryption.
 fn failEncryptedPemLoad() CheckError!void {
-    _ = ztls.signature.PrivateKey.fromPem(.rsa_pss_rsae_sha256, encrypted_pkcs8_pem) catch |err|
+    _ = tls.signature.PrivateKey.fromPem(.rsa_pss_rsae_sha256, encrypted_pkcs8_pem) catch |err|
         return switch (err) {
             error.LibcryptoFailed => {},
             else => error.UnexpectedBackendResult,
@@ -147,11 +147,11 @@ fn failEncryptedPemLoad() CheckError!void {
 
 const abort_psk: [32]u8 = @splat(0x42);
 
-fn abortKeyPairs() CheckError!ztls.ClientHandshake.KeyPairs {
-    return ztls.ClientHandshake.KeyPairs.init(.generate()) catch error.UnexpectedBackendResult;
+fn abortKeyPairs() CheckError!tls.ClientHandshake.KeyPairs {
+    return tls.ClientHandshake.KeyPairs.init(.generate()) catch error.UnexpectedBackendResult;
 }
 
-fn initAbortTicket(ticket: *ztls.ClientHandshake.SessionTicket) void {
+fn initAbortTicket(ticket: *tls.ClientHandshake.SessionTicket) void {
     ticket.* = .{
         .ticket_age_add = 0,
         .cipher_suite = .aes_128_gcm_sha256,
@@ -163,10 +163,10 @@ fn initAbortTicket(ticket: *ztls.ClientHandshake.SessionTicket) void {
 
 // RFC 8446 §4.2.10 — early traffic keys exist before any ServerHello arrives.
 fn abortEarlyClient() CheckError!void {
-    var ticket: ztls.ClientHandshake.SessionTicket = undefined;
+    var ticket: tls.ClientHandshake.SessionTicket = undefined;
     initAbortTicket(&ticket);
     defer ticket.secureZero();
-    var client: ztls.ClientHandshake = .init(.{
+    var client: tls.ClientHandshake = .init(.{
         .keypairs = try abortKeyPairs(),
         .host_name = null,
         .now_sec = 0,
@@ -178,8 +178,8 @@ fn abortEarlyClient() CheckError!void {
     if (client.state != .wait_sh or client.early_tx == null) return error.UnexpectedBackendResult;
 }
 
-fn lookupAbortPsk(context: *anyopaque, identity: []const u8) ?ztls.ServerHandshake.PskEntry {
-    const ticket: *const ztls.ClientHandshake.SessionTicket = @ptrCast(@alignCast(context));
+fn lookupAbortPsk(context: *anyopaque, identity: []const u8) ?tls.ServerHandshake.PskEntry {
+    const ticket: *const tls.ClientHandshake.SessionTicket = @ptrCast(@alignCast(context));
     if (!mem.eql(u8, identity, ticket.identity.constSlice())) return null;
     return .{
         .psk = ticket.psk.constSlice(),
@@ -190,10 +190,10 @@ fn lookupAbortPsk(context: *anyopaque, identity: []const u8) ?ztls.ServerHandsha
 
 // RFC 8446 §4.2.10, §7.4.2 — reject an all-zero shared secret after PSK admission.
 fn abortEarlyServer() CheckError!void {
-    var ticket: ztls.ClientHandshake.SessionTicket = undefined;
+    var ticket: tls.ClientHandshake.SessionTicket = undefined;
     initAbortTicket(&ticket);
     defer ticket.secureZero();
-    var client: ztls.ClientHandshake = .init(.{
+    var client: tls.ClientHandshake = .init(.{
         .keypairs = try abortKeyPairs(),
         .host_name = null,
         .now_sec = 0,
@@ -204,7 +204,7 @@ fn abortEarlyServer() CheckError!void {
     var client_wire: [4096]u8 = undefined;
     const hello = client.startWithPsk(&ticket, &client_wire, true) catch
         return error.UnexpectedBackendResult;
-    var server: ztls.ServerHandshake = .init(.{
+    var server: tls.ServerHandshake = .init(.{
         .keypairs = try abortKeyPairs(),
         .random = .zero,
         .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
@@ -221,17 +221,17 @@ fn abortEarlyServer() CheckError!void {
 
 // RFC 8446 §4.4.4 — failed client Finished emission releases uninstalled application keys.
 fn abortClientFinished() CheckError!void {
-    var ticket: ztls.ClientHandshake.SessionTicket = undefined;
+    var ticket: tls.ClientHandshake.SessionTicket = undefined;
     initAbortTicket(&ticket);
     defer ticket.secureZero();
-    var client: ztls.ClientHandshake = .init(.{
+    var client: tls.ClientHandshake = .init(.{
         .keypairs = try abortKeyPairs(),
         .host_name = null,
         .now_sec = 0,
         .random = .zero,
     });
     defer client.deinit();
-    var server: ztls.ServerHandshake = .init(.{
+    var server: tls.ServerHandshake = .init(.{
         .keypairs = try abortKeyPairs(),
         .random = .zero,
         .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
@@ -324,7 +324,7 @@ fn runChecks() CheckError!void {
 }
 
 pub fn main() void {
-    const active = ztls.capabilities.active_backend;
+    const active = tls.capabilities.active_backend;
     if (comptime active == .boringssl) {
         std.debug.print("errq-alloc-check: skipped for {s}\n", .{@tagName(active)});
         return;

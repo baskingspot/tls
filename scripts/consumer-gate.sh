@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Consumer compatibility gate (#119).
 #
-# Qualifies one immutable ztls candidate against the active consumers
-# (handoff, z53). The candidate is a ztls git revision; the gate archives it,
+# Qualifies one immutable tls candidate against the active consumers
+# (handoff, z53). The candidate is a tls git revision; the gate archives it,
 # clones each consumer at an exact revision into an isolated checkout, replaces
-# the consumer's ztls pin with the candidate package, and replays the commands
+# the consumer's tls pin with the candidate package, and replays the commands
 # that consumer already runs in its own CI.
 #
-# Ownership split: ztls owns candidate provenance, isolation, the pin override,
+# Ownership split: tls owns candidate provenance, isolation, the pin override,
 # and the run record. Consumer build/test internals stay in consumer-owned
 # workflows or recipes -- this script only invokes them. The command provenance
 # table lives in docs/research/CONSUMER_GATE.md.
@@ -22,8 +22,8 @@ script_repo=$(git -C "$script_dir" rev-parse --show-toplevel)
 readonly script_repo
 
 # Run-level state, assigned by main().
-ztls_repo=""
-ztls_rev=""
+tls_repo=""
+tls_rev=""
 out_dir=""
 cache_root=""
 keep_work=0
@@ -46,8 +46,8 @@ usage() {
     cat <<'USAGE'
 usage: consumer-gate.sh [options]
 
-  --ztls-repo <path>     ztls checkout to archive (default: this repo)
-  --ztls-rev <rev>       candidate revision (default: HEAD; 40-hex SHA for a
+  --tls-repo <path>     tls checkout to archive (default: this repo)
+  --tls-rev <rev>       candidate revision (default: HEAD; 40-hex SHA for a
                          production qualification)
   --consumer <name>      handoff or z53; repeatable
   --consumers "<names>"  space-separated consumer list (default: handoff z53)
@@ -207,9 +207,9 @@ run_selftest() {
     .name = .probe,
     .version = "0.0.0",
     .dependencies = .{
-        .ztls = .{
-            .url = "git+https://github.com/mattrobenolt/ztls?ref=main#960ab943f41aad4c0ffaaf32cf26ef35cca137b1",
-            .hash = "ztls-0.0.0-SHHDXoSkIABMcZtLWfUFFHipeZyv0ycyfEZBL31sQ9Sd",
+        .tls = .{
+            .url = "git+https://github.com/baskingspot/tls?ref=main#960ab943f41aad4c0ffaaf32cf26ef35cca137b1",
+            .hash = "tls-0.0.0-SHHDXoSkIABMcZtLWfUFFHipeZyv0ycyfEZBL31sQ9Sd",
         },
         .testingx = .{
             .url = "https://example.invalid/testingx.tar.gz",
@@ -222,12 +222,12 @@ run_selftest() {
 ZON
 
     check "pin url" \
-        "git+https://github.com/mattrobenolt/ztls?ref=main#960ab943f41aad4c0ffaaf32cf26ef35cca137b1" \
-        "$(extract_pin "$tmp/zon" ztls | cut -f1)"
+        "git+https://github.com/baskingspot/tls?ref=main#960ab943f41aad4c0ffaaf32cf26ef35cca137b1" \
+        "$(extract_pin "$tmp/zon" tls | cut -f1)"
     check "pin hash" \
-        "ztls-0.0.0-SHHDXoSkIABMcZtLWfUFFHipeZyv0ycyfEZBL31sQ9Sd" \
-        "$(extract_pin "$tmp/zon" ztls | cut -f2)"
-    check "pin block count" "1" "$(count_pin_blocks "$tmp/zon" ztls)"
+        "tls-0.0.0-SHHDXoSkIABMcZtLWfUFFHipeZyv0ycyfEZBL31sQ9Sd" \
+        "$(extract_pin "$tmp/zon" tls | cut -f2)"
+    check "pin block count" "1" "$(count_pin_blocks "$tmp/zon" tls)"
     check "absent pin block" "0" "$(count_pin_blocks "$tmp/zon" kafka)"
     check "json escape" 'a\"b\\c' "$(json_escape 'a"b\c')"
     check "json controls" 'a\tb\nc\r' "$(json_escape $'a\tb\nc\r')"
@@ -248,7 +248,7 @@ ZON
     check "evidence summary line" "Build Summary: 7/7 steps succeeded; 63/63 tests passed" \
         "$(extract_evidence "$tmp/ok.log")"
 
-    check_guard "fixed ztls SHA" --ztls-rev HEAD --require-fixed-revisions
+    check_guard "fixed tls SHA" --tls-rev HEAD --require-fixed-revisions
     check_guard "duplicate consumer" --consumers "handoff handoff" \
         --handoff-repo "$script_repo" --cache-dir "$tmp/cache" --out-dir "$tmp/duplicate"
     mkdir "$tmp/existing"
@@ -276,8 +276,8 @@ opt_value() {
 parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
-        --ztls-repo) ztls_repo=$(opt_value "$@"); shift 2 ;;
-        --ztls-rev) ztls_rev=$(opt_value "$@"); shift 2 ;;
+        --tls-repo) tls_repo=$(opt_value "$@"); shift 2 ;;
+        --tls-rev) tls_rev=$(opt_value "$@"); shift 2 ;;
         --consumer) consumers_arg="${consumers_arg:+$consumers_arg }$(opt_value "$@")"; shift 2 ;;
         --consumers) consumers_arg=$(opt_value "$@"); shift 2 ;;
         --handoff-repo) handoff_repo=$(opt_value "$@"); shift 2 ;;
@@ -294,7 +294,7 @@ parse_args() {
         esac
     done
     : "${consumers_arg:=handoff z53}"
-    : "${ztls_rev:=HEAD}"
+    : "${tls_rev:=HEAD}"
     : "${handoff_rev:=HEAD}"
     : "${z53_rev:=HEAD}"
 }
@@ -353,7 +353,7 @@ run_logged() { # logfile argv...
 }
 
 # Run argv in a directory. Every consumer command runs through this so no
-# consumer recipe, shell hook, or zig command can resolve against the ztls
+# consumer recipe, shell hook, or zig command can resolve against the tls
 # worktree that invoked the gate.
 run_here() { # dir argv...
     local dir=$1
@@ -383,7 +383,7 @@ clone_consumer() { # consumer: prints the isolated checkout path
     printf '%s\n' "$clone"
 }
 
-# Replace the clone's ztls pin with the candidate package and verify the
+# Replace the clone's tls pin with the candidate package and verify the
 # result. zig fetch owns the zon rewrite; the assertions below make a silent
 # fallback to the consumer's committed pin impossible (URL and hash must both
 # be the candidate's).
@@ -392,21 +392,21 @@ override_pin() { # consumer clone archive_url logfile: prints the package hash
     run_setup "$logfile" \
         "$consumer: zig fetch of the candidate package failed; refusing to run the consumer's default pin" \
         run_here "$clone" nix develop ".#$(consumer_devshell "$consumer")" \
-        --command zig fetch --save=ztls "$archive_url"
+        --command zig fetch --save=tls "$archive_url"
     local blocks
-    blocks=$(count_pin_blocks "$clone/build.zig.zon" ztls)
+    blocks=$(count_pin_blocks "$clone/build.zig.zon" tls)
     [ "$blocks" = "1" ] ||
-        die "$consumer: expected exactly one .ztls dependency block after the override, found $blocks"
+        die "$consumer: expected exactly one .tls dependency block after the override, found $blocks"
     local pin
-    if ! pin=$(extract_pin "$clone/build.zig.zon" ztls); then
-        die "$consumer: ztls pin missing from the clone's build.zig.zon after the override"
+    if ! pin=$(extract_pin "$clone/build.zig.zon" tls); then
+        die "$consumer: tls pin missing from the clone's build.zig.zon after the override"
     fi
     local url=${pin%%$'\t'*} hash=${pin##*$'\t'}
     [ "$url" = "$archive_url" ] ||
         die "$consumer: clone pin URL is not the candidate archive after the override ($url)"
     case "$hash" in
-    ztls-*) ;;
-    *) die "$consumer: clone pin hash is not a ztls package hash after the override: $hash" ;;
+    tls-*) ;;
+    *) die "$consumer: clone pin hash is not a tls package hash after the override: $hash" ;;
     esac
     printf '%s\n' "$hash"
 }
@@ -480,8 +480,8 @@ run_consumer() { # consumer
     export ZIG_LOCAL_CACHE_DIR="$work/local-cache-$consumer"
     mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
-    if ! pin=$(extract_pin "$clone/build.zig.zon" ztls); then
-        die "$consumer: the committed build.zig.zon has no ztls dependency to gate"
+    if ! pin=$(extract_pin "$clone/build.zig.zon" tls); then
+        die "$consumer: the committed build.zig.zon has no tls dependency to gate"
     fi
     pin_url=${pin%%$'\t'*}
     pin_hash=${pin##*$'\t'}
@@ -594,22 +594,22 @@ write_record() { # result: green|red
 
     {
         printf '{\n'
-        printf '  "schema": "ztls.consumer-gate/1",\n'
+        printf '  "schema": "tls.consumer-gate/1",\n'
         printf '  "generated_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf '  "host": "%s",\n' "$(json_escape "$(uname -a)")"
         printf '  "invocation": "%s",\n' "$(json_escape "$invocation")"
         printf '  "nix_version": "%s",\n' "$(json_escape "$(nix --version)")"
         printf '  "candidate": {\n'
-        printf '    "repo": "%s",\n' "$(json_escape "$ztls_root")"
-        printf '    "revision": "%s",\n' "$ztls_sha"
-        printf '    "requested_revision": "%s",\n' "$(json_escape "$ztls_rev")"
-        printf '    "subject": "%s",\n' "$(json_escape "$(git -C "$ztls_root" log -1 --format=%s "$ztls_sha")")"
-        printf '    "worktree_dirty": "%s",\n' "$ztls_dirty"
+        printf '    "repo": "%s",\n' "$(json_escape "$tls_root")"
+        printf '    "revision": "%s",\n' "$tls_sha"
+        printf '    "requested_revision": "%s",\n' "$(json_escape "$tls_rev")"
+        printf '    "subject": "%s",\n' "$(json_escape "$(git -C "$tls_root" log -1 --format=%s "$tls_sha")")"
+        printf '    "worktree_dirty": "%s",\n' "$tls_dirty"
         printf '    "archive": "%s",\n' "$(json_escape "$archive_url")"
-        printf '    "archive_command": "git archive --format=tar.gz --prefix=ztls/ -o candidate.tar.gz %s",\n' "$ztls_sha"
+        printf '    "archive_command": "git archive --format=tar.gz --prefix=tls/ -o candidate.tar.gz %s",\n' "$tls_sha"
         printf '    "archive_sha256": "%s",\n' "$archive_sha"
         printf '    "package_hash": "%s",\n' "$first_hash"
-        printf '    "id": "%s/%s"\n' "$ztls_sha" "$first_hash"
+        printf '    "id": "%s/%s"\n' "$tls_sha" "$first_hash"
         printf '  },\n'
         printf '  "consumers": [\n'
         local sep=""
@@ -636,7 +636,7 @@ write_record() { # result: green|red
 write_summary() { # result
     local result=$1 consumer
     {
-        printf 'ztls consumer gate: %s\n' "$result"
+        printf 'tls consumer gate: %s\n' "$result"
         printf 'candidate: %s\n' "$candidate_id"
         printf 'record: %s\n' "$out_dir/run.json"
         for consumer in "${selected[@]}"; do
@@ -666,16 +666,16 @@ main() {
     fi
     require_tools
 
-    ztls_root=$(git -C "${ztls_repo:-$script_repo}" rev-parse --show-toplevel 2>/dev/null) ||
-        die "not a git checkout: ${ztls_repo:-$script_repo}"
-    ztls_sha=$(git -C "$ztls_root" rev-parse --verify --quiet "$ztls_rev^{commit}") ||
-        die "ztls revision not found: $ztls_rev"
-    if [ "$require_fixed" -eq 1 ] && ! is_full_sha "$ztls_rev"; then
-        die "qualification requires a fixed ztls SHA, got $ztls_rev"
+    tls_root=$(git -C "${tls_repo:-$script_repo}" rev-parse --show-toplevel 2>/dev/null) ||
+        die "not a git checkout: ${tls_repo:-$script_repo}"
+    tls_sha=$(git -C "$tls_root" rev-parse --verify --quiet "$tls_rev^{commit}") ||
+        die "tls revision not found: $tls_rev"
+    if [ "$require_fixed" -eq 1 ] && ! is_full_sha "$tls_rev"; then
+        die "qualification requires a fixed tls SHA, got $tls_rev"
     fi
-    ztls_dirty=no
-    if [ -n "$(git -C "$ztls_root" status --porcelain)" ]; then
-        ztls_dirty=yes
+    tls_dirty=no
+    if [ -n "$(git -C "$tls_root" status --porcelain)" ]; then
+        tls_dirty=yes
     fi
 
     selected=()
@@ -684,8 +684,8 @@ main() {
     local run_id host
     run_id=$(date -u +%Y%m%d-%H%M%S)
     host=$(hostname)
-    : "${out_dir:=$ztls_root/zig-out/consumer-gate/$run_id-$host}"
-    : "${cache_root:=$ztls_root/zig-out/consumer-gate/cache}"
+    : "${out_dir:=$tls_root/zig-out/consumer-gate/$run_id-$host}"
+    : "${cache_root:=$tls_root/zig-out/consumer-gate/cache}"
     mkdir -p "$(dirname -- "$out_dir")" "$cache_root"
     mkdir -- "$out_dir" || die "output directory already exists or cannot be created: $out_dir"
     mkdir -p "$out_dir/consumers" "$out_dir/logs"
@@ -693,7 +693,7 @@ main() {
     cache_root=$(cd "$cache_root" && pwd)
     out_dir_ready=1
 
-    work=$(mktemp -d "${TMPDIR:-/tmp}/ztls-consumer-gate.XXXXXX")
+    work=$(mktemp -d "${TMPDIR:-/tmp}/tls-consumer-gate.XXXXXX")
     if [ "$keep_work" -eq 0 ]; then
         trap 'rm -rf "$work"' EXIT
     else
@@ -710,13 +710,13 @@ main() {
         invocation="$invocation$(redact_url "$arg")"
     done
 
-    printf 'consumer-gate: archiving ztls %s (worktree dirty: %s)\n' "$ztls_sha" "$ztls_dirty" >&2
-    git -C "$ztls_root" archive --format=tar.gz --prefix=ztls/ -o "$archive" "$ztls_sha" ||
-        die "git archive failed for $ztls_sha"
+    printf 'consumer-gate: archiving tls %s (worktree dirty: %s)\n' "$tls_sha" "$tls_dirty" >&2
+    git -C "$tls_root" archive --format=tar.gz --prefix=tls/ -o "$archive" "$tls_sha" ||
+        die "git archive failed for $tls_sha"
     archive_sha=$(sha256_file "$archive")
 
-    if ! is_full_sha "$ztls_rev"; then
-        gaps+=("ztls: symbolic revision '$ztls_rev' resolved to $ztls_sha")
+    if ! is_full_sha "$tls_rev"; then
+        gaps+=("tls: symbolic revision '$tls_rev' resolved to $tls_sha")
     fi
     if [ "${#selected[@]}" -lt 2 ]; then
         gaps+=("consumer subset requested: ${selected[*]}")
@@ -731,7 +731,7 @@ main() {
     done
 
     write_record "$result"
-    candidate_id="$ztls_sha/$(cat "$out_dir/consumers/${selected[0]}/hash")"
+    candidate_id="$tls_sha/$(cat "$out_dir/consumers/${selected[0]}/hash")"
     write_summary "$result"
 
     if [ "$result" = red ]; then

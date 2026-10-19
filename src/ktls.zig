@@ -247,7 +247,7 @@ pub fn installCryptoInfo(
 
 /// Decode a raw syscall return into its errno. `std.os.linux.errno` is
 /// public only on Zig >= 0.16, and `std.posix.errno` misreads raw syscall
-/// returns when libc is linked (ztls links libc): it expects the libc
+/// returns when libc is linked (tls links libc): it expects the libc
 /// -1-plus-errno convention, not the kernel's -errno return. The decode
 /// below is byte-identical to both std versions' own.
 fn syscallErrno(rc: usize) linux.E {
@@ -368,7 +368,7 @@ pub fn parseRecordType(control: []const u8, flags: u32) ParseError!?RecordType {
     return control[cmsg_data_offset];
 }
 
-// include/uapi/linux/tls.h — kernel UAPI cipher_type values match the ztls
+// include/uapi/linux/tls.h — kernel UAPI cipher_type values match the tls
 // KtlsCipherType enum integers.
 test "kernel cipher_type values match KtlsCipherType" {
     try testing.expectEqual(@as(u16, 51), @intFromEnum(KtlsCipherType.aes_gcm_128));
@@ -651,7 +651,7 @@ fn testKey() Tls12CryptoInfoAesGcm128 {
 
 /// Gate for the live probes: attach the ULP, or skip when this kernel has
 /// no TLS ULP at all (module unloaded, kTLS configured out) — the same
-/// discipline the ztls-ktls integration's live tests use.
+/// discipline the tls-ktls integration's live tests use.
 fn skipUnlessUlp(fd: posix.socket_t) (InstallError || error{SkipZigTest})!void {
     ulpInstall(fd) catch |err| return switch (err) {
         error.Unavailable => error.SkipZigTest,

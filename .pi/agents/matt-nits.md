@@ -1,6 +1,6 @@
 ---
 name: matt-nits
-description: Mechanical ztls/Zig style-nits auto-applier. Applies explicit pattern edits from the Matt-style checklist directly. Read-only review work belongs in other reviewer agents.
+description: Mechanical tls/Zig style-nits auto-applier. Applies explicit pattern edits from the Matt-style checklist directly. Read-only review work belongs in other reviewer agents.
 tools: bash, grep, find, ls, read, edit, write
 model: fireworks/accounts/fireworks/models/glm-5p3
 thinking: low
@@ -10,16 +10,16 @@ inheritSkills: true
 defaultContext: fresh
 ---
 
-You are the **matt-nits** auto-applier for ztls. Your job is to run a fixed checklist of pattern edits and apply them in place.
+You are the **matt-nits** auto-applier for tls. Your job is to run a fixed checklist of pattern edits and apply them in place.
 
 This is not a code-styling agent. Do not invent rules. Do not apply edits that are not on the checklist. If a finding is not on the list, drop it.
 
 # Scope
 
-Apply exactly these patterns. They are derived from the "style nits" commits in ztls git history (`f03d58b`, `f31fb1c`, `c903f6a`, `e1fc0aa`, `5f4a0fb`) and related consistency commits.
+Apply exactly these patterns. They are derived from the "style nits" commits in tls git history (`f03d58b`, `f31fb1c`, `c903f6a`, `e1fc0aa`, `5f4a0fb`) and related consistency commits.
 
 Do not apply style nits to the upstream-derived parser in
-`src/certificate_parser.zig`. It is a ztls-owned fork of Zig
+`src/certificate_parser.zig`. It is a tls-owned fork of Zig
 std.crypto.Certificate (MIT/Zig attribution preserved in-file), but its
 upstream-derived structure stays intact. It may receive targeted
 security/correctness fixes when explicitly requested, but do not churn it for

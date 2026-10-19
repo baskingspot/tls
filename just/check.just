@@ -13,7 +13,7 @@ check-memory $OUTPUT="":
 check-backend-aws-lc:
     #!/usr/bin/env bash
     set -euo pipefail
-    aws_lc_pkg_config_path="${ZTLS_AWS_LC_PKG_CONFIG_PATH:-}"
+    aws_lc_pkg_config_path="${TLS_AWS_LC_PKG_CONFIG_PATH:-}"
     if [ -z "$aws_lc_pkg_config_path" ]; then
         aws_lc_dev=$(nix build --no-link --print-out-paths nixpkgs#aws-lc.dev)
         aws_lc_pkg_config_path="$aws_lc_dev/lib/pkgconfig"
@@ -43,9 +43,9 @@ check-backend-aws-lc:
 check-backend-boringssl:
     #!/usr/bin/env bash
     set -euo pipefail
-    boringssl_pkg_config_path="${ZTLS_BORINGSSL_PKG_CONFIG_PATH:-}"
+    boringssl_pkg_config_path="${TLS_BORINGSSL_PKG_CONFIG_PATH:-}"
     if [ -z "$boringssl_pkg_config_path" ]; then
-        echo "ZTLS_BORINGSSL_PKG_CONFIG_PATH is not set; run inside 'nix develop .#boringssl'" >&2
+        echo "TLS_BORINGSSL_PKG_CONFIG_PATH is not set; run inside 'nix develop .#boringssl'" >&2
         exit 1
     fi
     boringssl_include_dir=$(PKG_CONFIG_PATH="$boringssl_pkg_config_path" pkg-config --variable=includedir libcrypto)
@@ -73,10 +73,10 @@ check-backend-boringssl:
 check-backends:
     #!/usr/bin/env bash
     set -euo pipefail
-    aws_lc_pkg_config_path="${ZTLS_AWS_LC_PKG_CONFIG_PATH:-}"
-    boringssl_pkg_config_path="${ZTLS_BORINGSSL_PKG_CONFIG_PATH:-}"
+    aws_lc_pkg_config_path="${TLS_AWS_LC_PKG_CONFIG_PATH:-}"
+    boringssl_pkg_config_path="${TLS_BORINGSSL_PKG_CONFIG_PATH:-}"
     if [ -z "$aws_lc_pkg_config_path" ] || [ -z "$boringssl_pkg_config_path" ]; then
-        echo "run inside a ztls Nix devshell" >&2
+        echo "run inside a tls Nix devshell" >&2
         exit 1
     fi
     cache_dir=$(mktemp -d)
@@ -92,10 +92,10 @@ check-backends:
 check-fips-builds:
     #!/usr/bin/env bash
     set -euo pipefail
-    aws_lc_pkg_config_path="${ZTLS_AWS_LC_PKG_CONFIG_PATH:-}"
-    boringssl_pkg_config_path="${ZTLS_BORINGSSL_PKG_CONFIG_PATH:-}"
+    aws_lc_pkg_config_path="${TLS_AWS_LC_PKG_CONFIG_PATH:-}"
+    boringssl_pkg_config_path="${TLS_BORINGSSL_PKG_CONFIG_PATH:-}"
     if [ -z "$aws_lc_pkg_config_path" ] || [ -z "$boringssl_pkg_config_path" ]; then
-        echo "run inside a ztls Nix devshell" >&2
+        echo "run inside a tls Nix devshell" >&2
         exit 1
     fi
     cache_dir=$(mktemp -d)
@@ -138,35 +138,35 @@ flake-check N="20":
 [doc("Run every in-tree integration gate")]
 [group("check")]
 integrations-ci:
-    just integrations/ztls-std/ci
-    just integrations/ztls-xev/ci
-    if [ "$(uname -s)" = Linux ]; then just integrations/ztls-ktls/ci; else echo "ztls-ktls: Linux-only, skipped"; fi
+    just integrations/tls-std/ci
+    just integrations/tls-xev/ci
+    if [ "$(uname -s)" = Linux ]; then just integrations/tls-ktls/ci; else echo "tls-ktls: Linux-only, skipped"; fi
 
 [doc("Compile core and integration modules as an isolated fetched package")]
 [group("check")]
 distribution-ci:
     ./scripts/distribution-smoke.sh
 
-# Consumer compatibility gate (#119). ztls owns candidate provenance,
+# Consumer compatibility gate (#119). tls owns candidate provenance,
 # isolation, and the record; the consumers own their commands. See
 # docs/research/CONSUMER_GATE.md. Consumer checkouts come from
 # CONSUMER_GATE_HANDOFF_REPO / CONSUMER_GATE_Z53_REPO or --handoff-repo/
 # --z53-repo.
-[doc("Gate a ztls candidate against the active consumer suites (handoff, z53) (#119)")]
+[doc("Gate a tls candidate against the active consumer suites (handoff, z53) (#119)")]
 [group("check")]
-consumer-gate $ZTLS_REV="HEAD" $HANDOFF_REV="HEAD" $Z53_REV="HEAD" $CONSUMERS="handoff z53" $OUT_DIR="":
+consumer-gate $TLS_REV="HEAD" $HANDOFF_REV="HEAD" $Z53_REV="HEAD" $CONSUMERS="handoff z53" $OUT_DIR="":
     #!/usr/bin/env bash
     set -euo pipefail
-    args=(--ztls-rev "$ZTLS_REV" --handoff-rev "$HANDOFF_REV" --z53-rev "$Z53_REV" --consumers "$CONSUMERS")
+    args=(--tls-rev "$TLS_REV" --handoff-rev "$HANDOFF_REV" --z53-rev "$Z53_REV" --consumers "$CONSUMERS")
     if [ -n "$OUT_DIR" ]; then args+=(--out-dir "$OUT_DIR"); fi
     exec ./scripts/consumer-gate.sh "${args[@]}"
 
 # The qualification entrypoint: refuses symbolic revisions, so a record written
-# by this recipe names the exact ztls and consumer commits that were tested.
-[doc("Qualify a production candidate: fixed ztls SHA plus fixed handoff and z53 SHAs (#119)")]
+# by this recipe names the exact tls and consumer commits that were tested.
+[doc("Qualify a production candidate: fixed tls SHA plus fixed handoff and z53 SHAs (#119)")]
 [group("check")]
-qualify-candidate $ZTLS_SHA $HANDOFF_SHA $Z53_SHA $OUT_DIR:
-    ./scripts/consumer-gate.sh --require-fixed-revisions --ztls-rev "$ZTLS_SHA" --handoff-rev "$HANDOFF_SHA" --z53-rev "$Z53_SHA" --out-dir "$OUT_DIR"
+qualify-candidate $TLS_SHA $HANDOFF_SHA $Z53_SHA $OUT_DIR:
+    ./scripts/consumer-gate.sh --require-fixed-revisions --tls-rev "$TLS_SHA" --handoff-rev "$HANDOFF_SHA" --z53-rev "$Z53_SHA" --out-dir "$OUT_DIR"
 
 [doc("Exercise consumer-gate guards offline without consumer builds")]
 [group("check")]
@@ -334,7 +334,7 @@ fmt-rust:
 lint-zig:
     zig fmt --check src/ examples/ bench/ tests/distribution-consumer/ build.zig
     ziglint build.zig examples bench tests/distribution-consumer $(fd --extension zig --exclude certificate_parser.zig . src)
-    ast-grep scan --rule rules/no-ztls-owned-allocations.yml src --globs '*.zig' --globs '!src/test/**' --globs '!src/bench/**' --globs '!src/interop.zig' --report-style short
+    ast-grep scan --rule rules/no-tls-owned-allocations.yml src --globs '*.zig' --globs '!src/test/**' --globs '!src/bench/**' --globs '!src/interop.zig' --report-style short
     ast-grep scan --rule rules/no-c-pointer-types.yml src --globs '*.zig' --report-style short
     # std-alias rules: enforce the aliases we always want. certificate_parser.zig
     # is an upstream-derived std fork kept close to upstream, so it is excluded

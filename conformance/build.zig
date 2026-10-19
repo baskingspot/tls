@@ -9,12 +9,12 @@ pub fn build(b: *std.Build) void {
         "Narrow the inferred libcrypto backend to its FIPS capability identity",
     ) orelse false;
 
-    const ztls_dep = b.dependency("ztls", .{
+    const tls_dep = b.dependency("tls", .{
         .target = target,
         .optimize = optimize,
         .@"crypto-fips" = crypto_fips,
     });
-    const ztls_mod = ztls_dep.module("ztls");
+    const tls_mod = tls_dep.module("tls");
 
     // Shared networking helpers — same module as the examples.
 
@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(entry.src),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "ztls", .module = ztls_mod }},
+            .imports = &.{.{ .name = "tls", .module = tls_mod }},
         });
         exe_mod.addImport("fixtures", fixtures_mod);
         exe_mod.link_libc = true;
@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/anvil_client.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "ztls", .module = ztls_mod }},
+            .imports = &.{.{ .name = "tls", .module = tls_mod }},
         });
         mod.addImport("fixtures", fixtures_mod);
         mod.link_libc = true;

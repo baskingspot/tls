@@ -32,7 +32,7 @@ Regenerate with OpenSSL:
 # root: the trust anchor that WILL be in the bundle (self-signed)
 openssl ecparam -name prime256v1 -genkey -noout -out root.key
 openssl req -x509 -new -key root.key -sha256 -days 3650 \
-  -subj '/CN=ztls crosssign root' -out root.crt \
+  -subj '/CN=tls crosssign root' -out root.crt \
   -addext 'basicConstraints=critical,CA:TRUE,pathlen:1' \
   -addext 'keyUsage=critical,keyCertSign,cRLSign' \
   -addext 'subjectKeyIdentifier=hash'
@@ -40,13 +40,13 @@ openssl req -x509 -new -key root.key -sha256 -days 3650 \
 # other: an untrusted anchor (NOT in the bundle) that cross-signs root's key
 openssl ecparam -name prime256v1 -genkey -noout -out other.key
 openssl req -x509 -new -key other.key -sha256 -days 3650 \
-  -subj '/CN=ztls crosssign untrusted anchor' -out other.crt \
+  -subj '/CN=tls crosssign untrusted anchor' -out other.crt \
   -addext 'basicConstraints=critical,CA:TRUE' \
   -addext 'keyUsage=critical,keyCertSign,cRLSign' \
   -addext 'subjectKeyIdentifier=hash'
 
 # cross: root's subject + key, but issued by the untrusted anchor
-openssl req -new -key root.key -subj '/CN=ztls crosssign root' -out cross.csr
+openssl req -new -key root.key -subj '/CN=tls crosssign root' -out cross.csr
 cat > cross.ext <<'EOF'
 basicConstraints=critical,CA:TRUE,pathlen:1
 keyUsage=critical,keyCertSign,cRLSign
@@ -59,7 +59,7 @@ openssl x509 -req -in cross.csr -CA other.crt -CAkey other.key \
 # intermediate issued by root
 openssl ecparam -name prime256v1 -genkey -noout -out intermediate.key
 openssl req -new -key intermediate.key \
-  -subj '/CN=ztls crosssign intermediate' -out intermediate.csr
+  -subj '/CN=tls crosssign intermediate' -out intermediate.csr
 cat > intermediate.ext <<'EOF'
 basicConstraints=critical,CA:TRUE,pathlen:0
 keyUsage=critical,keyCertSign,cRLSign

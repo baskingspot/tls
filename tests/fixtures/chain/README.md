@@ -1,6 +1,6 @@
 # X.509 chain fixtures
 
-Small P-256 certificate chain for ztls unit tests:
+Small P-256 certificate chain for tls unit tests:
 
 ```text
 root CA -> intermediate CA -> leaf chain.test
@@ -18,14 +18,14 @@ Regenerate with OpenSSL:
 ```sh
 openssl ecparam -name prime256v1 -genkey -noout -out root.key
 openssl req -x509 -new -key root.key -sha256 -days 3650 \
-  -subj '/CN=ztls test root' -out root.crt \
+  -subj '/CN=tls test root' -out root.crt \
   -addext 'basicConstraints=critical,CA:TRUE,pathlen:1' \
   -addext 'keyUsage=critical,keyCertSign,cRLSign' \
   -addext 'subjectKeyIdentifier=hash'
 
 openssl ecparam -name prime256v1 -genkey -noout -out intermediate.key
 openssl req -new -key intermediate.key \
-  -subj '/CN=ztls test intermediate' -out intermediate.csr
+  -subj '/CN=tls test intermediate' -out intermediate.csr
 cat > intermediate.ext <<'EOF'
 basicConstraints=critical,CA:TRUE,pathlen:0
 keyUsage=critical,keyCertSign,cRLSign

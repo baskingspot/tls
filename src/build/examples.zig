@@ -4,10 +4,10 @@ const Build = std.Build;
 pub fn addSteps(b: *Build, opts: struct {
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    ztls_mod: *Build.Module,
+    tls_mod: *Build.Module,
     fixtures_mod: *Build.Module,
 }) void {
-    const mod = opts.ztls_mod;
+    const mod = opts.tls_mod;
 
     const examples = [_][]const u8{
         "full_handshake",
@@ -24,7 +24,7 @@ pub fn addSteps(b: *Build, opts: struct {
             .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
             .target = opts.target,
             .optimize = opts.optimize,
-            .imports = &.{.{ .name = "ztls", .module = mod }},
+            .imports = &.{.{ .name = "tls", .module = mod }},
         });
         exe_mod.addImport("fixtures", opts.fixtures_mod);
         const exe = b.addExecutable(.{ .name = name, .root_module = exe_mod });
@@ -45,7 +45,7 @@ pub fn addSteps(b: *Build, opts: struct {
                 .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
                 .target = opts.target,
                 .optimize = opts.optimize,
-                .imports = &.{.{ .name = "ztls", .module = mod }},
+                .imports = &.{.{ .name = "tls", .module = mod }},
             });
             exe_mod.addImport("fixtures", opts.fixtures_mod);
             const exe = b.addExecutable(.{ .name = name, .root_module = exe_mod });
