@@ -1,7 +1,11 @@
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    flake-parts.url = "github:hercules-ci/flake-parts";
+    flake-parts.follows = "baskingspot/flake-parts";
+    baskingspot = {
+      url = "github:baskingspot/nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     mattware = {
       url = "github:mattrobenolt/nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -21,15 +25,26 @@
       ...
     }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [
-        "x86_64-linux"
-        "aarch64-linux"
-        "aarch64-darwin"
+      # imports and inputsFrom below mirror each other, except the toolchain
+      # version: pick that once, in the import.
+      imports = with inputs.baskingspot.flakeModules; [
+        base
+        shell
+        terraform
+        zig."0.16"
       ];
 
       perSystem =
-        { system, lib, ... }:
+        {
+          system,
+          lib,
+          config,
+          ...
+        }:
         let
+          # The mattware overlay carries the openssl 3.6 line and the rust
+          # toolchain the benchmark harness pins. The shared modules keep the
+          # default package set; they only supply tools to the shells below.
           pkgs = import nixpkgs {
             inherit system;
             overlays = [
@@ -47,10 +62,16 @@
             openssl
             opensslBackend
             ;
+          # Every ztls shell carries the shared tool contract. Qualify each
+          # name: `zig` in this scope is the toolchain helper below.
+          tooling = [
+            config.devShells.base
+            config.devShells.shell
+            config.devShells.terraform
+            config.devShells.zig
+          ];
         in
         {
-          formatter = pkgs.nixfmt;
-
           # Diagnostic provider for #121. Production keeps the optimized build.
           # GCC vector scans trigger Memcheck reports after valid NUL terminators.
           packages.openssl-memcheck = openssl.overrideAttrs (old: {
@@ -58,20 +79,24 @@
           });
 
           devShells = rec {
-            base = pkgs.mkShell {
+            # The repo's own toolset. The attr is `ztls-base` because the
+            # shared flake module owns `base`.
+            ztls-base = pkgs.mkShell {
               name = "ztls-base";
-              packages = commonPackages zig;
+              inputsFrom = tooling;
+              packages = commonPackages;
               shellHook = commonHook zig;
             };
 
             openssl = backendShell {
               name = "ztls-openssl";
-              pkgConfigPath = opensslBackend.pkgConfigPath;
-              packages = opensslBackend.packages;
+              inputsFrom = tooling;
+              inherit (opensslBackend) pkgConfigPath packages;
             };
 
             aws-lc = backendShell {
               name = "ztls-aws-lc";
+              inputsFrom = tooling;
               pkgConfigPath = "${pkgs.aws-lc.dev}/lib/pkgconfig";
               packages = [
                 pkgs.aws-lc.dev
@@ -81,6 +106,7 @@
 
             boringssl = backendShell {
               name = "ztls-boringssl";
+              inputsFrom = tooling;
               pkgConfigPath = "${boringsslPc}";
               packages = [
                 pkgs.boringssl.dev
@@ -90,10 +116,12 @@
 
             # Docs site tooling: Zig autodoc build plus mdBook and wrangler
             # for building and publishing the Cloudflare site. Built on the
-            # OpenSSL backend shell.
+            # OpenSSL backend shell. The org's `docs` module is Zola, so this
+            # stays repo-local until the site moves in a later phase.
             docs = backendShell {
               name = "ztls-docs";
-              pkgConfigPath = opensslBackend.pkgConfigPath;
+              inputsFrom = tooling;
+              inherit (opensslBackend) pkgConfigPath;
               packages = opensslBackend.packages ++ [
                 pkgs.mdbook
                 pkgs.nodejs
@@ -105,10 +133,10 @@
             # common dev shell so ztls devs don't carry font/Python deps.
             brand = pkgs.mkShell {
               name = "ztls-brand";
+              inputsFrom = [ config.devShells.base ];
               packages = [
                 (pkgs.python3.withPackages (ps: [ ps.fonttools ]))
                 pkgs.jetbrains-mono
-                pkgs.just
               ];
               shellHook = ''
                 export ZTLS_BRAND_FONT_DIR=${pkgs.jetbrains-mono}/share/fonts

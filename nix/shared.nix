@@ -94,35 +94,25 @@ rec {
     export PATH=${openssl.bin}/bin:$PATH
   '';
 
-  # commonPackages takes the Zig toolchain pair. ztls is Zig 0.16-only.
+  # The tools the shared modules do not supply. The base, shell, terraform,
+  # and zig shells are composed in through `inputsFrom`; these are ztls's own.
   commonPackages =
-    zig-tools:
     (with pkgs; [
       ast-grep
       benchstat
       binutils
       curl
-      fd
       git
       go
       jdk
       jq
-      just
       llvm
       openssl.bin
-      pinact
       pkg-config
       rustToolchain
-      shellcheck
       uv
-      opentofu
       rsync
       txtar
-      zig-tools.zig
-      zigdoc
-      zizmor
-      ziglint
-      zig-tools.zls
     ])
     ++ lib.optionals pkgs.stdenv.isLinux (
       with pkgs;
@@ -150,13 +140,14 @@ rec {
   backendShell =
     {
       name,
+      inputsFrom,
       pkgConfigPath,
       packages,
       zig-tools ? zig,
     }:
     pkgs.mkShell {
-      inherit name;
-      packages = commonPackages zig-tools ++ packages;
+      inherit name inputsFrom;
+      packages = commonPackages ++ packages;
       shellHook = ''
         ${commonHook zig-tools}
         export PKG_CONFIG_PATH=${pkgConfigPath}''${PKG_CONFIG_PATH:+:''${PKG_CONFIG_PATH}}
