@@ -253,7 +253,7 @@ a suite to shake out the first kind; only forcing the condition fixes the second
 **Unit tests** usually live in the same file as the code they test (`test` blocks).
 
 **Integration tests** live in `src/test/` and examples. The harnesses connect a
-tls client to a tls server in memory and exercise both directions against
+a TLS client to a TLS server in memory and exercise both directions against
 `openssl s_server` / `openssl s_client` as ground-truth peers.
 
 **Conformance tests** live under `conformance/` as a discrete subproject with
