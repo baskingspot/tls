@@ -24,3 +24,4 @@ docs/themes/
 
 # Local macOS probe scratch (binaries, per-run captures)
 .macprobe/
+docs/content/changelog.md
