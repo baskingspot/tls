@@ -2,9 +2,8 @@
 
 This is the catalogue of supported-surface peer malice and malformed input: what
 must fail, how ztls responds, and which evidence proves the response. It is not
-the RFC MUST matrix (`RFC8446_MUST_MATRIX.md`) and not the threat model
-(`THREAT_MODEL.md`). It is the lower-level "what happens if the peer does this
-bad thing?" map.
+the threat model (`THREAT_MODEL.md`). It is the lower-level "what happens if
+the peer does this bad thing?" map.
 
 Statuses in this file are local to a row:
 

@@ -50,4 +50,4 @@ The report script:
 - reports unmatched_skip_patterns and expected_skip_count_by_reason to catch stale or overbroad skip rules;
 - writes `summary.json` (machine-readable) and `summary.txt` (human-readable).
 
-The parser exits 0 only when the report has no unexpected pass/fail/skipped classifications; it exits 1 when review is required. Synthetic parser tests and wrapper helper tests run in `just ci`; real TLS-Anvil server execution runs in the dedicated scheduled/manual workflow, while client execution has a manual workflow with strict normalized evidence. The completed server/client `not_attempted` buckets are classified in `docs/research/TLS_ANVIL_NOT_ATTEMPTED.md`.
+The parser exits 0 only when the report has no unexpected pass/fail/skipped classifications; it exits 1 when review is required. Synthetic parser tests and wrapper helper tests run in `just ci`; real TLS-Anvil server execution runs in the dedicated scheduled/manual workflow, while client execution has a manual workflow with strict normalized evidence.

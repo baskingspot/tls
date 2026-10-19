@@ -26,6 +26,6 @@ Out of scope:
 ## What to expect
 
 There is no response-time SLA. Reports are read, and fixes land when they land.
-There has been no third-party audit. The test evidence and the threat model are
+There has been no third-party audit. The status summary and the threat model are
 in [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md)
 and [`docs/research/THREAT_MODEL.md`](https://github.com/baskingspot/tls/blob/main/docs/research/THREAT_MODEL.md).

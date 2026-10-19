@@ -11,10 +11,8 @@ Run the local correctness gate with:
 just ci
 ```
 
-The authoritative readiness status and evidence summary lives in `PRODUCTION_READINESS.md`.
+The authoritative readiness status lives in `PRODUCTION_READINESS.md`.
 
-`RFC8446_MUST_MATRIX.md` maps TLS 1.3 normative requirements to tests,
-implementation gaps, or explicit out-of-scope feature decisions.
 `NEGATIVE_SPACE.md` is the supported-surface catalogue of malformed and
 malicious peer inputs: each row names ztls's response and the test evidence or
 an explicit gap. `THREAT_MODEL.md` defines the attacker capabilities,
@@ -60,8 +58,8 @@ mode, for example:
 zig build test -- --fuzz
 ```
 
-Fuzz inventories and remaining gaps are tracked in `PRODUCTION_READINESS.md`; add new
-targets there when their evidence changes.
+Remaining fuzz gaps are tracked in GitHub issues; add a target here when it
+covers a new surface.
 
 The server `handleRecord` fuzz targets cover both the pre-auth boundary where
 raw wire bytes first enter the Sans-I/O server and the connected post-auth
@@ -91,6 +89,6 @@ large implicit control-flow argument.
 
 ## External suite policy
 
-External-suite scope, skip lists, and active readiness status live in
-`PRODUCTION_READINESS.md` and the relevant GitHub issues. This file keeps only
-runner mechanics and the rationale for each suite.
+Active readiness status lives in `PRODUCTION_READINESS.md`; suite scope and
+skip lists live in `conformance/`. This file keeps only runner mechanics and
+the rationale for each suite.

@@ -1,82 +1,51 @@
 # research
 
-Design notes, RFC references, prior art, conformance/sub-feature roadmaps,
-perf methodology, and committed capture evidence for ztls. Status — what is
-done and how we know it — lives in `PRODUCTION_READINESS.md`; nothing here
-re-asserts it.
+Design notes, the threat model, conformance plans, and the performance
+methodology. Status lives in `PRODUCTION_READINESS.md`; nothing here restates
+it.
 
-## design
+## Design
 
-- [`DESIGN.md`](DESIGN.md) — goals, non-goals, prior art (BearSSL, rustls,
-  Go `crypto/tls`), Sans-I/O pattern, RFC reference table, architecture,
-  consumer-facing API sketch, and crypto backend boundary notes.
-- [`PROVIDER_INTERFACE.md`](PROVIDER_INTERFACE.md) — ztls-owned crypto
-  facade shape (AEAD, HKDF/hash policy, named groups, signatures,
-  capabilities, memory ownership, error mapping) for libcrypto-family
-  backends.
+- [`DESIGN.md`](DESIGN.md) — goals, non-goals, prior art, the Sans-I/O shape,
+  and the crypto backend boundary.
+- [`PROVIDER_INTERFACE.md`](PROVIDER_INTERFACE.md) — the crypto facade the
+  engine calls: AEAD, hashing, named groups, signatures, and error mapping.
+- [`CRYPTO_ROADMAP.md`](CRYPTO_ROADMAP.md) — the backend allocation contract
+  and the OpenSSL to AWS-LC to BoringSSL path.
 
-## correctness
+## Correctness
 
-- [`CONSUMER_GATE.md`](CONSUMER_GATE.md) — immutable candidate selection,
-  isolated handoff and z53 tests, evidence records, and rollback pins.
-- [`CORRECTNESS.md`](CORRECTNESS.md) — local correctness gate commands and
-  external-suite mechanics (tlsfuzzer, Wycheproof, fuzzing). Pure runbook;
-  status-bearing evidence is rooted in `PRODUCTION_READINESS.md`.
-- [`RFC8446_MUST_MATRIX.md`](RFC8446_MUST_MATRIX.md) — claims-to-evidence
-  map for TLS 1.3 normative requirements with named test/caller/disposition
-  evidence.
-- [`NEGATIVE_SPACE.md`](NEGATIVE_SPACE.md) — supported-surface catalogue of
-  malformed and malicious peer inputs and the engine response with evidence.
-- [`TLS_ANVIL_NOT_ATTEMPTED.md`](TLS_ANVIL_NOT_ATTEMPTED.md) — classification
-  of endpoint-mode rows that a completed server-mode TLS-Anvil run did not
-  exercise, split into in-scope runner debt and explicit out-of-scope rows.
-- [`THREAT_MODEL.md`](THREAT_MODEL.md) — in-scope adversary capabilities,
-  defended attack classes with evidence, non-goals, and caller boundaries.
+- [`THREAT_MODEL.md`](THREAT_MODEL.md) — the attacker, the defended surface,
+  the non-goals, and where the caller's responsibility starts.
+- [`NEGATIVE_SPACE.md`](NEGATIVE_SPACE.md) — malformed and malicious peer
+  input, and what the engine does about each one.
+- [`CORRECTNESS.md`](CORRECTNESS.md) — how to run the local gate and the
+  external suites.
+- [`CONSUMER_GATE.md`](CONSUMER_GATE.md) — qualifying a commit against the
+  downstream consumers.
+- [`bettertls.md`](bettertls.md) — what Netflix's bettertls checks, and how
+  the local fixtures cover the same ground.
 
-## roadmaps
+## Plans
 
-These track features and gates that are not yet part of the supported
-surface. Each is a precondition list plus acceptance criteria — never a
-status claim.
+These describe work that is not in the supported surface. They are
+preconditions and acceptance criteria, not status claims.
 
 - [`CONFORMANCE_ROADMAP.md`](CONFORMANCE_ROADMAP.md) — HelloRetryRequest,
-  PSK/resumption, 0-RTT, client cert auth, PQ groups, and external runners
-  (TLS-Anvil, BoGo, tlsfuzzer lockstep).
-- [`BOGO_DEFERRED.md`](BOGO_DEFERRED.md) — decision record and re-entry bar
-  for deferring BoringSSL BoGo runner integration instead of carrying a fake
-  shim or workflow.
-- [`API_ROADMAP.md`](API_ROADMAP.md) — HTTPS wrapper acceptance criteria,
-  io_uring client proof shape, and the future client-auth policy shape.
-- [`CRYPTO_ROADMAP.md`](CRYPTO_ROADMAP.md) — backend allocation contract,
-  backend seams, milestones (OpenSSL → AWS-LC → BoringSSL), PQ/hybrid
-  extension path, success criteria routed to `PRODUCTION_READINESS.md`.
+  PSK, 0-RTT, client auth, PQ groups, and the external runners.
+- [`API_ROADMAP.md`](API_ROADMAP.md) — the HTTPS wrapper and the io_uring
+  client proof.
+- [`BOGO_DEFERRED.md`](BOGO_DEFERRED.md) — why BoGo is deferred, and what
+  would bring it back.
 
-## conformance suite scope
+## Performance
 
-- [`bettertls.md`](bettertls.md) — what `bettertls` validates, how ztls
-  covers the local slice without vendoring the Go harness, and the future
-  harness path.
-- [`C_ABI_CONFORMANCE.md`](C_ABI_CONFORMANCE.md) — gate shape for #30, including the C harness under TLS-Anvil, skip-list inheritance from the #52 DSA-root classifier, new surface (handshake/alerts/KeyUpdate), and the FFI-residual gap that the C harness does not cover.
+- [`PERFORMANCE.md`](PERFORMANCE.md) — the benchmark scenarios, what each row
+  actually times, and where the implementations are comparable.
+- [`perf/`](perf/) — the committed captures behind those numbers, plus
+  `perf/EXPLANATION_TEMPLATE.md`.
 
-## performance
+## Reference
 
-- [`PERFORMANCE.md`](PERFORMANCE.md) — benchmark scenario plans, equivalence
-  methodology (where ztls / libssl / rustls / EVP rows are comparable),
-  per-row timed-work inventories, profiling-tool notes, and row-oriented
-  perf/disassembly tooling.
-- [`perf/`](perf/) — committed benchmark captures and the benchmark explanation
-  template (`perf/EXPLANATION_TEMPLATE.md`). Captures include the EC2 baseline
-  [`perf/20260613-182405-ec2-c7i-large/`](perf/20260613-182405-ec2-c7i-large/)
-  and the local AWS-LC provider-lane capture
-  [`perf/20260705-160550-awslc-local/`](perf/20260705-160550-awslc-local/).
-
-## references
-
-- [`rfcs/`](rfcs/) — full RFC text files for offline reference:
-  - `rfc8446-tls13.txt` — TLS 1.3 (primary)
-  - `rfc5869-hkdf.txt` — HKDF
-  - `rfc8439-chacha20-poly1305.txt` — ChaCha20-Poly1305 AEAD
-  - `rfc7748-x25519-x448.txt` — X25519 / X448 key exchange
-  - `rfc8032-eddsa.txt` — EdDSA / Ed25519
-  - `rfc8448-tls13-examples.txt` — TLS 1.3 example handshake traces with
-    known numerical test vectors
+- [`rfcs/`](rfcs/) — the RFC text, offline: TLS 1.3, HKDF, ChaCha20-Poly1305,
+  X25519, Ed25519, the TLS 1.3 examples, and the PQ hybrid draft.

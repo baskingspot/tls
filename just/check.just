@@ -212,24 +212,40 @@ examples-ci:
 lint: lint-zig lint-shell lint-actions lint-just lint-markdown lint-issues lint-readme-index lint-fixtures lint-rust lint-store-paths
     just conformance/lint
 
-[doc("Lint markdown research docs for status-language drift")]
+[doc("Lint markdown for status-language drift and slop references")]
 [group("check")]
 lint-markdown:
     #!/usr/bin/env bash
+    # Status lives in PRODUCTION_READINESS.md and nowhere else. Research docs
+    # describe mechanism; they must not re-assert whether something is done.
     matches=$(grep -rnE --include='*.md' --exclude-dir=rfcs -e '[Nn]ow (uses|enforces|defaults|requires|provides|supports|accepts|rejects|returns|fails|emits|includes|features|serves|offers|builds|depends|targets|relies|will|becomes)' -e '(is|are) (currently|presently|today)' -e 'this commit (has|now|will)' docs/research/) || true
     # Reject bold status-heading forms (e.g. `**Status:**`, `**State:**`,
     # `**Done:**`, `**Progress:**`, or the same without trailing colon): a
     # verdict label outside the spine. Status lives only in
-    # PRODUCTION_READINESS.md; the search scope `docs/research/` already
-    # excludes the spine, but `grep -v` makes the exclusion explicit and
-    # future-proof if the scope widens.
-    heading_matches=$(grep -rniE --include='*.md' --exclude-dir=rfcs -e '^\*\*(status|state|done|progress):?\*\*( |$)' docs/research/ | grep -v 'PRODUCTION_READINESS.md' || true)
+    # PRODUCTION_READINESS.md. The log in docs/slop/ is deliberately out of
+    # scope; it records status history and is not read as a document.
+    heading_matches=$(grep -rniE --include='*.md' --exclude-dir=rfcs -e '^\*\*(status|state|done|progress):?\*\*( |$)' docs/research/ || true)
     if [[ -n "$matches" || -n "$heading_matches" ]]; then
         [[ -n "$matches" ]] && printf 'status-language drift found in research docs:\n%s\n' "$matches" >&2
         [[ -n "$heading_matches" ]] && printf 'status-heading drift found in research docs (PRODUCTION_READINESS.md is the spine and is the only doc allowed to carry status):\n%s\n' "$heading_matches" >&2
         exit 1
     fi
+    # Human docs must not name or link docs/slop/. See docs/slop/README.md.
+    # AGENTS.md and .pi/ are agent files and may link in.
+    slop_matches=$(git grep --untracked -nE \
+        -e '\]\([^)]*slop/' \
+        -e 'docs/slop/' \
+        -e '\.\./slop/' \
+        -- '*.md' \
+        ':(exclude)docs/slop/**' \
+        ':(exclude)AGENTS.md' \
+        ':(exclude).pi/**' || true)
+    if [[ -n "$slop_matches" ]]; then
+        printf 'human documents reference docs/slop/:\n%s\n' "$slop_matches" >&2
+        exit 1
+    fi
     echo "no status-language drift"
+    echo "no human document references docs/slop/"
 
 [doc("Reject machine-specific Nix store paths in tracked files")]
 [group("check")]

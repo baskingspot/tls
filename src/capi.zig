@@ -8,7 +8,7 @@
 //!
 //! The opaque-sized approach is used because `ClientHandshake.Suite` is a
 //! `union(enum)` that cannot be C-represented honestly, and the security
-//! review (docs/research/security/C_ABI_SECURITY_REVIEW.md) found that
+//! review (docs/slop/security/C_ABI_SECURITY_REVIEW.md) found that
 //! transparent structs leak secrets and backend pointers across C struct
 //! copies. Opaque-sized handles avoid that class of bug.
 //!

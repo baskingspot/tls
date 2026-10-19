@@ -8,7 +8,7 @@ evidence stay in `THREAT_MODEL.md` (attacker capability + defended classes)
 and `NEGATIVE_SPACE.md` (per-malformed-input response). This doc extends
 both — it does not duplicate their rows.
 
-**Location.** This file lives at `docs/research/security/RECON.md`. Flatten
+**Location.** This file lives at `docs/slop/security/RECON.md`. Flatten
 into `docs/research/RECON.md` if a docs-librarian pass prefers to keep
 research docs at the top level.
 

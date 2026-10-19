@@ -250,5 +250,5 @@ re-offer-in-CH2 before honoring a post-HRR `selected_identity`.
 - `src/NewSessionTicket.zig` — 2 S1 overflow fixes
 - `src/ServerHandshake.zig` — 1 S1 overflow fix + bad-ClientFinished test (H8) + PSK auth-bypass regression test (S3)
 - `src/ClientHandshake.zig` — S3 fix: `server_selected_psk` field + guard fix
-- `docs/research/security/RECON.md` — recon document (new)
-- `docs/research/security/FINDINGS.md` — this file (new)
+- `docs/slop/security/RECON.md` — recon document (new)
+- `docs/slop/security/FINDINGS.md` — this file (new)

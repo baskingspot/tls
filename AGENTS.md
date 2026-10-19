@@ -82,6 +82,8 @@ source of truth for what is done, what "done" means, and what is still unproven.
 Status lives there and nowhere else. Every other document describes mechanism;
 none of them asserts whether something is finished. If you catch another doc
 claiming done/not-done, that line is a bug — delete it and point to the spine.
+The evidence behind the page — revisions, run IDs, per-claim tables — is
+`docs/slop/EVIDENCE.md`. The page states the claim; the log records what ran.
 
 **Write state back in the same change.** When your work changes the evidence
 behind a readiness claim, update `PRODUCTION_READINESS.md` in the same commit. A
@@ -114,6 +116,15 @@ committer fields with `git log --format=fuller` for every new commit.
 subprojects such as `conformance/` own their local build/test/fmt/lint workflows
 and should be usable from inside that directory. Root just recipes may delegate
 to subprojects, but don't smear subproject details back into the root.
+
+**Human docs and agent notes are separate.** Agent working notes, status
+dashboards, claims-to-evidence matrices, recon, and hunt records live in
+`docs/slop/`. Everything else under `docs/`, and the root `README.md`,
+`SECURITY.md`, and `CHANGELOG.md`, is written for a person. No human document
+links or names `docs/slop/`; `just lint` enforces this. `AGENTS.md` and
+`.pi/` may link in. Date-stamped capture directories are records, not prose,
+and the rule does not classify them. When a note is only useful to an agent,
+put it in `docs/slop/` and do not wire it into the research index.
 
 ---
 
@@ -431,3 +442,5 @@ not catch this; the security agents (`whitehat-hacker`, `attack-surface-recon`,
 - Don't close a todo or raise a readiness status on partial work. Say partial.
 - Don't invent a new top-level home for a file when the taxonomy already defines
   one. Raise it instead of improvising.
+- Don't link or name `docs/slop/` from a human document. `just lint` fails
+  the build when you do.

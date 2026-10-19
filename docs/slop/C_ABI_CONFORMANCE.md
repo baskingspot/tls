@@ -37,7 +37,7 @@ The acceptance gate for #30 is a strict TLS-Anvil client capture, re-run
 through the C harness, against the same TLS-Anvil jar and the same
 sequential settings used for the existing strict Zig capture. The reference
 capture for evidence is the one cited from `PRODUCTION_READINESS.md` and
-`docs/research/TLS_ANVIL_NOT_ATTEMPTED.md`: `Running: false`,
+`docs/slop/TLS_ANVIL_NOT_ATTEMPTED.md`: `Running: false`,
 `FinishedTests: 437`, `TotalTests: 437`, six visible #52-class
 `expected_failed` rows under `anvil_report.py:qualifies_dsa_root_expected_fail`,
 and the `not_attempted` split fixed at `205` for the strict client-side
@@ -122,12 +122,12 @@ under a different root key or leaf key type returns the test to
 non-Zig harness exists to find.
 
 `not_attempted` rows stay `not_attempted` for the C harness run exactly as
-classified in `docs/research/TLS_ANVIL_NOT_ATTEMPTED.md`: 157 server-side
+classified in `docs/slop/TLS_ANVIL_NOT_ATTEMPTED.md`: 157 server-side
 and 205 client-side endpoint-mode rows from TLS-Anvil's own
 `disabled_reason == "TestEndpointMode doesn't match"` annotation. A C ABI
 run does not create new `not_attempted` evidence without a different
 protocol-version or direction range; the adapter remains strict and exits 1
-on a partial capture. `docs/research/TLS_ANVIL_NOT_ATTEMPTED.md`'s
+on a partial capture. `docs/slop/TLS_ANVIL_NOT_ATTEMPTED.md`'s
 guardrail — do not add a skip-list pattern that absorbs endpoint-mode
 mismatches — applies unchanged.
 
@@ -248,10 +248,7 @@ there whether the runner cost has paid off.
 
 ## Files this plan touches
 
-- `docs/research/C_ABI_CONFORMANCE.md` — this document (new).
-- `docs/research/README.md` — link the new document from the conformance
-  suite scope section so the index matches the filesystem
-  (`just/check.just:lint-readme-index`).
+- `docs/slop/C_ABI_CONFORMANCE.md` — this document (new).
 - `conformance/c_anvil_client.c` — proposed C harness (new). The new
   client-binary target for `scripts/anvil_client.py`'s `--trigger-script`
   argument; identical envelope to the existing Zig harness.

@@ -8,7 +8,7 @@ between TLS logic and the libcrypto-family backend.
 
 The adversary is an active network attacker or a malicious TLS peer. What
 follows is the surface the engine implements. The malformed-input catalogue is
-in `NEGATIVE_SPACE.md`, and the RFC MUST matrix is in `RFC8446_MUST_MATRIX.md`.
+in `NEGATIVE_SPACE.md`.
 
 ## Supported surface covered here
 
@@ -237,8 +237,8 @@ backend concerns.
 
 The engine clears designated owned key and suite-state fields on teardown.
 Compiler-generated copies and Zig HKDF/HMAC scratch can survive those writes.
-The [secret-lifetime audit](security/ZEROIZATION-2026-09.md) records that
-distinction in optimized binaries.
+The secret-lifetime audit of the #125 change records that distinction in
+optimized binaries.
 
 `deinit` releases backend contexts. Providers control erasure of backend-owned
 memory. The engine does not implement fallback primitives. A compromised crypto
@@ -269,7 +269,7 @@ unscheduled extensions are not on the timeline.
 | Oversized SNI hostnames are accepted on the ClientHello parse path (`parseSni`); the encode path caps at 253 octets | Parser hardening | `NEGATIVE_SPACE.md` policy difference, #123 |
 | Finished-with-a-trailing-message and non-Finished-in-`wait_client_finished` negative unit tests are absent | Server state-machine evidence | #124 |
 | EncryptedExtensions has no standalone parser fuzz target | Parser fuzz breadth | #124 |
-| The provider matrix lacks runtime FIPS-provider verification and full facade-direct Wycheproof coverage | Backend diversity | `PRODUCTION_READINESS.md` provider residuals |
+| The provider matrix lacks runtime FIPS-provider verification and full facade-direct Wycheproof coverage | Backend diversity | backend tracking issues |
 
 ## Boundary diagram
 
