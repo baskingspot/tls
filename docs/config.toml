@@ -21,3 +21,4 @@ dark_theme = "github-dark"
 repo = "baskingspot/tls"
 api = true
 third_party = false
+license = "Apache-2.0"
