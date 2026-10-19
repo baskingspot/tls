@@ -1,7 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const bench = @import("benchmark");
+const testingx = @import("testingx");
 const c = @import("c_ssl").openssl;
 
 const sizes = [_]usize{ 16, 128, 1350, 8192, 16384 };
@@ -128,9 +128,9 @@ fn connected(ctxs: Contexts) Conn {
     return conn;
 }
 
-fn benchHandshake(comptime suite: []const u8) bench.Function {
+fn benchHandshake(comptime suite: []const u8) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             const ctxs = makeContexts(suite);
             defer freeContexts(ctxs);
 
@@ -145,7 +145,7 @@ fn benchHandshake(comptime suite: []const u8) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkHandshake(b: *bench.B) !void {
+pub fn benchmarkHandshake(b: *testingx.B) !void {
     @setEvalBranchQuota(1000000);
     var name_buf: [80]u8 = undefined;
     inline for (suites) |suite| {
@@ -160,9 +160,9 @@ fn benchApp(
     comptime suite: []const u8,
     comptime size: usize,
     comptime dir: Direction,
-) bench.Function {
+) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             const ctxs = makeContexts(suite);
             defer freeContexts(ctxs);
 
@@ -203,7 +203,7 @@ fn benchApp(
     }.benchFn;
 }
 
-pub fn benchmarkAppClientToServer(b: *bench.B) !void {
+pub fn benchmarkAppClientToServer(b: *testingx.B) !void {
     @setEvalBranchQuota(1000000);
     var name_buf: [80]u8 = undefined;
     inline for (suites) |suite| {
@@ -218,7 +218,7 @@ pub fn benchmarkAppClientToServer(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkAppServerToClient(b: *bench.B) !void {
+pub fn benchmarkAppServerToClient(b: *testingx.B) !void {
     @setEvalBranchQuota(1000000);
     var name_buf: [80]u8 = undefined;
     inline for (suites) |suite| {
@@ -233,7 +233,7 @@ pub fn benchmarkAppServerToClient(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkAppPingPong(b: *bench.B) !void {
+pub fn benchmarkAppPingPong(b: *testingx.B) !void {
     @setEvalBranchQuota(1000000);
     var name_buf: [80]u8 = undefined;
     inline for (suites) |suite| {
@@ -246,4 +246,13 @@ pub fn benchmarkAppPingPong(b: *bench.B) !void {
             _ = try b.run(name, benchApp(suite, size, .ping_pong));
         }
     }
+}
+
+/// Suite root for `zig build bench-openssl`. Registered by hand: `addMod(@This())`
+/// would also pick up `benchmarkMain` itself.
+pub fn benchmarkMain(b: *testingx.B) !void {
+    try b.add("Handshake", benchmarkHandshake);
+    try b.add("AppClientToServer", benchmarkAppClientToServer);
+    try b.add("AppServerToClient", benchmarkAppServerToClient);
+    try b.add("AppPingPong", benchmarkAppPingPong);
 }

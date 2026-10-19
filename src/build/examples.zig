@@ -5,7 +5,6 @@ pub fn addSteps(b: *Build, opts: struct {
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     ztls_mod: *Build.Module,
-    txtar_mod: ?*Build.Module,
     fixtures_mod: *Build.Module,
 }) void {
     const mod = opts.ztls_mod;
@@ -28,7 +27,6 @@ pub fn addSteps(b: *Build, opts: struct {
             .imports = &.{.{ .name = "ztls", .module = mod }},
         });
         exe_mod.addImport("fixtures", opts.fixtures_mod);
-        if (opts.txtar_mod) |tm| exe_mod.addImport("txtar", tm);
         const exe = b.addExecutable(.{ .name = name, .root_module = exe_mod });
         const run = b.addRunArtifact(exe);
         if (b.args) |args| run.addArgs(args);

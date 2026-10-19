@@ -11,10 +11,9 @@
 //! finale round-trips a message through them to show they are live.
 const std = @import("std");
 const Io = std.Io;
-const Allocator = std.mem.Allocator;
 
-const txtar = @import("txtar");
 const ztls = @import("ztls");
+const fixtures = @import("fixtures");
 
 // RFC 8448 §3 client ephemeral X25519 keypair. We replay the fixed §3
 // ClientHello via injectClientHello, so the public key here is unused, but
@@ -83,21 +82,12 @@ const server_hello_record = [_]u8{ 0x16, 0x03, 0x03, 0x00, 0x5a } ++ [_]u8{
 // Middlebox-compatibility ChangeCipherSpec record (RFC 8446 §D.4).
 const ccs_record = [_]u8{ 0x14, 0x03, 0x03, 0x00, 0x01, 0x01 };
 
-// RFC 8448 §3 fixtures, base64 inside a txtar archive (decoded at startup).
-const rfc8448_archive = @import("fixtures").rfc8448_txtar;
-
-// Decode a base64 archive entry into `out`, returning the decoded slice.
-fn fixture(alloc: Allocator, name: []const u8, out: []u8) ![]u8 {
-    var archive = try txtar.parse(alloc, rfc8448_archive);
-    defer archive.deinit(alloc);
-    for (archive.files) |f| {
-        if (!std.mem.eql(u8, f.name, name)) continue;
-        const b64 = std.mem.trimEnd(u8, f.data, "\n");
-        const n = try std.base64.standard.Decoder.calcSizeForSlice(b64);
-        try std.base64.standard.Decoder.decode(out[0..n], b64);
-        return out[0..n];
-    }
-    return error.FixtureNotFound;
+// Decode a base64 RFC 8448 §3 archive entry into `out`. The archive parses at
+// comptime, so the example needs no allocator.
+fn fixture(comptime name: []const u8, out: []u8) []u8 {
+    const bytes = fixtures.rfc8448.b64(name);
+    @memcpy(out[0..bytes.len], bytes);
+    return out[0..bytes.len];
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -107,11 +97,8 @@ pub fn main(init: std.process.Init) !void {
     defer stdout.flush() catch {};
     try stdout.print("=== TLS 1.3 client handshake (RFC 8448 §3) ===\n\n", .{});
 
-    var fixture_buf: [8192]u8 = undefined;
-    var fba: std.heap.FixedBufferAllocator = .init(&fixture_buf);
     var flight_buf: [1024]u8 = undefined;
-    const server_flight_record =
-        try fixture(fba.allocator(), "server_flight_record.b64", &flight_buf);
+    const server_flight_record = fixture("server_flight_record.b64", &flight_buf);
 
     var hs: ztls.ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),

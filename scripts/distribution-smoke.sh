@@ -104,10 +104,10 @@ build_consumer() {
 }
 
 build_consumer core
-assert_not_cached benchmark txtar ztest libxev
+assert_not_cached testingx libxev
 
 build_consumer std
-assert_not_cached benchmark txtar ztest libxev
+assert_not_cached testingx libxev
 
 xev_guard_log="$tmp/xev-option-guard.log"
 if build_consumer xev_without_option >"$xev_guard_log" 2>&1; then
@@ -131,6 +131,6 @@ cache_contains libxev || {
     echo "ztls_xev did not fetch its declared libxev dependency" >&2
     exit 1
 }
-assert_not_cached benchmark txtar ztest
+assert_not_cached testingx
 
 echo "ztls distribution smoke passed from an isolated fetched package"

@@ -62,7 +62,7 @@ for target in "${targets[@]}"; do
     if [[ $target == benchmark ]]; then
         [[ $(grep -c '^BenchmarkClientHandshakeReplay/' "$output/$target.log") == 3 ]]
     else
-        grep -Eq '^ztest: [1-9][0-9]* passed, 0 failed,' "$output/$target.log"
+        grep -Eq '^testingx: [1-9][0-9]* passed, 0 failed,' "$output/$target.log"
     fi
     printf '%s: zero Memcheck errors\n' "$target"
 done

@@ -18,12 +18,16 @@ pub fn build(b: *std.Build) void {
 
     // Shared networking helpers — same module as the examples.
 
-    // Test fixtures module — same module as the root build.
+    // Test fixtures module — same module as the root build. It imports
+    // testingx for the comptime txtar decoders, so this build declares the
+    // same lazy dependency. Lazy: only fetched when this build runs.
+    const testingx_dep = b.lazyDependency("testingx", .{ .target = target });
     const fixtures_mod = b.createModule(.{
         .root_source_file = b.path("../tests/fixtures/fixtures.zig"),
         .target = target,
         .optimize = optimize,
     });
+    if (testingx_dep) |t| fixtures_mod.addImport("testingx", t.module("testingx"));
 
     {
         const dep = b.dependency("tlsanvil", .{});

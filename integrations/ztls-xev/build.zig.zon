@@ -16,9 +16,11 @@
             .hash = "libxev-0.0.0-86vtc6BWFAAs_tGsasNfjQsxSsElhddIUnqVwGhwdnsu",
         },
         // Test-only: plain-text test runner. Lazy so consumers never fetch it.
-        .ztest = .{
-            .url = "https://github.com/mattrobenolt/ztest/archive/d1a70d1e99d4e8751d5ceddfe8dcc761e7831aad.tar.gz",
-            .hash = "ztest-0.2.0-h6PBz_h1AAD8Z41oiZbR5aKo2xAzeqbuW9KIxfClUgwp",
+        // Development-only: test runner and comptime fixtures. Lazy so
+        // consumers of this package never fetch it.
+        .testingx = .{
+            .url = "git+https://github.com/baskingspot/testingx#dc6d091cb06600f240077cfc44692e34bf8cd70d",
+            .hash = "testingx-0.0.0-ib95-_CrAgCK_MU4VgB2XPTxDFma9rfbcoTGbw0SiZJU",
             .lazy = true,
         },
     },

@@ -4,8 +4,7 @@ const mem = std.mem;
 const heap = std.heap;
 const fmt = std.fmt;
 
-const bench = @import("benchmark");
-const txtar = @import("txtar");
+const testingx = @import("testingx");
 
 const ztls = @import("../root.zig");
 const Aead = ztls.aead.Aead;
@@ -23,7 +22,7 @@ const all_suites = [_]Suite{
     .chacha20_poly1305_sha256,
 };
 const sizes = [_]usize{ 16, 128, 1350, 8192, frame.max_plaintext_len };
-const openssl_replay_archive = @import("fixtures").openssl_replay_txtar;
+const openssl_replay = fixtures.openssl_replay;
 const server_cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
 const server_scalar: []const u8 = &fixtures.server_ecdsa_scalar;
 
@@ -69,7 +68,7 @@ fn nameBuf(buf: []u8, suite: Suite, size: usize) ![]const u8 {
     return fmt.bufPrint(buf, "{s}/{d}", .{ suite.name(), size });
 }
 
-pub fn benchmarkParseHeader(b: *bench.B) !void {
+pub fn benchmarkParseHeader(b: *testingx.B) !void {
     const record = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x16 } ++ [_]u8{0} ** 22;
     while (try b.loop()) {
         const header = frame.parseHeader(&record) catch unreachable;
@@ -77,7 +76,7 @@ pub fn benchmarkParseHeader(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkRecordBufferNext(b: *bench.B) !void {
+pub fn benchmarkRecordBufferNext(b: *testingx.B) !void {
     const record = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x01, 0x00 };
     var storage: [RecordBuffer.min_storage]u8 = undefined;
     while (try b.loop()) {
@@ -119,17 +118,11 @@ fn replayHandshake(records: []const u8, out: []u8) !void {
     if (!hs.isConnected()) return error.HandshakeIncomplete;
 }
 
-fn benchClientHandshakeReplay(comptime suite: Suite) bench.Function {
+fn benchClientHandshakeReplay(comptime suite: Suite) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
-            var fixture_scratch: [8192]u8 = undefined;
-            var fba: heap.FixedBufferAllocator = .init(&fixture_scratch);
+        pub fn benchFn(b: *testingx.B) !void {
             var records_buf: [2048]u8 = undefined;
-            const records = fixture(
-                fba.allocator(),
-                suite.fixtureName(),
-                &records_buf,
-            ) catch unreachable;
+            const records = fixture(comptime suite.fixtureName(), &records_buf);
             var out: [1024]u8 = undefined;
 
             replayHandshake(records, &out) catch unreachable;
@@ -141,17 +134,10 @@ fn benchClientHandshakeReplay(comptime suite: Suite) bench.Function {
     }.benchFn;
 }
 
-fn fixture(alloc: mem.Allocator, name: []const u8, out: []u8) ![]u8 {
-    var archive = try txtar.parse(alloc, openssl_replay_archive);
-    defer archive.deinit(alloc);
-    for (archive.files) |f| {
-        if (!mem.eql(u8, f.name, name)) continue;
-        const b64 = mem.trimEnd(u8, f.data, "\n");
-        const n = try std.base64.standard.Decoder.calcSizeForSlice(b64);
-        try std.base64.standard.Decoder.decode(out[0..n], b64);
-        return out[0..n];
-    }
-    return error.FixtureNotFound;
+fn fixture(comptime name: []const u8, out: []u8) []u8 {
+    const bytes = openssl_replay.b64(name);
+    @memcpy(out[0..bytes.len], bytes);
+    return out[0..bytes.len];
 }
 
 fn deterministicClientKeypair() !ztls.x25519.KeyPair {
@@ -232,15 +218,15 @@ fn connectPair(comptime suite: Suite) !struct {
     return .{ .client = client, .server = server };
 }
 
-pub fn benchmarkClientHandshakeReplay(b: *bench.B) !void {
+pub fn benchmarkClientHandshakeReplay(b: *testingx.B) !void {
     inline for (all_suites) |suite| {
         _ = try b.run(suite.name(), benchClientHandshakeReplay(suite));
     }
 }
 
-fn benchZtlsHandshake(comptime suite: Suite) bench.Function {
+fn benchZtlsHandshake(comptime suite: Suite) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             _ = connectPair(suite) catch unreachable;
             while (try b.loop()) {
                 var pair = connectPair(suite) catch unreachable;
@@ -253,7 +239,7 @@ fn benchZtlsHandshake(comptime suite: Suite) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkHandshake(b: *bench.B) !void {
+pub fn benchmarkHandshake(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         const name = try fmt.bufPrint(&name_buf, "impl=ztls/suite={s}", .{suite.name()});
@@ -261,10 +247,10 @@ pub fn benchmarkHandshake(b: *bench.B) !void {
     }
 }
 
-fn benchHandshakeClientStart(comptime suite: Suite) bench.Function {
+fn benchHandshakeClientStart(comptime suite: Suite) testingx.Function {
     _ = suite;
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             while (try b.loop()) {
                 var client: ztls.ClientHandshake = deterministicClientHandshake();
                 var client_out: [4096]u8 = undefined;
@@ -276,15 +262,15 @@ fn benchHandshakeClientStart(comptime suite: Suite) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkHandshakeClientStart(b: *bench.B) !void {
+pub fn benchmarkHandshakeClientStart(b: *testingx.B) !void {
     inline for (all_suites) |suite| {
         _ = try b.run(suite.name(), benchHandshakeClientStart(suite));
     }
 }
 
-fn benchHandshakeServerAccept(comptime suite: Suite) bench.Function {
+fn benchHandshakeServerAccept(comptime suite: Suite) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var client: ztls.ClientHandshake = deterministicClientHandshake();
             var client_out: [4096]u8 = undefined;
             const ch_record = client.start(&client_out) catch unreachable;
@@ -307,15 +293,15 @@ fn benchHandshakeServerAccept(comptime suite: Suite) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkHandshakeServerAccept(b: *bench.B) !void {
+pub fn benchmarkHandshakeServerAccept(b: *testingx.B) !void {
     inline for (all_suites) |suite| {
         _ = try b.run(suite.name(), benchHandshakeServerAccept(suite));
     }
 }
 
-fn benchHandshakeClientServerHello(comptime suite: Suite) bench.Function {
+fn benchHandshakeClientServerHello(comptime suite: Suite) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var client: ztls.ClientHandshake = deterministicClientHandshake();
             var client_out: [4096]u8 = undefined;
             const ch_record = client.start(&client_out) catch unreachable;
@@ -342,15 +328,15 @@ fn benchHandshakeClientServerHello(comptime suite: Suite) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkHandshakeClientServerHello(b: *bench.B) !void {
+pub fn benchmarkHandshakeClientServerHello(b: *testingx.B) !void {
     inline for (all_suites) |suite| {
         _ = try b.run(suite.name(), benchHandshakeClientServerHello(suite));
     }
 }
 
-fn benchHandshakeServerFlight(comptime suite: Suite) bench.Function {
+fn benchHandshakeServerFlight(comptime suite: Suite) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var client: ztls.ClientHandshake = deterministicClientHandshake();
             var client_out: [4096]u8 = undefined;
             const ch_record = client.start(&client_out) catch unreachable;
@@ -393,15 +379,15 @@ fn benchHandshakeServerFlight(comptime suite: Suite) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkHandshakeServerFlight(b: *bench.B) !void {
+pub fn benchmarkHandshakeServerFlight(b: *testingx.B) !void {
     inline for (all_suites) |suite| {
         _ = try b.run(suite.name(), benchHandshakeServerFlight(suite));
     }
 }
 
-fn benchHandshakeClientFlight(comptime suite: Suite) bench.Function {
+fn benchHandshakeClientFlight(comptime suite: Suite) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var client: ztls.ClientHandshake = deterministicClientHandshake();
             var client_out: [4096]u8 = undefined;
             const ch_record = client.start(&client_out) catch unreachable;
@@ -447,7 +433,7 @@ fn benchHandshakeClientFlight(comptime suite: Suite) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkHandshakeClientFlight(b: *bench.B) !void {
+pub fn benchmarkHandshakeClientFlight(b: *testingx.B) !void {
     inline for (all_suites) |suite| {
         _ = try b.run(suite.name(), benchHandshakeClientFlight(suite));
     }
@@ -501,9 +487,9 @@ fn serverFinishedInput(comptime suite: Suite) !ServerFinishedInput {
     return input;
 }
 
-fn benchHandshakeServerFinished(comptime suite: Suite) bench.Function {
+fn benchHandshakeServerFinished(comptime suite: Suite) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var warm = serverFinishedInput(suite) catch unreachable;
             warm.server.processClientFinished(warm.record()) catch unreachable;
             warm.server.deinit();
@@ -524,15 +510,15 @@ fn benchHandshakeServerFinished(comptime suite: Suite) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkHandshakeServerFinished(b: *bench.B) !void {
+pub fn benchmarkHandshakeServerFinished(b: *testingx.B) !void {
     inline for (all_suites) |suite| {
         _ = try b.run(suite.name(), benchHandshakeServerFinished(suite));
     }
 }
 
-fn benchEncrypt(comptime suite: Suite, comptime size: usize) bench.Function {
+fn benchEncrypt(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var plaintext: [size]u8 = @splat(0xab);
             var out: [RecordLayer.overhead + size]u8 = undefined;
             var tx: RecordLayer = RecordLayer.init(suite.aead(), Iv.zero) catch unreachable;
@@ -549,7 +535,7 @@ fn benchEncrypt(comptime suite: Suite, comptime size: usize) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkRecordEncrypt(b: *bench.B) !void {
+pub fn benchmarkRecordEncrypt(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
@@ -559,9 +545,9 @@ pub fn benchmarkRecordEncrypt(b: *bench.B) !void {
     }
 }
 
-fn benchDecrypt(comptime suite: Suite, comptime size: usize) bench.Function {
+fn benchDecrypt(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             const record_len = RecordLayer.overhead + size;
             const allocator = heap.smp_allocator;
             const records = allocator.alloc(u8, 4096 * record_len) catch unreachable;
@@ -607,7 +593,7 @@ fn benchDecrypt(comptime suite: Suite, comptime size: usize) bench.Function {
     }.benchFn;
 }
 
-pub fn benchmarkRecordDecrypt(b: *bench.B) !void {
+pub fn benchmarkRecordDecrypt(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
@@ -617,9 +603,9 @@ pub fn benchmarkRecordDecrypt(b: *bench.B) !void {
     }
 }
 
-fn benchEncryptPrepared(comptime suite: Suite, comptime size: usize) bench.Function {
+fn benchEncryptPrepared(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var out: [RecordLayer.overhead + size]u8 = undefined;
             var tx: RecordLayer = RecordLayer.init(suite.aead(), Iv.zero) catch unreachable;
             defer tx.deinit();
@@ -636,7 +622,7 @@ fn benchEncryptPrepared(comptime suite: Suite, comptime size: usize) bench.Funct
     }.benchFn;
 }
 
-pub fn benchmarkRecordEncryptPrepared(b: *bench.B) !void {
+pub fn benchmarkRecordEncryptPrepared(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
@@ -652,9 +638,9 @@ fn benchZtlsAppData(
     comptime suite: Suite,
     comptime size: usize,
     comptime direction: Direction,
-) bench.Function {
+) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var pair = connectPair(suite) catch unreachable;
             defer pair.client.deinit();
             defer pair.server.deinit();
@@ -692,7 +678,7 @@ fn benchZtlsAppData(
     }.benchFn;
 }
 
-pub fn benchmarkAppClientToServer(b: *bench.B) !void {
+pub fn benchmarkAppClientToServer(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
@@ -706,7 +692,7 @@ pub fn benchmarkAppClientToServer(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkAppServerToClient(b: *bench.B) !void {
+pub fn benchmarkAppServerToClient(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
@@ -720,9 +706,9 @@ pub fn benchmarkAppServerToClient(b: *bench.B) !void {
     }
 }
 
-fn benchZtlsAppDataPrepared(comptime suite: Suite, comptime size: usize) bench.Function {
+fn benchZtlsAppDataPrepared(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var pair = connectPair(suite) catch unreachable;
             defer pair.client.deinit();
             defer pair.server.deinit();
@@ -745,7 +731,7 @@ fn benchZtlsAppDataPrepared(comptime suite: Suite, comptime size: usize) bench.F
     }.benchFn;
 }
 
-pub fn benchmarkAppPreparedClientToServer(b: *bench.B) !void {
+pub fn benchmarkAppPreparedClientToServer(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
@@ -755,9 +741,9 @@ pub fn benchmarkAppPreparedClientToServer(b: *bench.B) !void {
     }
 }
 
-fn benchZtlsPingPong(comptime suite: Suite, comptime size: usize) bench.Function {
+fn benchZtlsPingPong(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
-        pub fn benchFn(b: *bench.B) !void {
+        pub fn benchFn(b: *testingx.B) !void {
             var pair = connectPair(suite) catch unreachable;
             defer pair.client.deinit();
             defer pair.server.deinit();
@@ -787,7 +773,7 @@ fn benchZtlsPingPong(comptime suite: Suite, comptime size: usize) bench.Function
     }.benchFn;
 }
 
-pub fn benchmarkAppPingPong(b: *bench.B) !void {
+pub fn benchmarkAppPingPong(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {

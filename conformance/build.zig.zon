@@ -7,6 +7,13 @@
         .ztls = .{
             .path = "../",
         },
+        // Development-only: comptime txtar fixtures. Lazy so consumers of this
+        // package never fetch it.
+        .testingx = .{
+            .url = "git+https://github.com/baskingspot/testingx#dc6d091cb06600f240077cfc44692e34bf8cd70d",
+            .hash = "testingx-0.0.0-ib95-_CrAgCK_MU4VgB2XPTxDFma9rfbcoTGbw0SiZJU",
+            .lazy = true,
+        },
         .tlsanvil = .{
             .url = "https://github.com/tls-attacker/TLS-Anvil/releases/download/v1.5.3/TLS-Anvil-v1.5.3.zip",
             .hash = "N-V-__8AACw-uAW_q-8V3uKsbmBDtDxMZuAd7ea0tDv0uhE_",

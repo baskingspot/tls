@@ -179,7 +179,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var key: ztls.signature.PrivateKey = try .fromP256Scalar(
-        @ptrCast(fixtures.server_ecdsa_scalar[0..32]),
+        @ptrCast(&fixtures.server_ecdsa_scalar[0..32]),
     );
     defer key.deinit();
 
@@ -230,7 +230,7 @@ pub fn main(init: std.process.Init) !void {
 // first connection.
 test "credentials build from the embedded fixture" {
     var key: ztls.signature.PrivateKey = try .fromP256Scalar(
-        @ptrCast(fixtures.server_ecdsa_scalar[0..32]),
+        @ptrCast(&fixtures.server_ecdsa_scalar[0..32]),
     );
     defer key.deinit();
 

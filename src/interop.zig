@@ -1549,7 +1549,7 @@ fn clientInteropWithCreds(stream: Stream) !void {
     return error.NoHttpResponse;
 }
 
-/// Write the self-signed ECDSA fixture certificate (fixtures.server_ecdsa_cert_der)
+/// Write the self-signed ECDSA fixture certificate (&fixtures.server_ecdsa_cert_der)
 /// as a PEM file so `openssl s_server -Verify -CAfile` trusts the ztls client's
 /// client certificate (the fixture is self-signed, so it is its own CA).
 fn writeFixtureCertPem(arena: Allocator, pem_path: []const u8) !void {

@@ -1,48 +1,35 @@
 //! Single entry point for all test fixtures.
 //!
 //! Consumed as a build module (`@import("fixtures")`) by the test module,
-//! examples, and conformance harnesses. Replaces the old symlink-based
-//! `test_fixtures` directory aliases and the three `.zig` fixture files that
-//! were just base64 data with duplicated `decode()` boilerplate.
+//! examples, and conformance harnesses.
 //!
 //! Binary fixture data (DER certificates, scalars, signatures) lives in
-//! `fixtures.txtar` as base64 sections. PEM key files that need to be on
-//! disk at runtime (for openssl s_server, addCertsFromFilePath) stay as
-//! loose files under `tests/fixtures/`. txtar archives (rfc8448,
-//! openssl_replay) are embedded directly.
+//! `fixtures.txtar` as base64 sections and decodes at comptime. PEM key files
+//! that need to be on disk at runtime (for openssl s_server,
+//! addCertsFromFilePath) stay as loose files under `tests/fixtures/`. The
+//! rfc8448 and openssl_replay archives decode at comptime too.
 
-const std = @import("std");
+const testingx = @import("testingx");
 
-// --- comptime txtar section extractor ---------------------------------------
+const fx = testingx.fixtures(@embedFile("fixtures.txtar"));
 
-/// The raw txtar content containing all DER/base64 fixture sections.
-const data_txtar: []const u8 = @embedFile("fixtures.txtar");
+/// RFC 8448 §3 archives. The values resolve at comptime; `find` reads a
+/// section by a name that is only known at runtime.
+pub const rfc8448 = testingx.fixtures(@embedFile("rfc8448.txtar"));
+pub const openssl_replay = testingx.fixtures(@embedFile("openssl_replay.txtar"));
 
-/// Extract a named section from an txtar archive at comptime.
-/// Format: `-- name --\ncontent\n-- next --\n...`
-fn txtarSection(data: []const u8, name: []const u8) []const u8 {
-    @setEvalBranchQuota(100_000);
-    const header = "-- " ++ name ++ " --\n";
-    const start = std.mem.indexOf(u8, data, header) orelse
-        @compileError("fixture section not found: " ++ name);
-    const content_start = start + header.len;
-    const end = std.mem.indexOfPos(u8, data, content_start, "\n-- ") orelse
-        (std.mem.indexOfPos(u8, data, content_start, "\n\n") orelse data.len);
-    return data[content_start..end];
-}
-
-/// Base64-decode a txtar section at comptime into a fixed-size byte array.
-fn decodeSection(name: []const u8) [std.base64.standard.Decoder.calcSizeForSlice(txtarSection(data_txtar, name)) catch unreachable]u8 {
-    const b64 = txtarSection(data_txtar, name);
-    const len = std.base64.standard.Decoder.calcSizeForSlice(b64) catch unreachable;
-    var decoded: [len]u8 = undefined;
-    _ = std.base64.standard.Decoder.decode(&decoded, b64) catch unreachable;
+/// Base64-decode a section at comptime into a fixed-size byte array. A name
+/// that is not in the archive is a compile error that lists the known names.
+fn decodeSection(comptime name: []const u8) [fx.b64(name).len]u8 {
+    const bytes = fx.b64(name);
+    var decoded: [bytes.len]u8 = undefined;
+    @memcpy(&decoded, bytes);
     return decoded;
 }
 
-/// Return a raw txtar section as bytes (no base64 decode) — for PEM sections.
-fn rawSection(name: []const u8) []const u8 {
-    return txtarSection(data_txtar, name);
+/// Return a raw section as bytes (no base64 decode) — for PEM sections.
+fn rawSection(comptime name: []const u8) []const u8 {
+    return fx.get(name);
 }
 
 // --- DER fixtures (base64-decoded at comptime) ------------------------------
@@ -189,8 +176,3 @@ pub const ed25519_key_pem: []const u8 = rawSection("ed25519_key_pem");
 /// secp224r1 PKCS#8 key — loads everywhere but has no TLS 1.3 ECDSA scheme
 /// (RFC 8446 §4.2.3): the deterministic loads-then-rejects inference vector.
 pub const ec_secp224r1_key_pem: []const u8 = rawSection("ec_secp224r1_key_pem");
-
-// --- txtar archives (embedded directly) -------------------------------------
-
-pub const rfc8448_txtar: []const u8 = @embedFile("rfc8448.txtar");
-pub const openssl_replay_txtar: []const u8 = @embedFile("openssl_replay.txtar");

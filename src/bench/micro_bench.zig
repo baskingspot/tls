@@ -2,7 +2,7 @@ const std = @import("std");
 const mem = std.mem;
 const doNotOptimizeAway = mem.doNotOptimizeAway;
 
-const bench = @import("benchmark");
+const testingx = @import("testingx");
 
 const aead = @import("../aead.zig");
 const frame = @import("../frame.zig");
@@ -10,7 +10,7 @@ const memx = @import("../memx.zig");
 const NewSessionTicket = @import("../NewSessionTicket.zig");
 const wire = @import("../wire.zig");
 
-pub fn benchmarkLastIndexNonZeroNoPadding16(b: *bench.B) !void {
+pub fn benchmarkLastIndexNonZeroNoPadding16(b: *testingx.B) !void {
     var buf: [16]u8 = @splat(0);
     buf[15] = 23;
     while (try b.loop()) {
@@ -19,7 +19,7 @@ pub fn benchmarkLastIndexNonZeroNoPadding16(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkLastIndexNonZeroPadding1To16(b: *bench.B) !void {
+pub fn benchmarkLastIndexNonZeroPadding1To16(b: *testingx.B) !void {
     var buf: [16]u8 = @splat(0);
     buf[14] = 23;
     while (try b.loop()) {
@@ -28,7 +28,7 @@ pub fn benchmarkLastIndexNonZeroPadding1To16(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkLastIndexNonZeroPadding16To128(b: *bench.B) !void {
+pub fn benchmarkLastIndexNonZeroPadding16To128(b: *testingx.B) !void {
     var buf: [128]u8 = @splat(0);
     buf[111] = 23;
     while (try b.loop()) {
@@ -37,7 +37,7 @@ pub fn benchmarkLastIndexNonZeroPadding16To128(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkLastIndexNonZeroPadding128To1350(b: *bench.B) !void {
+pub fn benchmarkLastIndexNonZeroPadding128To1350(b: *testingx.B) !void {
     var buf: [1350]u8 = @splat(0);
     buf[1221] = 23;
     while (try b.loop()) {
@@ -46,7 +46,7 @@ pub fn benchmarkLastIndexNonZeroPadding128To1350(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkLastIndexNonZeroAllZero1350(b: *bench.B) !void {
+pub fn benchmarkLastIndexNonZeroAllZero1350(b: *testingx.B) !void {
     var buf: [1350]u8 = @splat(0);
     while (try b.loop()) {
         buf[0] = @truncate(b.n);
@@ -55,7 +55,7 @@ pub fn benchmarkLastIndexNonZeroAllZero1350(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkNonceConstructVector(b: *bench.B) !void {
+pub fn benchmarkNonceConstructVector(b: *testingx.B) !void {
     const iv: aead.Iv = .init(@splat(0xab));
     var seq: u64 = 0;
     while (try b.loop()) {
@@ -64,7 +64,7 @@ pub fn benchmarkNonceConstructVector(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkParseHeaderCurrent(b: *bench.B) !void {
+pub fn benchmarkParseHeaderCurrent(b: *testingx.B) !void {
     var input = [_]u8{ 23, 0x03, 0x03, 0x40, 0x00 };
     while (try b.loop()) {
         input[4] = @truncate(b.n);
@@ -72,7 +72,7 @@ pub fn benchmarkParseHeaderCurrent(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkWireReaderU8(b: *bench.B) !void {
+pub fn benchmarkWireReaderU8(b: *testingx.B) !void {
     var input = [_]u8{0xab};
     while (try b.loop()) {
         input[0] = @truncate(b.n);
@@ -81,7 +81,7 @@ pub fn benchmarkWireReaderU8(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkWireReaderU16(b: *bench.B) !void {
+pub fn benchmarkWireReaderU16(b: *testingx.B) !void {
     var input = [_]u8{ 0x12, 0x34 };
     while (try b.loop()) {
         input[1] = @truncate(b.n);
@@ -90,7 +90,7 @@ pub fn benchmarkWireReaderU16(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkWireReaderU24(b: *bench.B) !void {
+pub fn benchmarkWireReaderU24(b: *testingx.B) !void {
     var input = [_]u8{ 0x12, 0x34, 0x56 };
     while (try b.loop()) {
         input[2] = @truncate(b.n);
@@ -99,7 +99,7 @@ pub fn benchmarkWireReaderU24(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkWireReaderSafeSequence(b: *bench.B) !void {
+pub fn benchmarkWireReaderSafeSequence(b: *testingx.B) !void {
     var input = [_]u8{
         0x02, 0x00, 0x00, 0x26, 0x03, 0x03,
     } ++ [_]u8{0xaa} ** 32 ++ [_]u8{
@@ -121,7 +121,7 @@ pub fn benchmarkWireReaderSafeSequence(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkWireReaderAssumeSequence(b: *bench.B) !void {
+pub fn benchmarkWireReaderAssumeSequence(b: *testingx.B) !void {
     var input = [_]u8{
         0x02, 0x00, 0x00, 0x26, 0x03, 0x03,
     } ++ [_]u8{0xaa} ** 32 ++ [_]u8{
@@ -171,7 +171,7 @@ fn makeTicketCorpus() TicketCorpus {
     return corpus;
 }
 
-pub fn benchmarkNewSessionTicketParseCurrent(b: *bench.B) !void {
+pub fn benchmarkNewSessionTicketParseCurrent(b: *testingx.B) !void {
     var corpus = makeTicketCorpus();
     while (try b.loop()) {
         const slot = b.n & (ticket_corpus_len - 1);

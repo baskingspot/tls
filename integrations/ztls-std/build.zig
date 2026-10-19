@@ -17,11 +17,16 @@ pub fn build(b: *std.Build) void {
     });
     const ztls_mod = ztls_dep.module("ztls");
 
-    // ztest: plain-text test runner. Lazy — only fetched when the test step
-    // is built, not when consumers use this package as a dependency.
-    const ztest_dep = b.lazyDependency("ztest", .{});
-    const test_runner: ?std.Build.Step.Compile.TestRunner = if (ztest_dep) |z|
-        .{ .path = z.path("src/test_runner.zig"), .mode = .simple }
+    // testingx: plain-text test runner and comptime fixtures. Lazy — only
+    // fetched when the test step is built, not when consumers use this package
+    // as a dependency.
+    const testingx_dep = b.lazyDependency("testingx", .{
+        // testingx declares no `optimize` option; the module is compiled at
+        // the optimize mode of whatever artifact imports it.
+        .target = target,
+    });
+    const test_runner: ?std.Build.Step.Compile.TestRunner = if (testingx_dep) |t|
+        .{ .path = t.path("src/runner.zig"), .mode = .simple }
     else
         null;
 
@@ -33,10 +38,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    if (testingx_dep) |t| fixtures_mod.addImport("testingx", t.module("testingx"));
 
     // The ztls-std library module: exposes the opinionated std.Io.net TLS
     // stream wrapper. Consumers import this as `@import("ztls_std")`.
-    // link_libc is needed because ztest's runner uses libc for getenv/isatty.
+    // link_libc is needed because testingx's runner uses libc for getenv/isatty.
     const mod = b.addModule("ztls_std", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -80,10 +86,13 @@ pub fn build(b: *std.Build) void {
         /// that runtime in lazily, so it is fetched only when the example is
         /// actually built.
         needs_zio: bool = false,
+        /// The test runner fails a binary with zero tests, as Zig's built-in
+        /// runner does. An example with no tests of its own gets no test step.
+        has_tests: bool = true,
     };
     const examples = [_]Example{
         .{ .name = "tls_client" },
-        .{ .name = "zio_client", .needs_zio = true },
+        .{ .name = "zio_client", .needs_zio = true, .has_tests = false },
     };
     var example_test_runs: [examples.len]?*std.Build.Step.Run = @splat(null);
     for (examples, &example_test_runs) |example, *test_run| {
@@ -120,13 +129,15 @@ pub fn build(b: *std.Build) void {
         // runs them, and `build-examples` proves every example still compiles
         // without needing a peer to talk to.
         exe_mod.link_libc = true;
-        const example_tests = b.addTest(.{
-            .root_module = exe_mod,
-            .test_runner = test_runner,
-        });
-        const run_example_tests = b.addRunArtifact(example_tests);
-        run_example_tests.has_side_effects = true;
-        test_run.* = run_example_tests;
+        if (example.has_tests) {
+            const example_tests = b.addTest(.{
+                .root_module = exe_mod,
+                .test_runner = test_runner,
+            });
+            const run_example_tests = b.addRunArtifact(example_tests);
+            run_example_tests.has_side_effects = true;
+            test_run.* = run_example_tests;
+        }
         build_examples_step.dependOn(&b.addInstallArtifact(example_exe, .{}).step);
     }
 

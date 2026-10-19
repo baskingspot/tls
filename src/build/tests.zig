@@ -4,12 +4,12 @@ const Build = std.Build;
 pub fn addSteps(b: *Build, opts: struct {
     test_mod: *Build.Module,
     /// When true, use the default test runner (needed for `--fuzz`, which
-    /// requires the server protocol that ztest's `.mode = .simple` skips).
+    /// requires the server protocol that testingx's `.mode = .simple` skips).
     fuzz: bool = false,
-    /// ztest dependency — a plain-text test runner that writes one line per
-    /// test to stderr instead of Zig's TUI. Null when the lazy dependency has
-    /// not been fetched (e.g. when building non-test steps).
-    ztest: ?*Build.Dependency = null,
+    /// testingx dependency — supplies the plain-text test runner that writes
+    /// one line per test to stderr instead of Zig's TUI. Null when the lazy
+    /// dependency has not been fetched (e.g. when building non-test steps).
+    testingx: ?*Build.Dependency = null,
     /// The ztls library module, for standalone check executables that must
     /// control the process environment before any libcrypto call.
     ztls_mod: *Build.Module,
@@ -31,8 +31,8 @@ pub fn addSteps(b: *Build, opts: struct {
 }) void {
     const mod_tests = b.addTest(.{
         .root_module = opts.test_mod,
-        .test_runner = if (opts.fuzz) null else if (opts.ztest) |z|
-            .{ .path = z.path("src/test_runner.zig"), .mode = .simple }
+        .test_runner = if (opts.fuzz) null else if (opts.testingx) |t|
+            .{ .path = t.path("src/runner.zig"), .mode = .simple }
         else
             null,
     });

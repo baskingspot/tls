@@ -211,9 +211,9 @@ run_selftest() {
             .url = "git+https://github.com/mattrobenolt/ztls?ref=main#960ab943f41aad4c0ffaaf32cf26ef35cca137b1",
             .hash = "ztls-0.0.0-SHHDXoSkIABMcZtLWfUFFHipeZyv0ycyfEZBL31sQ9Sd",
         },
-        .ztest = .{
-            .url = "https://example.invalid/ztest.tar.gz",
-            .hash = "ztest-0.2.0-AAAA",
+        .testingx = .{
+            .url = "https://example.invalid/testingx.tar.gz",
+            .hash = "testingx-0.0.0-AAAA",
             .lazy = true,
         },
     },
@@ -418,7 +418,7 @@ extract_evidence() { # logfile
     local logfile=$1 lines
     lines=$(grep -E '^[^ ]+\.zig:[0-9]+:[0-9]+: error:|^error: ' "$logfile" | head -2)
     if [ -z "$lines" ]; then
-        lines=$(grep -E 'Build Summary:|ztest: [0-9]+ passed|[0-9]+/[0-9]+ tests passed' "$logfile" | tail -2)
+        lines=$(grep -E 'Build Summary:|testingx: [0-9]+ passed|[0-9]+/[0-9]+ tests passed' "$logfile" | tail -2)
     fi
     if [ -z "$lines" ]; then
         lines=$(tail -2 "$logfile")

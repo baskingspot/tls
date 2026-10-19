@@ -31,7 +31,7 @@ pub fn build(b: *Build) void {
         "Narrow the inferred libcrypto backend to its FIPS capability identity",
     ) orelse false;
     // Fuzz mode uses the default test runner, which speaks the server protocol
-    // that `zig build test --fuzz` needs. ztest's `.mode = .simple` bypasses
+    // that `zig build test --fuzz` needs. testingx's `.mode = .simple` bypasses
     // that protocol, so it is only used for normal (non-fuzz) test runs.
     const fuzz_mode =
         b.option(bool, "fuzz", "Enable fuzzing (uses the default test runner)") orelse false;
@@ -115,15 +115,17 @@ pub fn build(b: *Build) void {
     test_mod.link_libc = true;
     test_mod.linkSystemLibrary("crypto", .{});
     test_mod.addImport("openssl_c", c_modules.openssl_c);
-    const txtar_mod = if (b.lazyDependency("txtar", .{
-        .target = target,
-        .optimize = optimize,
-    })) |dep| dep.module("txtar") else null;
-    if (txtar_mod) |tm| test_mod.addImport("txtar", tm);
 
-    // ztest: plain-text test runner. Lazy — only fetched when the test step
-    // is actually built, not when consumers use ztls as a library dependency.
-    const ztest_dep = b.lazyDependency("ztest", .{});
+    // testingx: plain-text test runner, benchmark harness, and comptime
+    // fixtures. Lazy — only fetched when a development step is built, not
+    // when consumers use ztls as a library dependency.
+    const testingx_dep = b.lazyDependency("testingx", .{
+        // testingx declares no `optimize` option; the module is compiled at
+        // the optimize mode of whatever artifact imports it.
+        .target = target,
+    });
+    const testingx_mod = if (testingx_dep) |dep| dep.module("testingx") else null;
+    if (testingx_mod) |tm| test_mod.addImport("testingx", tm);
 
     // Test fixtures module — replaces the old test_fixtures symlinks.
     const fixtures_mod = b.createModule(.{
@@ -131,6 +133,7 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
     });
+    if (testingx_mod) |tm| fixtures_mod.addImport("testingx", tm);
     test_mod.addImport("fixtures", fixtures_mod);
 
     const c_mod = b.createModule(.{
@@ -152,15 +155,10 @@ pub fn build(b: *Build) void {
     c_ssl_mod.linkSystemLibrary("crypto", .{});
     c_ssl_mod.addImport("openssl_ssl", c_modules.openssl_ssl);
 
-    const benchmark_dep = b.lazyDependency("benchmark", .{
-        .target = target,
-        .optimize = .ReleaseFast,
-    }) orelse return;
-
     tests.addSteps(b, .{
         .test_mod = test_mod,
         .fuzz = fuzz_mode,
-        .ztest = ztest_dep,
+        .testingx = testingx_dep,
         .ztls_mod = mod,
         .fixtures_mod = fixtures_mod,
         .openssl_c = c_modules.openssl_c,
@@ -169,15 +167,13 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
 
-    bench_mod.addSteps(b, .{
+    bench_mod.addSteps(b, @This(), .{
         .target = target,
         .ztls_mod = mod,
         .c_mod = c_mod,
         .c_ssl_mod = c_ssl_mod,
         .openssl_c = c_modules.openssl_c,
         .build_options = build_options,
-        .benchmark_dep = benchmark_dep,
-        .txtar_mod = txtar_mod,
         .fixtures_mod = fixtures_mod,
     });
 
@@ -185,7 +181,6 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
         .ztls_mod = mod,
-        .txtar_mod = txtar_mod,
         .fixtures_mod = fixtures_mod,
     });
 

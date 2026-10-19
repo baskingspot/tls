@@ -11,9 +11,6 @@ const Sha384 = backend.sha2.Sha384;
 const testing = std.testing;
 const fuzz_compat = @import("fuzz_compat.zig");
 const mem = std.mem;
-const base64 = std.base64.standard.Decoder;
-
-const txtar = @import("txtar");
 
 const aead = @import("aead.zig");
 const alert = @import("alert.zig");
@@ -2528,21 +2525,15 @@ test "processServerHello: rejects unoffered cipher suite" {
 // in the published tarball). Issue #66.
 
 // Decode a base64 entry from the embedded RFC 8448 archive into `out`.
-// Test-only — the txtar import lives inside the function so the public ztls
-// module never requires the dependency.
-fn rfc8448Fixture(name: []const u8, out: []u8) []u8 {
-    // ziglint-ignore: Z028
-    const rfc8448_archive = @import("fixtures").rfc8448_txtar;
-    var archive = txtar.parse(testing.allocator, rfc8448_archive) catch unreachable;
-    defer archive.deinit(testing.allocator);
-    for (archive.files) |f| {
-        if (!mem.eql(u8, f.name, name)) continue;
-        const b64 = mem.trimEnd(u8, f.data, "\n");
-        const n = base64.calcSizeForSlice(b64) catch unreachable;
-        base64.decode(out[0..n], b64) catch unreachable;
-        return out[0..n];
-    }
-    unreachable;
+// Test-only — the fixtures import lives inside the function so the public ztls
+// module never requires the fixtures module (test-only, not in the published
+// tarball). Issue #66.
+fn rfc8448Fixture(comptime name: []const u8, out: []u8) []u8 {
+    // ziglint-ignore: Z028 -- test-only import; the published ztls module
+    // must not require the fixtures module (#66).
+    const bytes = @import("fixtures").rfc8448.b64(name);
+    @memcpy(out[0..bytes.len], bytes);
+    return out[0..bytes.len];
 }
 
 fn flightReadyClient() !ClientHandshake {

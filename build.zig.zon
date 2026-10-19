@@ -4,24 +4,11 @@
     .fingerprint = 0x767a5b455ec37148,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        // Test-only: decodes the RFC 8448 fixture archive. Lazy so consumers
-        // of the library never fetch it.
-        .txtar = .{
-            .url = "git+https://github.com/mattrobenolt/txtar?ref=v0.2.0#a58514df03a5a01d1847252e36248e3cd0728014",
-            .hash = "txtar-0.2.0-RyJLBG6HAACtIWvLB_sjlVl2CpaGh2sB0lN--cLsPg52",
-            .lazy = true,
-        },
-        .benchmark = .{
-            .url = "git+https://github.com/mattrobenolt/zig-benchmark#5572317d18d1e5b4630950658b1628b4398a84a8",
-            .hash = "benchmark-0.1.0-JS72VhUcAQAM6gGwbJeMtNhbX7n8LQk4LIdSrRz9ljNg",
-            .lazy = true,
-        },
-        // Test-only: plain-text test runner that writes one line per test to
-        // stderr instead of Zig's TUI progress protocol. Lazy so consumers of
-        // the library never fetch it.
-        .ztest = .{
-            .url = "https://github.com/mattrobenolt/ztest/archive/d1a70d1e99d4e8751d5ceddfe8dcc761e7831aad.tar.gz",
-            .hash = "ztest-0.2.0-h6PBz_h1AAD8Z41oiZbR5aKo2xAzeqbuW9KIxfClUgwp",
+        // Development-only: the test runner, benchmarks, and comptime txtar
+        // fixtures. Lazy so consumers of the library never fetch it.
+        .testingx = .{
+            .url = "git+https://github.com/baskingspot/testingx#dc6d091cb06600f240077cfc44692e34bf8cd70d",
+            .hash = "testingx-0.0.0-ib95-_CrAgCK_MU4VgB2XPTxDFma9rfbcoTGbw0SiZJU",
             .lazy = true,
         },
         // Integration-only: fetched when a consumer opts into ztls_xev.

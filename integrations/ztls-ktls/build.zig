@@ -27,9 +27,14 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "ztls", .module = ztls_mod }},
     });
 
-    const ztest_dep = b.lazyDependency("ztest", .{});
-    const test_runner: ?std.Build.Step.Compile.TestRunner = if (ztest_dep) |z|
-        .{ .path = z.path("src/test_runner.zig"), .mode = .simple }
+    const testingx_dep = b.lazyDependency("testingx", .{
+        // testingx declares no `optimize` option; the module is compiled at
+        // the optimize mode of whatever artifact imports it.
+        .target = target,
+    });
+    if (testingx_dep) |t| fixtures_mod.addImport("testingx", t.module("testingx"));
+    const test_runner: ?std.Build.Step.Compile.TestRunner = if (testingx_dep) |t|
+        .{ .path = t.path("src/runner.zig"), .mode = .simple }
     else
         null;
     const tests = b.addTest(.{

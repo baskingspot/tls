@@ -17,11 +17,16 @@ pub fn build(b: *std.Build) void {
     });
     const ztls_mod = ztls_dep.module("ztls");
 
-    // ztest: plain-text test runner. Lazy — only fetched when the test step
-    // is built, not when consumers use this package as a dependency.
-    const ztest_dep = b.lazyDependency("ztest", .{});
-    const test_runner: ?std.Build.Step.Compile.TestRunner = if (ztest_dep) |z|
-        .{ .path = z.path("src/test_runner.zig"), .mode = .simple }
+    // testingx: plain-text test runner and comptime fixtures. Lazy — only
+    // fetched when the test step is built, not when consumers use this package
+    // as a dependency.
+    const testingx_dep = b.lazyDependency("testingx", .{
+        // testingx declares no `optimize` option; the module is compiled at
+        // the optimize mode of whatever artifact imports it.
+        .target = target,
+    });
+    const test_runner: ?std.Build.Step.Compile.TestRunner = if (testingx_dep) |t|
+        .{ .path = t.path("src/runner.zig"), .mode = .simple }
     else
         null;
 
@@ -38,10 +43,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    if (testingx_dep) |t| fixtures_mod.addImport("testingx", t.module("testingx"));
 
     // The ztls-xev library module. Consumers import this as
     // `@import("ztls_xev")`.
-    // link_libc is needed because ztest's runner uses libc for getenv/isatty.
+    // link_libc is needed because testingx's runner uses libc for getenv/isatty.
     const mod = b.addModule("ztls_xev", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,

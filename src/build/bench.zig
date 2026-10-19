@@ -11,69 +11,69 @@ pub const Options = struct {
     /// so it compiles c_openssl.zig within itself.
     openssl_c: *Build.Module,
     build_options: *Build.Step.Options,
-    benchmark_dep: *Build.Dependency,
-    txtar_mod: ?*Build.Module,
     fixtures_mod: *Build.Module,
 };
 
-pub fn addSteps(b: *Build, opts: Options) void {
-    addZtlsBenchmarks(b, opts);
-    addEvpBenchmarks(b, opts);
-    addLibsslBenchmarks(b, opts);
+/// `root` is the build.zig struct of this package. `b.lazyImport` needs it to
+/// find the dependency's build.zig, which owns `addBenchExe`.
+pub fn addSteps(b: *Build, comptime root: type, opts: Options) void {
+    const testingx = b.lazyImport(root, "testingx") orelse return;
+    const dep = b.lazyDependency("testingx", .{
+        // testingx declares no `optimize` option; the suite executable sets
+        // ReleaseFast through `addBenchExe`.
+        .target = opts.target,
+    }) orelse return;
+    const testingx_mod = dep.module("testingx");
+
+    addZtlsBenchmarks(b, opts, testingx, testingx_mod);
+    addEvpBenchmarks(b, opts, testingx, testingx_mod);
+    addLibsslBenchmarks(b, opts, testingx, testingx_mod);
     addReplayFixtureGenerator(b, opts);
 }
 
-fn addZtlsBenchmarks(b: *Build, opts: Options) void {
-    const txtar_mod = opts.txtar_mod orelse return;
-    const mod = b.createModule(.{
-        .root_source_file = b.path("src/bench.zig"),
-        .target = opts.target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "ztls", .module = opts.ztls_mod },
-            .{ .name = "txtar", .module = txtar_mod },
-        },
-    });
-    mod.addOptions("build_options", opts.build_options);
-    mod.linkSystemLibrary("crypto", .{});
-    mod.addImport("fixtures", opts.fixtures_mod);
-    mod.addImport("openssl_c", opts.openssl_c);
-
-    const exe = addBenchmark(b, opts, "benchmark", mod);
-
+fn addRunStep(
+    b: *Build,
+    exe: *Build.Step.Compile,
+    step_name: []const u8,
+    step_desc: []const u8,
+    bin_desc: []const u8,
+) void {
     const run = b.addRunArtifact(exe);
     if (b.args) |args| run.addArgs(args);
-
-    const run_step = b.step("bench", "Run performance benchmarks");
-    run_step.dependOn(&run.step);
+    b.step(step_name, step_desc).dependOn(&run.step);
 
     const install = b.addInstallArtifact(exe, .{});
-    const install_step = b.step("bench-bin", "Build the benchmark binary for profiling");
-    install_step.dependOn(&install.step);
+    b.step(b.fmt("{s}-bin", .{step_name}), bin_desc).dependOn(&install.step);
 }
 
-fn addBenchmark(
+fn addZtlsBenchmarks(
     b: *Build,
     opts: Options,
-    name: []const u8,
-    benchmark_root: *Build.Module,
-) *Build.Step.Compile {
-    const benchmark_mod: *Build.Module = opts.benchmark_dep.module("benchmark");
-    benchmark_root.addImport("benchmark", benchmark_mod);
-
-    const main_mod: *Build.Module = b.createModule(.{
-        .root_source_file = opts.benchmark_dep.path("src/benchmark_main.zig"),
+    comptime testingx: type,
+    testingx_mod: *Build.Module,
+) void {
+    const exe = testingx.addBenchExe(b, .{
+        .name = "benchmark",
+        .module = testingx_mod,
+        .root_source_file = b.path("src/bench.zig"),
         .target = opts.target,
-        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "ztls", .module = opts.ztls_mod },
+            .{ .name = "fixtures", .module = opts.fixtures_mod },
+            .{ .name = "openssl_c", .module = opts.openssl_c },
+            .{ .name = "build_options", .module = opts.build_options.createModule() },
+        },
     });
-    main_mod.addImport("benchmark", benchmark_mod);
-    main_mod.addImport("benchmark_root", benchmark_root);
+    exe.root_module.link_libc = true;
+    exe.root_module.linkSystemLibrary("crypto", .{});
 
-    return b.addExecutable(.{
-        .name = name,
-        .root_module = main_mod,
-    });
+    addRunStep(
+        b,
+        exe,
+        "bench",
+        "Run performance benchmarks",
+        "Build the benchmark binary for profiling",
+    );
 }
 
 fn addReplayFixtureGenerator(b: *Build, opts: Options) void {
@@ -96,54 +96,58 @@ fn addReplayFixtureGenerator(b: *Build, opts: Options) void {
     step.dependOn(&run.step);
 }
 
-fn addEvpBenchmarks(b: *Build, opts: Options) void {
-    const evp_bench_root = b.createModule(.{
+fn addEvpBenchmarks(
+    b: *Build,
+    opts: Options,
+    comptime testingx: type,
+    testingx_mod: *Build.Module,
+) void {
+    const exe = testingx.addBenchExe(b, .{
+        .name = "evp_bench",
+        .module = testingx_mod,
         .root_source_file = b.path("bench/evp.zig"),
         .target = opts.target,
-        .optimize = .ReleaseFast,
         .imports = &.{
             .{ .name = "ztls", .module = opts.ztls_mod },
             .{ .name = "c", .module = opts.c_mod },
         },
     });
-    const evp_bench_test = addBenchmark(b, opts, "evp_bench", evp_bench_root);
-    const run_evp_bench = b.addRunArtifact(evp_bench_test);
-    if (b.args) |args| run_evp_bench.addArgs(args);
 
-    const evp_bench_step = b.step("bench-evp", "Run OpenSSL EVP AEAD benchmarks");
-    evp_bench_step.dependOn(&run_evp_bench.step);
-
-    const install_evp_bench = b.addInstallArtifact(evp_bench_test, .{});
-    const evp_bench_bin_step = b.step("bench-evp-bin", "Build the OpenSSL EVP benchmark binary");
-    evp_bench_bin_step.dependOn(&install_evp_bench.step);
+    addRunStep(
+        b,
+        exe,
+        "bench-evp",
+        "Run OpenSSL EVP AEAD benchmarks",
+        "Build the OpenSSL EVP benchmark binary",
+    );
 }
 
-fn addLibsslBenchmarks(b: *Build, opts: Options) void {
-    const bio_bench_root = b.createModule(.{
+fn addLibsslBenchmarks(
+    b: *Build,
+    opts: Options,
+    comptime testingx: type,
+    testingx_mod: *Build.Module,
+) void {
+    const exe = testingx.addBenchExe(b, .{
+        .name = "bio_bench",
+        .module = testingx_mod,
         .root_source_file = b.path("bench/bio.zig"),
         .target = opts.target,
-        .optimize = .ReleaseFast,
         .imports = &.{
             .{ .name = "ztls", .module = opts.ztls_mod },
             .{ .name = "c", .module = opts.c_mod },
             .{ .name = "c_ssl", .module = opts.c_ssl_mod },
         },
     });
-    bio_bench_root.link_libc = true;
-    bio_bench_root.linkSystemLibrary("ssl", .{});
-    bio_bench_root.linkSystemLibrary("crypto", .{});
+    exe.root_module.link_libc = true;
+    exe.root_module.linkSystemLibrary("ssl", .{});
+    exe.root_module.linkSystemLibrary("crypto", .{});
 
-    const bio_bench_exe = addBenchmark(b, opts, "bio_bench", bio_bench_root);
-    const run_bio_bench = b.addRunArtifact(bio_bench_exe);
-    if (b.args) |args| run_bio_bench.addArgs(args);
-
-    const bio_bench_step = b.step("bench-openssl", "Run OpenSSL libssl memory BIO benchmarks");
-    bio_bench_step.dependOn(&run_bio_bench.step);
-
-    const install_bio_bench = b.addInstallArtifact(bio_bench_exe, .{});
-    const bio_bench_bin_step = b.step(
-        "bench-openssl-bin",
+    addRunStep(
+        b,
+        exe,
+        "bench-openssl",
+        "Run OpenSSL libssl memory BIO benchmarks",
         "Build the OpenSSL memory BIO benchmark binary",
     );
-    bio_bench_bin_step.dependOn(&install_bio_bench.step);
 }

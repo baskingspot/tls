@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const bench = @import("benchmark");
+const testingx = @import("testingx");
 const c = @import("c").openssl;
 const Suite = struct {
     name: []const u8,
@@ -126,9 +126,9 @@ fn makeCiphertext(
     return ciphertext;
 }
 
-fn encryptClosure(comptime suite: Suite, comptime size: usize) bench.Function {
+fn encryptClosure(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
-        fn f(b: *bench.B) !void {
+        fn f(b: *testingx.B) !void {
             const plaintext: [size]u8 = @splat(0xde);
             var ciphertext: [size]u8 = undefined;
             var nonce: [12]u8 = @splat(0xad);
@@ -148,9 +148,9 @@ fn encryptClosure(comptime suite: Suite, comptime size: usize) bench.Function {
     }.f;
 }
 
-fn decryptClosure(comptime suite: Suite, comptime size: usize) bench.Function {
+fn decryptClosure(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
-        fn f(b: *bench.B) !void {
+        fn f(b: *testingx.B) !void {
             const plaintext: [size]u8 = @splat(0xde);
             var out: [size]u8 = undefined;
             var nonce: [12]u8 = @splat(0xad);
@@ -171,9 +171,9 @@ fn decryptClosure(comptime suite: Suite, comptime size: usize) bench.Function {
     }.f;
 }
 
-fn bulkEncryptOnceClosure(comptime suite: Suite, comptime size: usize) bench.Function {
+fn bulkEncryptOnceClosure(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
-        fn f(b: *bench.B) !void {
+        fn f(b: *testingx.B) !void {
             const plaintext: [size]u8 = @splat(0xde);
             var ciphertext: [size]u8 = undefined;
             var nonce: [12]u8 = @splat(0xad);
@@ -194,9 +194,9 @@ fn bulkEncryptOnceClosure(comptime suite: Suite, comptime size: usize) bench.Fun
     }.f;
 }
 
-fn bulkDecryptOnceClosure(comptime suite: Suite, comptime size: usize) bench.Function {
+fn bulkDecryptOnceClosure(comptime suite: Suite, comptime size: usize) testingx.Function {
     return struct {
-        fn f(b: *bench.B) !void {
+        fn f(b: *testingx.B) !void {
             const plaintext: [size]u8 = @splat(0xde);
             var out: [size]u8 = undefined;
             var nonce: [12]u8 = @splat(0xad);
@@ -218,7 +218,7 @@ fn bulkDecryptOnceClosure(comptime suite: Suite, comptime size: usize) bench.Fun
     }.f;
 }
 
-pub fn benchmarkEncrypt(b: *bench.B) !void {
+pub fn benchmarkEncrypt(b: *testingx.B) !void {
     @setEvalBranchQuota(1000000);
     inline for (suites) |suite| {
         inline for (sizes) |size| {
@@ -228,7 +228,7 @@ pub fn benchmarkEncrypt(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkDecrypt(b: *bench.B) !void {
+pub fn benchmarkDecrypt(b: *testingx.B) !void {
     @setEvalBranchQuota(1000000);
     inline for (suites) |suite| {
         inline for (sizes) |size| {
@@ -238,7 +238,7 @@ pub fn benchmarkDecrypt(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkBulkEncryptOnce(b: *bench.B) !void {
+pub fn benchmarkBulkEncryptOnce(b: *testingx.B) !void {
     @setEvalBranchQuota(1000000);
     inline for (suites) |suite| {
         inline for (sizes) |size| {
@@ -248,7 +248,7 @@ pub fn benchmarkBulkEncryptOnce(b: *bench.B) !void {
     }
 }
 
-pub fn benchmarkBulkDecryptOnce(b: *bench.B) !void {
+pub fn benchmarkBulkDecryptOnce(b: *testingx.B) !void {
     @setEvalBranchQuota(1000000);
     inline for (suites) |suite| {
         inline for (sizes) |size| {
@@ -256,4 +256,13 @@ pub fn benchmarkBulkDecryptOnce(b: *bench.B) !void {
             _ = try b.run(name, bulkDecryptOnceClosure(suite, size));
         }
     }
+}
+
+/// Suite root for `zig build bench-evp`. Registered by hand: `addMod(@This())`
+/// would also pick up `benchmarkMain` itself.
+pub fn benchmarkMain(b: *testingx.B) !void {
+    try b.add("Encrypt", benchmarkEncrypt);
+    try b.add("Decrypt", benchmarkDecrypt);
+    try b.add("BulkEncryptOnce", benchmarkBulkEncryptOnce);
+    try b.add("BulkDecryptOnce", benchmarkBulkDecryptOnce);
 }
