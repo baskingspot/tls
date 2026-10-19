@@ -677,204 +677,33 @@ _ = engine.handleRecord(record, &out) catch |err| switch (err) {
 
 Use the public buffer types unless the application needs custom storage. Smaller custom slices can return `error.BufferTooShort`.
 
-## API reference
-
-Public symbols used by the guide and examples. The walkthrough above is the canonical explanation of the drive loop.
-
-### `ClientHandshake`
-
-Caller-owned types:
-
-- `ClientHandshake.OutBuffer`: scratch for ClientHello, Finished, application data, alerts, and KeyUpdate records. Use `.empty` for the default stack-backed shape.
-- `ClientHandshake.Storage`: optional handshake-message reassembly storage. Use `.empty` and pass `&storage.buffer` to `useHandshakeBuffer` for unusual chain sizes or tighter memory control.
-
-Common drive methods:
-
-- `init(config)` / `deinit()` create and release a client handshake. `Config` requires `keypairs`, `host_name`, `now_sec`, and `random`. Other fields have defaults.
-- `offerAlpn(protocols)`: advertise application protocols before `start` (also settable via `Config.alpn_protocols`).
-- `useHandshakeBuffer(storage)`: attach caller-owned handshake reassembly storage (also settable via `Config.reassembly`).
-- `start(out)`: emit ClientHello using `Config.host_name` (SNI) and `Config.random`.
-- `handleRecord(record, out)`: consume one TLS record from `RecordBuffer.next()` and return `Event`.
-- `isConnected()`: true after the server Finished verifies and application keys are installed.
-- `sendApplicationData(plaintext, out)` / `sendPreparedApplicationData(len, out)`: emit one encrypted application-data record.
-- `sendAlert(description, out)`: emit `close_notify` or a fatal alert.
-- `sendKeyUpdate(request, out)`: emit a post-handshake KeyUpdate.
-- `txKtlsInfo()` / `rxKtlsInfo()`: copy current traffic-key epoch material for caller-owned Linux kTLS setup.
-- `completeWrite()`: acknowledge the previous emitted record.
-- `selectedAlpnProtocol()`: negotiated ALPN protocol, or `null`.
-- `lastPeerAlert()`: the most recent non-close_notify peer alert (RFC 8446 §6.2), or `null`; see Peer alert diagnostics.
-
-Policy fields (seeded from `Config` at init, overridable after):
-
-| Field | Config field | Effect |
-|---|---|---|
-| `policy.host_name` | `Config.host_name` | Expected DNS name for SAN/CN verification + SNI. |
-| `policy.bundle` | `Config.bundle` | Caller-owned trust-anchor bundle. |
-| `policy.now_sec` | `Config.now_sec` | Validity-period timestamp. |
-| `policy.insecure_no_chain_anchor` | `Config.insecure_no_chain_anchor` | Test/demo opt-out from trust-anchor verification. |
-
-Low-level in-memory hooks exist for fixture-style handshakes with no transport between engines: `processServerHello`, `processFlight`, and `clientFinished`. Prefer the normal `start` + `handleRecord` loop for transport integrations.
-
-### `ServerHandshake`
-
-Caller-owned types:
-
-- `ServerHandshake.OutBuffer`: scratch for ServerHello, application data, alerts, and KeyUpdate records.
-- `ServerHandshake.FlightBuffer`: scratch for the encrypted authenticated server flight. Reuse one buffer; `sendServerFlightBuffered` owns the one-shot latch.
-- `ServerHandshake.Storage`: optional ClientHello reassembly storage. Use `.empty` and pass `&storage.buffer` to `useHandshakeBuffer`.
-
-Common drive methods:
-
-- `init(Config)` / `deinit()`: create and release a server handshake. Required Config fields are `keypairs` and `random`; optional fields include `supported_suites`, `alpn_protocols`, `client_auth`, and ClientHello `reassembly` storage.
-- `supportSuites(suites)`: override the Config-provided cipher-suite list before processing ClientHello.
-- `supportAlpn(protocols)`: override the Config-provided ALPN choices before processing ClientHello.
-- `setCredentials(certs, signer)` / `setCertificateChain(chain, signer)`: attach a leaf-first certificate chain and signer before processing ClientHello.
-- `useHandshakeBuffer(storage)`: attach or override caller-owned ClientHello reassembly storage before processing ClientHello.
-- `handleRecord(record, out)`: consume one TLS record from `RecordBuffer.next()` and return `Event`.
-- `sendServerFlightBuffered(flight)` / `sendPreparedServerFlight(out)`: emit the authenticated server flight after ServerHello is written and acknowledged.
-- `needsServerFlight()`: true while the authenticated flight still needs to be sent.
-- `isConnected()`: true after the client Finished verifies and application keys are installed.
-- `clientServerName()`: SNI hostname, or `null`.
-- `selectedAlpnProtocol()`: negotiated ALPN protocol, or `null`.
-- `lastPeerAlert()`: the most recent non-close_notify peer alert (RFC 8446 §6.2), or `null`; see Peer alert diagnostics.
-- `sendApplicationData(plaintext, out)` / `sendPreparedApplicationData(len, out)`: emit one encrypted application-data record.
-- `sendAlert(description, out)` and `sendKeyUpdate(request, out)`: post-handshake emits.
-- `txKtlsInfo()` / `rxKtlsInfo()`: copy current traffic-key epoch material for caller-owned Linux kTLS setup.
-- `completeWrite()`: acknowledge the previous emitted record.
-- `extractEstablished()`: at `isConnected()`, exactly once, hand the connection's post-handshake life to a compact `EstablishedSession` (736 bytes on the OpenSSL lane vs the handshake engine's 19,408; see the lane table below) and consume this engine. See below.
-
-Low-level in-memory hooks used by `examples/in_memory_handshake.zig`: `acceptClientHello`, `processClientFinished`, and `receiveApplicationData`.
-
-### `EstablishedSession`
-
-The compact post-handshake server engine, constructed only by
-`ServerHandshake.extractEstablished()` at handshake completion (#115). A
-connection pool keeps one `ServerHandshake` per worker and one
-`tls.EstablishedSession` per live connection. The size is lane-dependent
-because each `RecordLayer` embeds its backend AEAD context (measured under
-Zig 0.15.2, aarch64-linux; x86_64 compiles to the same numbers; tls now
-requires Zig 0.16, so treat these as historical, not current):
-
-| Lane | `EstablishedSession` | `ServerHandshake` |
-|---|---|---|
-| OpenSSL (heap `EVP_CIPHER_CTX` pointers) | 736 B | 19,408 B |
-| AWS-LC 5.5.0 (inline `EVP_AEAD_CTX`) | 1,872 B | 21,120 B |
-| BoringSSL (inline `EVP_AEAD_CTX`) | 1,856 B | 21,088 B |
-
-It preserves the traffic record layers and sequences, the
-application traffic secrets, an in-flight KeyUpdate fragment, the
-consecutive-KeyUpdate counter, the last peer alert, an owed KeyUpdate response,
-and the pending-write latch. It runs the same connected record-path code the
-handshake engine runs, so classification, KeyUpdate ratchet/response
-discipline, the flood cap, and the latch behave identically.
-
-Lifecycle rules:
-
-- Call `extractEstablished()` exactly once, while `isConnected()`. The
-  handshake engine becomes unusable (its `State` reports `.extracted`), and the
-  record-layer bytes it left behind — which on AWS-LC and BoringSSL are the
-  live traffic keys — are wiped immediately at extraction, without freeing the
-  moved contexts. `deinit` remains safe to call immediately afterwards: it
-  wipes the engine's remaining duplicated secret bytes and never touches the
-  moved record-layer contexts.
-- Issue NewSessionTickets (and discard any prepared one) BEFORE extracting.
-  The established session carries no ticket machinery.
-- Both record directions must be userspace when extracting. TX ownership is
-  tracked and asserted; RX ownership is not, so it is a caller contract — a
-  kernel-installed RX leaves the session's userspace RX sequence stale, and
-  misuse fails loudly (`error.AuthenticationFailed`). kTLS callers keep using
-  `ServerHandshake` in both directions.
-
-Methods (all mirror their `ServerHandshake` counterparts):
-
-- `deinit()`: release backend contexts and zero the secrets the session owns.
-- `handle(record, out)`: decrypt, classify, and auto-respond to an inbound
-  `update_requested` KeyUpdate with the response record in `out`.
-- `receive(record)`: RX-only classify; a received `update_requested` defers
-  the response to the caller (query with `hasPendingKeyUpdateResponse()`).
-- `sendApplicationData(plaintext, out)`: refused with
-  `error.PendingKeyUpdateResponse` while a response is owed, and with
-  `error.PendingWrite` until the previous record is acknowledged.
-- `sendAlert(description, out)` / `sendKeyUpdate(request, out)` /
-  `ratchetTx(request)` — post-handshake emits; `ratchetTx` advances the TX
-  epoch after an external record layer sent a KeyUpdate under the old key.
-- `hasPendingWrite()` / `completeWrite()` / `hasPendingKeyUpdateResponse()` /
-  `lastPeerAlert()` — the same interlocks and diagnostics as the handshake
-  engine.
-
-### `Outbox`
-
-- `Outbox` is optional glue for non-blocking or partial-write transports.
-- `send(hs, record, writer)` queues one engine-produced record and flushes as much as the writer accepts.
-- `flush(hs, writer)` resumes a partial write.
-- `FlushResult.drained` means the full record drained and `completeWrite()` was called; `FlushResult.pending` means retry later.
-- `writeBlocked()` is true while one record is still pending; do not call another record-producing engine method while blocked.
-- The writer adapter must expose `write(bytes) !usize`; returning `0` means no progress, not success.
-- The queued record is borrowed. Keep the backing `OutBuffer` / `FlightBuffer` stable until drained.
-
-### `RecordBuffer`
-
-- `RecordBuffer.Storage` and `RecordBuffer.MinStorage` are stack-friendly storage wrappers.
-- `RecordBuffer.recommended_storage` is the normal stream buffer size; `min_storage` fits one maximum wire record.
-- `init(storage)` binds caller-owned storage.
-- `writable()` returns the slice to fill from the transport and may compact buffered bytes.
-- `advance(n)` reports how many bytes the transport wrote into `writable()`.
-- `next()` returns the next complete TLS record, or `null` if the buffer only holds a partial record.
-
-### Signing and key exchange
-
-- `CertificateChain.fromPem(pem, der_storage, chain_storage)` decodes RFC 7468 certificate blocks into caller-owned storage. The output buffers must not overlap `pem` and must outlive the chain.
-- `signature.PrivateKey.fromPem(scheme, pem)` and `fromDer(scheme, der)` load private keys from caller-owned bytes. The scheme is caller-pinned metadata and is not validated against the key at load time.
-- `signature.PrivateKey.fromPemAuto(pem)` (#112) loads the key and infers the CertificateVerify scheme from the key's type and curve (RSA → `rsa_pss_rsae_sha256`, P-256 → `ecdsa_secp256r1_sha256`, P-384 → `ecdsa_secp384r1_sha384`). The inferred scheme is gated against the active backend's advertised CertificateVerify schemes, so a key whose scheme this backend cannot sign (Ed25519, P-521 today) fails at load with `error.UnsupportedKeyScheme` instead of at the first handshake signature. The RFC 8446 §4.2.3 `rsa_pss_pss_*` schemes are not implemented; a backend that loads an rsassaPss-OID key rejects it as `UnsupportedKeyScheme`, while a backend that cannot load the container returns `LibcryptoFailed`. Success means the linked backend advertises the inferred scheme; callers still handle signing failures from malformed or unsuitable key material. A PEM that never loads fails with `error.LibcryptoFailed`.
-- Encrypted private keys are not supported (#114). Both PEM loaders pass an explicit provider callback that declines passwords, so an encrypted key: PKCS#8 `ENCRYPTED PRIVATE KEY` or the legacy `Proc-Type: 4,ENCRYPTED` container — fails with `error.LibcryptoFailed` instead of prompting on the controlling terminal or reading process stdin. Loading is therefore safe on an unattended startup path, and there is no caller-owned password API to pass a passphrase through; decrypt the key with external tooling first, or load plaintext PEM/DER.
-- `signature.PrivateKey.pairsWith(leaf_cert_der)` (#113) validates at load time that the private key matches the leaf certificate's public key (RFC 8446 §4.4.3; the leaf is element [0] of the chain). `error.CertificateKeyMismatch` means the leaf parsed but the keys do not pair; `error.InvalidCertificate` means the input is not exactly one DER-encoded X.509 certificate: distinct errors so rotation tooling can tell a wrong pairing from a corrupt file. Both inputs are borrowed; the private key is only read. A `PrivateKey` must outlive every `Signer` it handed out — swap credentials only when no in-flight handshake holds the old signer.
-- `signature.PrivateKey.fromP256Scalar(scalar)` is useful for fixtures and examples that carry a raw P-256 scalar.
-- `signature.PrivateKey.signer()` borrows a `signature.Signer` vtable for `setCredentials`.
-- `signature.PrivateKey.deinit()` releases libcrypto key material.
-- `signature.PrivateKey.nonce_mode` selects the ECDSA nonce strategy (`signature.NonceMode`): the default `.random` is the production path; `.deterministic` opts into RFC 6979 deterministic nonces so identical key and message produce identical signature bytes, which makes a seeded handshake transcript byte-reproducible. It requires a backend compiled with nonce-type provider support and an ECDSA scheme; unsupported requests fail loudly: `error.DeterministicNonceUnsupported` for a missing capability or non-ECDSA scheme, `error.LibcryptoFailed` when the provider rejects the parameter — instead of silently signing with a random nonce. Keep `.random` in production.
-- `SignatureScheme` names the TLS signature scheme used with a loaded key, including `rsa_pss_rsae_sha256`, `ecdsa_secp256r1_sha256`, `ecdsa_secp384r1_sha384`, and `ed25519`.
-- `x25519.KeyPair.generate()` creates a fresh ephemeral X25519 keypair with OS entropy.
-- `x25519.KeyPair.fromSecret(secret_key)` derives a keypair from a caller-supplied 32-byte scalar. Production callers must supply fresh CSPRNG bytes for each handshake. The function supports batched entropy draws.
-- `x25519.KeyPair.generateDeterministic(seed)` remains available for tests and fixed-vector paths.
-- `x25519.sharedSecret(secret_key, peer_public_key, out)` writes the shared secret to caller-owned storage. The function clears the output on error.
-- `p256.KeyPair.fromSecret(secret_key)` derives a keypair from a caller-supplied 32-byte scalar. Production callers must supply fresh CSPRNG bytes for each handshake.
-- `error.IdentityElement` from `p256.KeyPair.fromSecret` requires a fresh draw. `error.LibcryptoFailed` is terminal.
-- `ClientHandshake.KeyPairs.init(x25519_keypair)` generates the P-256 half and can return `p256.Error`. The caller sheds the handshake after failure (#88).
-- `initWithP256` and `initWithP256P384` accept fixed caller-supplied keypairs.
-
-### Secret cleanup
-
-After use, call `secureZero()` on each caller-owned X25519, P-256, P-384, or aggregate handshake keypair.
-
-Before release of resumption material, call `SessionTicket.secureZero()`.
-
-After kernel setup, call `KtlsInfo.secureZero()`.
-
-After kernel setup, call `secureZero()` on the packed kTLS value.
-
-After use, call handshake `deinit()` methods to release provider handles and erase each handshake-owned secret copy. `EstablishedSession.deinit()` does the same for the extracted post-handshake session; the consumed handshake engine's own `deinit()` stays safe after extraction.
-
-Do not erase borrowed buffers, `Signer` values, or borrowed PSK slices through these owners.
-
 ## Runtime-specific integration notes
 
-The generic drive loop above is the protocol boundary. These notes call out what changes by transport model; the named files are built by `just examples-ci`.
+The drive loop above is the protocol boundary. What changes by transport model:
 
 ### Blocking `std.net.Stream`
 
-`examples/tcp_loopback.zig` drives a tls client and tls server over loopback TCP. Blocking I/O keeps the ownership rules boring: read into `RecordBuffer.writable()`, feed each complete record to the engine, `writeAll` each emitted record, then call `completeWrite()`.
+[`examples/tcp_loopback.zig`](https://github.com/baskingspot/tls/blob/main/examples/tcp_loopback.zig) drives a client and a server over loopback TCP. Blocking I/O keeps the ownership rules boring: read into `RecordBuffer.writable()`, feed each complete record to the engine, `writeAll` each emitted record, then call `completeWrite()`. [`tls_std`](https://github.com/baskingspot/tls/blob/main/integrations/tls-std/README.md) packages that shape as a wrapper.
 
 ### In-memory transport
 
-`examples/in_memory_handshake.zig` connects both engines by passing record slices directly. It uses low-level hooks such as `acceptClientHello`, `processServerHello`, `processClientFinished`, and `receiveApplicationData` because there is no byte-stream transport to frame with `RecordBuffer`.
+[`examples/in_memory_handshake.zig`](https://github.com/baskingspot/tls/blob/main/examples/in_memory_handshake.zig) connects both engines by passing record slices directly. It uses the low-level hooks (`acceptClientHello`, `processServerHello`, `processClientFinished`, `receiveApplicationData`) because there is no byte-stream transport to frame with `RecordBuffer`.
 
 ### epoll
 
-`examples/epoll_pingpong.zig` is Linux-only and non-blocking. It uses `tls.Outbox` for the write side: keep at most one engine-emitted record queued, wait for writability if the socket blocks, and do not call another record-producing engine method until the outbox drains. Reads still fill `RecordBuffer.writable()` and records still flow through `handleRecord` one at a time.
+[`examples/epoll_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/examples/epoll_pingpong.zig) is Linux-only and non-blocking. It uses `tls.Outbox` for the write side: keep at most one emitted record queued, wait for writability when the socket blocks, and do not call another record-producing method until the outbox drains. Reads still fill `RecordBuffer.writable()`.
 
 ### io_uring
 
-`examples/iouring_pingpong.zig` is Linux-only. The setup path may use ordinary blocking `listen` / `accept` / `connect`; the TLS record data path submits sends and receives through io_uring. The same pending-write rule applies: every record emitted by the engine must complete through the ring before the next engine call that can advance protocol state.
+[`examples/iouring_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/examples/iouring_pingpong.zig) is Linux-only. Setup may use ordinary blocking `listen`, `accept`, and `connect`; the record data path submits sends and receives through the ring. The pending-write rule still applies: every emitted record completes through the ring before the next call that can advance protocol state.
+
+### libxev
+
+[`tls_xev`](https://github.com/baskingspot/tls/blob/main/integrations/tls-xev/README.md) is the non-blocking adapter for [libxev](https://github.com/mitchellh/libxev). It is opt-in: set `.xev = true` in the dependency options.
+
+### kTLS
+
+[`tls_ktls`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/README.md) exports traffic keys for Linux kTLS and drives the kernel data plane after the userspace handshake. [`examples/ktls_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/examples/ktls_pingpong.zig) is the runnable version.
 
 ## What is not shown here
 
