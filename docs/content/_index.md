@@ -52,13 +52,11 @@ engine never calls an allocator.
 - **The full TLS feature set.** It supports a bounded TLS 1.3 surface. [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) is the authority on what is proven and what is not.
 - **A stable API.** Signatures move. Pin a commit if you build on it.
 
-If you need a mature, audited TLS stack right now, use rustls or OpenSSL. That is the right answer for most people.
-
 ## The performance argument
 
-Performance is why the library exists, not why you should adopt it yet. The claim is narrow: on in-memory application-data benchmarks it does less work per record than libssl across the board, and less than rustls on AES-GCM. It loses to rustls on small ChaCha20-Poly1305 records, and that row ships with the disassembly that explains why.
+Performance is why the library exists. The claim is narrow: on in-memory application-data benchmarks it does less work per record than libssl across the board, and less than rustls on AES-GCM. It loses to rustls on small ChaCha20-Poly1305 records, and that row ships with the disassembly that explains why.
 
-The caveats are in the [README](https://github.com/baskingspot/tls/blob/main/README.md) and in [`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md): three n=10 captures (x86_64, aarch64, macOS), a measurement-shape difference between harnesses, and a 15% regression gate that runs by hand on EC2 rather than in CI. The numbers are measurements, not a marketing headline. When the methodology is hardened enough to make a headline claim, the claim will point at reproducible numbers.
+The caveats are in the [README](https://github.com/baskingspot/tls/blob/main/README.md) and in [`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md): three n=10 captures (x86_64, aarch64, macOS), a measurement-shape difference between harnesses, and a 15% regression gate that runs by hand on EC2 rather than in CI. The captures are committed, so every number here can be re-derived.
 
 Until then the argument is architectural: Sans-I/O and no engine allocations are what make the performance ceiling high.
 
