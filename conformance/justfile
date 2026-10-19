@@ -3,40 +3,49 @@ default:
     @just --list
 
 [doc("Remove generated runtime artifacts (cache, logs, Results, zig-out)")]
+[group("conformance")]
 clean:
     rm -rf cache logs Results_* zig-out zig-pkg keyfile.log
 
 [doc("Format conformance code")]
+[group("conformance")]
 fmt: fmt-python fmt-zig fmt-just
 
 [doc("Lint conformance code")]
+[group("conformance")]
 lint: lint-python lint-zig lint-just
 
 [doc("Format Python code")]
+[group("conformance")]
 fmt-python:
     uv run ruff format .
     uv run ruff check --fix .
 
 [doc("Lint Python code")]
+[group("conformance")]
 lint-python:
     uv run ruff format --check .
     uv run ruff check .
     uv run ty check .
 
 [doc("Format Zig harness code")]
+[group("conformance")]
 fmt-zig:
     zig fmt build.zig src/
 
 [doc("Lint Zig harness code")]
+[group("conformance")]
 lint-zig:
     zig fmt --check build.zig src/
     ziglint build.zig src/
 
 [doc("Format Justfile")]
+[group("conformance")]
 fmt-just:
     just --fmt --unstable --justfile justfile
 
 [doc("Lint Justfile")]
+[group("conformance")]
 lint-just:
     just --check --fmt --unstable --justfile justfile
 
@@ -45,10 +54,12 @@ build:
     zig build
 
 [doc("Run tlsfuzzer TLS 1.3 conformance smoke tests")]
-tlsfuzzer *args: build
-    uv run pytest {{ args }}
+[group("conformance")]
+tlsfuzzer *ARGS: build
+    uv run pytest {{ ARGS }}
 
 [doc("Run all CI gates")]
+[group("conformance")]
 ci:
     zig build test
     just tlsfuzzer -v
@@ -59,24 +70,28 @@ ci:
     just anvil-chain-patch-test
 
 [doc("Run TLS-Anvil server tests against the ztls server harness")]
-anvil-server *args: build
-    uv run python scripts/anvil_server.py {{ args }}
+[group("conformance")]
+anvil-server *ARGS: build
+    uv run python scripts/anvil_server.py {{ ARGS }}
 
 [doc("Run TLS-Anvil server with CI-safe sequential defaults")]
-anvil-ci-server run_dir timeout_secs="5400": build
-    uv run python scripts/anvil_server.py --output-folder {{ run_dir }} --timeout {{ timeout_secs }} --strength 1 --parallel-tests 1 --parallel-handshakes 1
+[group("conformance")]
+anvil-ci-server RUN_DIR TIMEOUT_SECS="5400": build
+    uv run python scripts/anvil_server.py --output-folder {{ RUN_DIR }} --timeout {{ TIMEOUT_SECS }} --strength 1 --parallel-tests 1 --parallel-handshakes 1
 
 [doc("Adapt a TLS-Anvil output directory to report.normalized.json")]
-anvil-adapter run_dir *args:
-    uv run python scripts/anvil_adapter.py {{ run_dir }} {{ args }}
+[group("conformance")]
+anvil-adapter RUN_DIR *ARGS:
+    uv run python scripts/anvil_adapter.py {{ RUN_DIR }} {{ ARGS }}
 
 [doc("Audit a real TLS-Anvil output directory against the adapter heuristics")]
-anvil-adapter-audit run_dir:
+[group("conformance")]
+anvil-adapter-audit RUN_DIR:
     #!/usr/bin/env bash
     set -euo pipefail
-    report="{{ run_dir }}/report.normalized.audit.json"
+    report="{{ RUN_DIR }}/report.normalized.audit.json"
     # --allow-partial is for local debug captures; do not use this recipe as acceptance evidence.
-    uv run python scripts/anvil_adapter.py {{ run_dir }} --output "$report" --allow-partial
+    uv run python scripts/anvil_adapter.py {{ RUN_DIR }} --output "$report" --allow-partial
     uv run python - "$report" <<'PY'
     import json
     import sys
@@ -90,43 +105,53 @@ anvil-adapter-audit run_dir:
     PY
 
 [doc("Normalize TLS-Anvil results: apply skip-list and emit summary.json / summary.txt")]
-anvil-report results_json *args:
-    uv run python scripts/anvil_report.py {{ results_json }} {{ args }}
+[group("conformance")]
+anvil-report RESULTS_JSON *ARGS:
+    uv run python scripts/anvil_report.py {{ RESULTS_JSON }} {{ ARGS }}
 
 [doc("Adapt and normalize a TLS-Anvil output directory")]
-anvil-report-dir run_dir *args:
-    uv run python scripts/anvil_adapter.py {{ run_dir }}
-    uv run python scripts/anvil_report.py {{ run_dir }}/report.normalized.json --output-dir {{ run_dir }} {{ args }}
+[group("conformance")]
+anvil-report-dir RUN_DIR *ARGS:
+    uv run python scripts/anvil_adapter.py {{ RUN_DIR }}
+    uv run python scripts/anvil_report.py {{ RUN_DIR }}/report.normalized.json --output-dir {{ RUN_DIR }} {{ ARGS }}
 
 [doc("Run synthetic TLS-Anvil report parser tests")]
+[group("conformance")]
 anvil-report-test:
     uv run pytest -q tests/test_anvil_report.py
 
 [doc("Run TLS-Anvil output adapter tests")]
+[group("conformance")]
 anvil-adapter-test:
     uv run pytest -q tests/test_anvil_adapter.py
 
 [doc("Run TLS-Anvil server wrapper helper tests")]
+[group("conformance")]
 anvil-server-test:
     uv run pytest -q tests/test_anvil_server.py
 
 [doc("Lint the skip list against known TLS-Anvil feature names")]
+[group("conformance")]
 anvil-report-skip-list:
     @echo "TODO: real-run skip-list audit not yet automated."
     @echo "Run 'just anvil-report <real-results> --output-dir <run-dir>' and review unmatched_skip_patterns in the summary."
 
 [doc("Run TLS-Anvil client tests against the ztls client harness")]
-anvil-client *args: build
-    uv run python scripts/anvil_client.py {{ args }}
+[group("conformance")]
+anvil-client *ARGS: build
+    uv run python scripts/anvil_client.py {{ ARGS }}
 
 [doc("Run TLS-Anvil client with CI-safe sequential defaults")]
-anvil-ci-client run_dir timeout_secs="5400": build
-    uv run python scripts/anvil_client.py --output-folder {{ run_dir }} --timeout {{ timeout_secs }} --strength 1 --parallel-tests 1 --parallel-handshakes 1
+[group("conformance")]
+anvil-ci-client RUN_DIR TIMEOUT_SECS="5400": build
+    uv run python scripts/anvil_client.py --output-folder {{ RUN_DIR }} --timeout {{ TIMEOUT_SECS }} --strength 1 --parallel-tests 1 --parallel-handshakes 1
 
 [doc("Run TLS-Anvil client wrapper helper tests")]
+[group("conformance")]
 anvil-client-test:
     uv run pytest -q tests/test_anvil_client.py
 
 [doc("Verify the patched TLS-Anvil jars: conforming CA roots and preserved validity")]
+[group("conformance")]
 anvil-chain-patch-test: build
     bash scripts/anvil-chain-provider-patch/probe.sh

@@ -5,8 +5,8 @@ test:
 
 [doc("Check unit and handshake-replay ownership with Linux Memcheck")]
 [group("check")]
-check-memory $output="":
-    @scripts/check-memory.sh "$output"
+check-memory $OUTPUT="":
+    @scripts/check-memory.sh "$OUTPUT"
 
 [doc("Build, test, benchmark-smoke, and tlsfuzzer-smoke with AWS-LC libcrypto")]
 [group("check")]
@@ -121,19 +121,19 @@ fmt: fmt-zig fmt-actions fmt-just fmt-rust
 
 [doc("Rerun a suite N times to shake out order- and timing-dependent flakes")]
 [group("check")]
-flake-check n="20":
+flake-check N="20":
     #!/usr/bin/env bash
     set -euo pipefail
     # Compilation caches but test runs do not, so each iteration really
     # re-executes. Cheap enough to be routine: these suites are milliseconds.
-    for i in $(seq 1 {{ n }}); do
+    for i in $(seq 1 {{ N }}); do
         if ! zig build test > /dev/null 2>&1; then
-            echo "flaked on run $i of {{ n }}" >&2
+            echo "flaked on run $i of {{ N }}" >&2
             zig build test 2>&1 | tail -20 >&2
             exit 1
         fi
     done
-    echo "{{ n }} consecutive green runs"
+    echo "{{ N }} consecutive green runs"
 
 [doc("Run every in-tree integration gate")]
 [group("check")]
@@ -154,19 +154,19 @@ distribution-ci:
 # --z53-repo.
 [doc("Gate a ztls candidate against the active consumer suites (handoff, z53) (#119)")]
 [group("check")]
-consumer-gate $ztls_rev="HEAD" $handoff_rev="HEAD" $z53_rev="HEAD" $consumers="handoff z53" $out_dir="":
+consumer-gate $ZTLS_REV="HEAD" $HANDOFF_REV="HEAD" $Z53_REV="HEAD" $CONSUMERS="handoff z53" $OUT_DIR="":
     #!/usr/bin/env bash
     set -euo pipefail
-    args=(--ztls-rev "$ztls_rev" --handoff-rev "$handoff_rev" --z53-rev "$z53_rev" --consumers "$consumers")
-    if [ -n "$out_dir" ]; then args+=(--out-dir "$out_dir"); fi
+    args=(--ztls-rev "$ZTLS_REV" --handoff-rev "$HANDOFF_REV" --z53-rev "$Z53_REV" --consumers "$CONSUMERS")
+    if [ -n "$OUT_DIR" ]; then args+=(--out-dir "$OUT_DIR"); fi
     exec ./scripts/consumer-gate.sh "${args[@]}"
 
 # The qualification entrypoint: refuses symbolic revisions, so a record written
 # by this recipe names the exact ztls and consumer commits that were tested.
 [doc("Qualify a production candidate: fixed ztls SHA plus fixed handoff and z53 SHAs (#119)")]
 [group("check")]
-qualify-candidate $ztls_sha $handoff_sha $z53_sha $out_dir:
-    ./scripts/consumer-gate.sh --require-fixed-revisions --ztls-rev "$ztls_sha" --handoff-rev "$handoff_sha" --z53-rev "$z53_sha" --out-dir "$out_dir"
+qualify-candidate $ZTLS_SHA $HANDOFF_SHA $Z53_SHA $OUT_DIR:
+    ./scripts/consumer-gate.sh --require-fixed-revisions --ztls-rev "$ZTLS_SHA" --handoff-rev "$HANDOFF_SHA" --z53-rev "$Z53_SHA" --out-dir "$OUT_DIR"
 
 [doc("Exercise consumer-gate guards offline without consumer builds")]
 [group("check")]
@@ -319,16 +319,17 @@ lint-readme-index:
     echo "README index matches research files"
     echo "no closed-issue citations in research doc headings"
 
-[doc("Format Zig code")]
+[doc("Format Zig sources")]
 [group("check")]
 fmt-zig:
     zig fmt src/ examples/ bench/ build.zig
 
-[doc("Format Rust benchmark code (bench/rustls)")]
+[doc("Format the Rust benchmark harness")]
 [group("check")]
 fmt-rust:
     cargo fmt --manifest-path bench/rustls/Cargo.toml
 
+[doc("Lint Zig sources: fmt --check, ziglint, and the ast-grep rules")]
 [group("check")]
 lint-zig:
     zig fmt --check src/ examples/ bench/ tests/distribution-consumer/ build.zig
@@ -356,6 +357,7 @@ lint-rust:
 fmt-just:
     @fd '(^justfile$|\.just$)' -tf -x just --fmt --unstable --justfile {}
 
+[doc("Check Justfile formatting")]
 [group("check")]
 lint-just:
     @fd '(^justfile$|\.just$)' -tf -x just --check --fmt --unstable --justfile {}
@@ -365,6 +367,7 @@ lint-just:
 fmt-actions:
     pinact run .github/workflows/*.yml
 
+[doc("Check that workflow actions are pinned; zizmor audits them")]
 [group("check")]
 lint-actions:
     pinact run --fix=false --no-api .github/workflows/*.yml
