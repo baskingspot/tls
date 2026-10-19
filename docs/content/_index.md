@@ -4,7 +4,7 @@ title = "tls"
 
 A TLS 1.3 implementation that does no I/O. You feed it the bytes you read off
 the wire; it hands you back the bytes to write. Your socket, your event loop,
-your buffers. tls does the protocol.
+your buffers. The engine does the protocol.
 
 It is pre-alpha. The API will change.
 
@@ -40,7 +40,7 @@ came off the wire, it tells you what to send back and hands you decrypted
 application data. It never touches a socket. It never blocks. It has no thread of
 its own. Where the bytes come from and where they go is entirely yours.
 
-rustls proved this model works in production. tls takes it further on memory: no
+rustls proved this model works in production. `tls` takes it further on memory: no
 allocator in the engine at all.
 
 ## What tls is for
@@ -59,57 +59,34 @@ Reach for tls when:
 - You want TLS 1.3 and nothing else. No 1.2 downgrade paths, no DTLS, no
   Windows portability layer diluting the code you're trusting with your traffic.
 
-## What tls is not for, yet
+## What it is not for
 
-Being honest about this is the whole brand, so here it is straight:
+- **Production.** Pre-alpha and unaudited. [`SECURITY.md`](https://github.com/baskingspot/tls/blob/main/SECURITY.md) has the details.
+- **A drop-in OpenSSL replacement.** The engine is the TLS state machine. It does not open sockets, load OS trust stores, or give you a `connect()`. You write the drive loop.
+- **The full TLS feature set.** It supports a bounded TLS 1.3 surface. [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) is the authority on what is proven and what is not.
+- **A stable API.** Signatures move. Pin a commit if you build on it.
 
-- **Anything in production.** It's pre-alpha and unaudited.
-  [`SECURITY.md`](https://github.com/baskingspot/tls/blob/main/SECURITY.md)
-  says this plainly.
-- **A drop-in OpenSSL replacement.** tls does the TLS state machine. It does
-  not manage sockets, load OS trust stores, or hand you a `connect()`. You write
-  the drive loop. The examples show how, but it's your code.
-- **The full TLS feature set.** tls intentionally supports a bounded TLS 1.3
-  surface rather than every legacy or optional feature. See
-  [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) for the canonical
-  supported surface and remaining gaps.
-- **A guaranteed-stable API.** Signatures move. Pin a commit if you build on it.
-
-If you need a mature, audited, drop-everything-in TLS stack right now, use
-rustls or OpenSSL. That's not a dodge — it's the correct answer for most people
-today, and tls will tell you when that changes.
+If you need a mature, audited TLS stack right now, use rustls or OpenSSL. That is the right answer for most people, and this guide will say so when it changes.
 
 ## The performance argument
 
-Performance is the reason tls is being built rather than the reason to adopt it
-today. The claim is narrow and evidence-backed: on in-memory application-data
-benchmarks, tls does less work per record than libssl across the board, and less
-than rustls on AES-GCM. It loses to rustls on small ChaCha20-Poly1305 records,
-and that row is published with the disassembly that explains why.
+Performance is why the library exists, not why you should adopt it yet. The claim is narrow: on in-memory application-data benchmarks it does less work per record than libssl across the board, and less than rustls on AES-GCM. It loses to rustls on small ChaCha20-Poly1305 records, and that row ships with the disassembly that explains why.
 
-The honest caveats are in the
-[README](https://github.com/baskingspot/tls/blob/main/README.md) and in
-[`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md): two
-x86_64 EC2 shapes so far, no repetition or threshold policy yet, and a
-measurement-shape difference between the harnesses. So the current numbers are
-measurements, not a marketing headline. When the methodology is hardened enough
-to make a headline claim, we'll make it, and it'll point at reproducible numbers.
+The caveats are in the [README](https://github.com/baskingspot/tls/blob/main/README.md) and in [`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md): three n=10 captures (x86_64, aarch64, macOS), a measurement-shape difference between harnesses, and a 15% regression gate that runs by hand on EC2 rather than in CI. The numbers are measurements, not a marketing headline. When the methodology is hardened enough to make a headline claim, the claim will point at reproducible numbers.
 
-Until then the argument for tls is architectural: the Sans-I/O, zero-allocation
-design is what makes the performance ceiling high. The numbers are catching up to
-the design, in the open, with the losses shown.
+Until then the argument is architectural: Sans-I/O and no engine allocations are what make the performance ceiling high.
 
 ## Where to go next
 
-- [`README.md`](https://github.com/baskingspot/tls/blob/main/README.md) — what it is and how to start.
-- [`docs/USAGE.md`](https://github.com/baskingspot/tls/blob/main/docs/USAGE.md) — the API guide and drive-loop patterns.
-- [`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md) — benchmark methodology and the raw captures.
-- [`docs/research/THREAT_MODEL.md`](https://github.com/baskingspot/tls/blob/main/docs/research/THREAT_MODEL.md) — the attacker model and the caller/engine line.
-- [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) — what's proven, what isn't, and how we know.
+- [`README.md`](https://github.com/baskingspot/tls/blob/main/README.md): what it is and how to start.
+- The [API reference](api/): every public declaration.
+- [`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md): benchmark methodology and the raw captures.
+- [`docs/research/THREAT_MODEL.md`](https://github.com/baskingspot/tls/blob/main/docs/research/THREAT_MODEL.md): the attacker model and the caller/engine line.
+- [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md): what's proven, what isn't, and how we know.
 
 # Guide
 
-tls is a pure TLS 1.3 state machine. The caller supplies bytes, buffers, transport I/O, and the drive loop. tls protocol code allocates no memory. Production crypto backends can allocate memory inside provider operations.
+The engine is a pure TLS 1.3 state machine. You supply the bytes, the buffers, the transport I/O, and the drive loop. Protocol code allocates no memory; production crypto backends can allocate inside provider operations.
 
 ## Mental model
 
@@ -134,19 +111,19 @@ The engine owns the TLS protocol: framing, encryption, transcript hashing, alert
 
 ## Walkthrough: start with these examples
 
-`docs/USAGE.md` is the reference. If you want executable adoption paths first, read the CI-gated examples:
+The rest of this page is the reference. To start from running code, these examples are built and run in CI:
 
-- [`examples/in_memory_handshake.zig`](https://github.com/baskingspot/tls/blob/main/examples/in_memory_handshake.zig) — both engines in one process, no sockets. Read this first: it shows the full 1-RTT handshake and application data in both directions.
-- [`examples/tcp_loopback.zig`](https://github.com/baskingspot/tls/blob/main/examples/tcp_loopback.zig) — tls client plus tls server over `std.net.Stream` on loopback.
-- [`examples/epoll_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/examples/epoll_pingpong.zig) — non-blocking Linux epoll client/server ping-pong.
-- [`examples/iouring_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/examples/iouring_pingpong.zig) — Linux io_uring client/server ping-pong.
-- [`integrations/tls-ktls/examples/ktls_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/examples/ktls_pingpong.zig) — Zig 0.16/Linux userspace handshake followed by kernel TX/RX, live KeyUpdate, and explicit close alerts.
+- [`examples/in_memory_handshake.zig`](https://github.com/baskingspot/tls/blob/main/examples/in_memory_handshake.zig): both engines in one process, no sockets. Read this first: it shows the full 1-RTT handshake and application data in both directions.
+- [`examples/tcp_loopback.zig`](https://github.com/baskingspot/tls/blob/main/examples/tcp_loopback.zig): client and server over `std.net.Stream` on loopback.
+- [`examples/epoll_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/examples/epoll_pingpong.zig): non-blocking Linux epoll client/server ping-pong.
+- [`examples/iouring_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/examples/iouring_pingpong.zig): Linux io_uring client/server ping-pong.
+- [`integrations/tls-ktls/examples/ktls_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/examples/ktls_pingpong.zig): Zig 0.16/Linux userspace handshake followed by kernel TX/RX, live KeyUpdate, and explicit close alerts.
 
-`just examples-ci` builds and runs the core paths. The Zig 0.16 integration gate runs the packaged examples and tests. If a drive-loop shape here diverges from those examples, this document is the stale side.
+`just examples-ci` builds and runs the core paths. The Zig 0.16 integration gate runs the packaged examples and tests. When this page and the examples disagree, the examples are right.
 
 ## Fresh project setup
 
-Use Zig 0.16. tls links a libcrypto-family provider through `pkg-config`; the repository devshell supplies OpenSSL by default.
+Use Zig 0.16. The library links a libcrypto-family provider through `pkg-config`; the repository devshell supplies OpenSSL by default.
 
 Start from Zig's generated project files so `build.zig.zon` gets a valid package fingerprint:
 
@@ -237,7 +214,7 @@ the generated hash; do not hand-write dependency hashes.
 
 ## Supported surface for adopters
 
-tls is TLS 1.3 only. The supported user-facing path is server-authenticated 1-RTT over caller-owned buffers.
+The engine speaks TLS 1.3 only. The supported user-facing path is server-authenticated 1-RTT over caller-owned buffers.
 
 | Area | Supported path | Notes |
 |---|---|---|
@@ -251,8 +228,8 @@ tls is TLS 1.3 only. The supported user-facing path is server-authenticated 1-RT
 ## Buffer ownership
 
 - **Caller owns every buffer.** The engine holds no heap state and never allocates.
-- **`out`** — caller-provided scratch for records the engine emits (ClientHello, Finished, app data, alerts).
-- **`storage`** — caller-provided backing for `RecordBuffer`, which turns a byte stream into whole records.
+- **`out`**: caller-provided scratch for records the engine emits (ClientHello, Finished, app data, alerts).
+- **`storage`**: caller-provided backing for `RecordBuffer`, which turns a byte stream into whole records.
 - **Records are decrypted in place.** `RecordBuffer.next()` returns a mutable slice into `storage`. Hand it to `handleRecord`, which may mutate it during decryption. The slice is valid only until the next `next()` or `writable()` call.
 - **Application data** returned in `Event.application_data` is a slice into that same record buffer. Copy it before the next engine call if you need it longer.
 
@@ -572,7 +549,7 @@ After the handshake, `selectedAlpnProtocol()` returns the negotiated protocol (o
 
 ## RFC 10024 hybrid key exchange
 
-Hybrid groups are opt-in. The non-FIPS OpenSSL, AWS-LC, and BoringSSL backends support all three RFC 10024 groups. The provider supplies pure ML-KEM operations. tls owns group negotiation and classical-secret composition. FIPS backend identities advertise no hybrid groups.
+Hybrid groups are opt-in. The non-FIPS OpenSSL, AWS-LC, and BoringSSL backends support all three RFC 10024 groups. The provider supplies pure ML-KEM operations. The engine owns group negotiation and classical-secret composition. FIPS backend identities advertise no hybrid groups.
 
 `tls.capabilities.active_backend` identifies the inferred backend and explicit FIPS policy. `tls.capabilities.is_fips` reports compile-time FIPS narrowing. It does not prove the provider runtime mode. `supportsHybridGroup(role, group)` reports role support. Provider operations can still fail at runtime.
 
@@ -722,24 +699,24 @@ This is a consumer index for the public symbols used by the guide and examples. 
 
 Caller-owned types:
 
-- `ClientHandshake.OutBuffer` — scratch for ClientHello, Finished, application data, alerts, and KeyUpdate records. Use `.empty` for the default stack-backed shape.
-- `ClientHandshake.Storage` — optional handshake-message reassembly storage. Use `.empty` and pass `&storage.buffer` to `useHandshakeBuffer` for unusual chain sizes or tighter memory control.
+- `ClientHandshake.OutBuffer`: scratch for ClientHello, Finished, application data, alerts, and KeyUpdate records. Use `.empty` for the default stack-backed shape.
+- `ClientHandshake.Storage`: optional handshake-message reassembly storage. Use `.empty` and pass `&storage.buffer` to `useHandshakeBuffer` for unusual chain sizes or tighter memory control.
 
 Common drive methods:
 
 - `init(config)` / `deinit()` create and release a client handshake. `Config` requires `keypairs`, `host_name`, `now_sec`, and `random`. Other fields have defaults.
-- `offerAlpn(protocols)` — advertise application protocols before `start` (also settable via `Config.alpn_protocols`).
-- `useHandshakeBuffer(storage)` — attach caller-owned handshake reassembly storage (also settable via `Config.reassembly`).
-- `start(out)` — emit ClientHello using `Config.host_name` (SNI) and `Config.random`.
-- `handleRecord(record, out)` — consume one TLS record from `RecordBuffer.next()` and return `Event`.
-- `isConnected()` — true after the server Finished verifies and application keys are installed.
-- `sendApplicationData(plaintext, out)` / `sendPreparedApplicationData(len, out)` — emit one encrypted application-data record.
-- `sendAlert(description, out)` — emit `close_notify` or a fatal alert.
-- `sendKeyUpdate(request, out)` — emit a post-handshake KeyUpdate.
-- `txKtlsInfo()` / `rxKtlsInfo()` — copy current traffic-key epoch material for caller-owned Linux kTLS setup.
-- `completeWrite()` — acknowledge the previous emitted record.
-- `selectedAlpnProtocol()` — negotiated ALPN protocol, or `null`.
-- `lastPeerAlert()` — the most recent non-close_notify peer alert (RFC 8446 §6.2), or `null`; see Peer alert diagnostics.
+- `offerAlpn(protocols)`: advertise application protocols before `start` (also settable via `Config.alpn_protocols`).
+- `useHandshakeBuffer(storage)`: attach caller-owned handshake reassembly storage (also settable via `Config.reassembly`).
+- `start(out)`: emit ClientHello using `Config.host_name` (SNI) and `Config.random`.
+- `handleRecord(record, out)`: consume one TLS record from `RecordBuffer.next()` and return `Event`.
+- `isConnected()`: true after the server Finished verifies and application keys are installed.
+- `sendApplicationData(plaintext, out)` / `sendPreparedApplicationData(len, out)`: emit one encrypted application-data record.
+- `sendAlert(description, out)`: emit `close_notify` or a fatal alert.
+- `sendKeyUpdate(request, out)`: emit a post-handshake KeyUpdate.
+- `txKtlsInfo()` / `rxKtlsInfo()`: copy current traffic-key epoch material for caller-owned Linux kTLS setup.
+- `completeWrite()`: acknowledge the previous emitted record.
+- `selectedAlpnProtocol()`: negotiated ALPN protocol, or `null`.
+- `lastPeerAlert()`: the most recent non-close_notify peer alert (RFC 8446 §6.2), or `null`; see Peer alert diagnostics.
 
 Policy fields (seeded from `Config` at init, overridable after):
 
@@ -756,29 +733,29 @@ Low-level in-memory hooks exist for fixture-style handshakes with no transport b
 
 Caller-owned types:
 
-- `ServerHandshake.OutBuffer` — scratch for ServerHello, application data, alerts, and KeyUpdate records.
-- `ServerHandshake.FlightBuffer` — scratch for the encrypted authenticated server flight. Reuse one buffer; `sendServerFlightBuffered` owns the one-shot latch.
-- `ServerHandshake.Storage` — optional ClientHello reassembly storage. Use `.empty` and pass `&storage.buffer` to `useHandshakeBuffer`.
+- `ServerHandshake.OutBuffer`: scratch for ServerHello, application data, alerts, and KeyUpdate records.
+- `ServerHandshake.FlightBuffer`: scratch for the encrypted authenticated server flight. Reuse one buffer; `sendServerFlightBuffered` owns the one-shot latch.
+- `ServerHandshake.Storage`: optional ClientHello reassembly storage. Use `.empty` and pass `&storage.buffer` to `useHandshakeBuffer`.
 
 Common drive methods:
 
-- `init(Config)` / `deinit()` — create and release a server handshake. Required Config fields are `keypairs` and `random`; optional fields include `supported_suites`, `alpn_protocols`, `client_auth`, and ClientHello `reassembly` storage.
-- `supportSuites(suites)` — override the Config-provided cipher-suite list before processing ClientHello.
-- `supportAlpn(protocols)` — override the Config-provided ALPN choices before processing ClientHello.
-- `setCredentials(certs, signer)` / `setCertificateChain(chain, signer)` — attach a leaf-first certificate chain and signer before processing ClientHello.
-- `useHandshakeBuffer(storage)` — attach or override caller-owned ClientHello reassembly storage before processing ClientHello.
-- `handleRecord(record, out)` — consume one TLS record from `RecordBuffer.next()` and return `Event`.
-- `sendServerFlightBuffered(flight)` / `sendPreparedServerFlight(out)` — emit the authenticated server flight after ServerHello is written and acknowledged.
-- `needsServerFlight()` — true while the authenticated flight still needs to be sent.
-- `isConnected()` — true after the client Finished verifies and application keys are installed.
-- `clientServerName()` — SNI hostname, or `null`.
-- `selectedAlpnProtocol()` — negotiated ALPN protocol, or `null`.
-- `lastPeerAlert()` — the most recent non-close_notify peer alert (RFC 8446 §6.2), or `null`; see Peer alert diagnostics.
-- `sendApplicationData(plaintext, out)` / `sendPreparedApplicationData(len, out)` — emit one encrypted application-data record.
-- `sendAlert(description, out)` and `sendKeyUpdate(request, out)` — post-handshake emits.
-- `txKtlsInfo()` / `rxKtlsInfo()` — copy current traffic-key epoch material for caller-owned Linux kTLS setup.
-- `completeWrite()` — acknowledge the previous emitted record.
-- `extractEstablished()` — at `isConnected()`, exactly once, hand the connection's post-handshake life to a compact `EstablishedSession` (736 bytes on the OpenSSL lane vs the handshake engine's 19,408; see the lane table below) and consume this engine. See below.
+- `init(Config)` / `deinit()`: create and release a server handshake. Required Config fields are `keypairs` and `random`; optional fields include `supported_suites`, `alpn_protocols`, `client_auth`, and ClientHello `reassembly` storage.
+- `supportSuites(suites)`: override the Config-provided cipher-suite list before processing ClientHello.
+- `supportAlpn(protocols)`: override the Config-provided ALPN choices before processing ClientHello.
+- `setCredentials(certs, signer)` / `setCertificateChain(chain, signer)`: attach a leaf-first certificate chain and signer before processing ClientHello.
+- `useHandshakeBuffer(storage)`: attach or override caller-owned ClientHello reassembly storage before processing ClientHello.
+- `handleRecord(record, out)`: consume one TLS record from `RecordBuffer.next()` and return `Event`.
+- `sendServerFlightBuffered(flight)` / `sendPreparedServerFlight(out)`: emit the authenticated server flight after ServerHello is written and acknowledged.
+- `needsServerFlight()`: true while the authenticated flight still needs to be sent.
+- `isConnected()`: true after the client Finished verifies and application keys are installed.
+- `clientServerName()`: SNI hostname, or `null`.
+- `selectedAlpnProtocol()`: negotiated ALPN protocol, or `null`.
+- `lastPeerAlert()`: the most recent non-close_notify peer alert (RFC 8446 §6.2), or `null`; see Peer alert diagnostics.
+- `sendApplicationData(plaintext, out)` / `sendPreparedApplicationData(len, out)`: emit one encrypted application-data record.
+- `sendAlert(description, out)` and `sendKeyUpdate(request, out)`: post-handshake emits.
+- `txKtlsInfo()` / `rxKtlsInfo()`: copy current traffic-key epoch material for caller-owned Linux kTLS setup.
+- `completeWrite()`: acknowledge the previous emitted record.
+- `extractEstablished()`: at `isConnected()`, exactly once, hand the connection's post-handshake life to a compact `EstablishedSession` (736 bytes on the OpenSSL lane vs the handshake engine's 19,408; see the lane table below) and consume this engine. See below.
 
 Low-level in-memory hooks used by `examples/in_memory_handshake.zig`: `acceptClientHello`, `processClientFinished`, and `receiveApplicationData`.
 
@@ -824,12 +801,12 @@ Lifecycle rules:
 
 Methods (all mirror their `ServerHandshake` counterparts):
 
-- `deinit()` — release backend contexts and zero the secrets the session owns.
-- `handle(record, out)` — decrypt, classify, and auto-respond to an inbound
+- `deinit()`: release backend contexts and zero the secrets the session owns.
+- `handle(record, out)`: decrypt, classify, and auto-respond to an inbound
   `update_requested` KeyUpdate with the response record in `out`.
-- `receive(record)` — RX-only classify; a received `update_requested` defers
+- `receive(record)`: RX-only classify; a received `update_requested` defers
   the response to the caller (query with `hasPendingKeyUpdateResponse()`).
-- `sendApplicationData(plaintext, out)` — refused with
+- `sendApplicationData(plaintext, out)`: refused with
   `error.PendingKeyUpdateResponse` while a response is owed, and with
   `error.PendingWrite` until the previous record is acknowledged.
 - `sendAlert(description, out)` / `sendKeyUpdate(request, out)` /
@@ -863,12 +840,12 @@ Methods (all mirror their `ServerHandshake` counterparts):
 - `CertificateChain.fromPem(pem, der_storage, chain_storage)` decodes RFC 7468 certificate blocks into caller-owned storage. The output buffers must not overlap `pem` and must outlive the chain.
 - `signature.PrivateKey.fromPem(scheme, pem)` and `fromDer(scheme, der)` load private keys from caller-owned bytes. The scheme is caller-pinned metadata and is not validated against the key at load time.
 - `signature.PrivateKey.fromPemAuto(pem)` (#112) loads the key and infers the CertificateVerify scheme from the key's type and curve (RSA → `rsa_pss_rsae_sha256`, P-256 → `ecdsa_secp256r1_sha256`, P-384 → `ecdsa_secp384r1_sha384`). The inferred scheme is gated against the active backend's advertised CertificateVerify schemes, so a key whose scheme this backend cannot sign (Ed25519, P-521 today) fails at load with `error.UnsupportedKeyScheme` instead of at the first handshake signature. The RFC 8446 §4.2.3 `rsa_pss_pss_*` schemes are not implemented; a backend that loads an rsassaPss-OID key rejects it as `UnsupportedKeyScheme`, while a backend that cannot load the container returns `LibcryptoFailed`. Success means the linked backend advertises the inferred scheme; callers still handle signing failures from malformed or unsuitable key material. A PEM that never loads fails with `error.LibcryptoFailed`.
-- Encrypted private keys are not supported (#114). Both PEM loaders pass an explicit provider callback that declines passwords, so an encrypted key — PKCS#8 `ENCRYPTED PRIVATE KEY` or the legacy `Proc-Type: 4,ENCRYPTED` container — fails with `error.LibcryptoFailed` instead of prompting on the controlling terminal or reading process stdin. Loading is therefore safe on an unattended startup path, and there is no caller-owned password API to pass a passphrase through; decrypt the key with external tooling first, or load plaintext PEM/DER.
-- `signature.PrivateKey.pairsWith(leaf_cert_der)` (#113) validates at load time that the private key matches the leaf certificate's public key (RFC 8446 §4.4.3; the leaf is element [0] of the chain). `error.CertificateKeyMismatch` means the leaf parsed but the keys do not pair; `error.InvalidCertificate` means the input is not exactly one DER-encoded X.509 certificate — distinct errors so rotation tooling can tell a wrong pairing from a corrupt file. Both inputs are borrowed; the private key is only read. A `PrivateKey` must outlive every `Signer` it handed out — swap credentials only when no in-flight handshake holds the old signer.
+- Encrypted private keys are not supported (#114). Both PEM loaders pass an explicit provider callback that declines passwords, so an encrypted key: PKCS#8 `ENCRYPTED PRIVATE KEY` or the legacy `Proc-Type: 4,ENCRYPTED` container — fails with `error.LibcryptoFailed` instead of prompting on the controlling terminal or reading process stdin. Loading is therefore safe on an unattended startup path, and there is no caller-owned password API to pass a passphrase through; decrypt the key with external tooling first, or load plaintext PEM/DER.
+- `signature.PrivateKey.pairsWith(leaf_cert_der)` (#113) validates at load time that the private key matches the leaf certificate's public key (RFC 8446 §4.4.3; the leaf is element [0] of the chain). `error.CertificateKeyMismatch` means the leaf parsed but the keys do not pair; `error.InvalidCertificate` means the input is not exactly one DER-encoded X.509 certificate: distinct errors so rotation tooling can tell a wrong pairing from a corrupt file. Both inputs are borrowed; the private key is only read. A `PrivateKey` must outlive every `Signer` it handed out — swap credentials only when no in-flight handshake holds the old signer.
 - `signature.PrivateKey.fromP256Scalar(scalar)` is useful for fixtures and examples that carry a raw P-256 scalar.
 - `signature.PrivateKey.signer()` borrows a `signature.Signer` vtable for `setCredentials`.
 - `signature.PrivateKey.deinit()` releases libcrypto key material.
-- `signature.PrivateKey.nonce_mode` selects the ECDSA nonce strategy (`signature.NonceMode`): the default `.random` is the production path; `.deterministic` opts into RFC 6979 deterministic nonces so identical key and message produce identical signature bytes, which makes a seeded handshake transcript byte-reproducible. It requires a backend compiled with nonce-type provider support and an ECDSA scheme; unsupported requests fail loudly — `error.DeterministicNonceUnsupported` for a missing capability or non-ECDSA scheme, `error.LibcryptoFailed` when the provider rejects the parameter — instead of silently signing with a random nonce. Keep `.random` in production.
+- `signature.PrivateKey.nonce_mode` selects the ECDSA nonce strategy (`signature.NonceMode`): the default `.random` is the production path; `.deterministic` opts into RFC 6979 deterministic nonces so identical key and message produce identical signature bytes, which makes a seeded handshake transcript byte-reproducible. It requires a backend compiled with nonce-type provider support and an ECDSA scheme; unsupported requests fail loudly: `error.DeterministicNonceUnsupported` for a missing capability or non-ECDSA scheme, `error.LibcryptoFailed` when the provider rejects the parameter — instead of silently signing with a random nonce. Keep `.random` in production.
 - `SignatureScheme` names the TLS signature scheme used with a loaded key, including `rsa_pss_rsae_sha256`, `ecdsa_secp256r1_sha256`, `ecdsa_secp384r1_sha384`, and `ed25519`.
 - `x25519.KeyPair.generate()` creates a fresh ephemeral X25519 keypair with OS entropy.
 - `x25519.KeyPair.fromSecret(secret_key)` derives a keypair from a caller-supplied 32-byte scalar. Production callers must supply fresh CSPRNG bytes for each handshake. The function supports batched entropy draws.
@@ -915,18 +892,18 @@ The generic drive loop above is the protocol boundary. These notes call out what
 
 ## What is not shown here
 
-tls covers PSK/session resumption, 0-RTT, client certificate authentication,
+The engine covers PSK/session resumption, 0-RTT, client certificate authentication,
 and HRR in the supported surface. These features are intentionally out of scope
 for the examples above:
 
-- Exporters — not implemented; not on the timeline until a feature request earns it.
+- Exporters: not implemented, and not planned until someone asks for one.
 - A general io_uring or arbitrary-runtime wrapper. In-tree integration packages
   cover `std.Io`, libxev, and Linux kTLS without moving transport I/O into the
   core engine.
 
 # Security
 
-tls is pre-alpha, and no external security audit has happened. Do not put it in
+The library is pre-alpha, and no external security audit has happened. Do not put it in
 front of real traffic or real secrets yet. Three findings from an internal
 adversarial review are fixed, each with a regression test.
 

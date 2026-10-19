@@ -7,19 +7,17 @@
 
 Sans-I/O TLS 1.3 in Zig: no sockets, no engine allocations, caller-owned buffers.
 
-tls is a TLS 1.3 state machine. You feed it the bytes you read off the wire; it
-hands you back the bytes to write. The socket, the event loop, and the buffers
-stay yours. It is built for people who already own those things and do not want
-a library that owns them too.
+The library is a TLS 1.3 state machine. You feed it the bytes you read off the
+wire and it hands back the bytes to write. The socket, the event loop, and the
+buffers stay yours.
 
 It is pre-alpha. The API will change.
 
 ## Performance
 
-Speed is why tls exists, so it goes first. tls is faster than OpenSSL's libssl
-on every comparable application-data row measured, on x86_64, aarch64, and
-macOS Apple Silicon. Against rustls it wins on AES-GCM on all three, and loses
-on small ChaCha20 records.
+It is faster than OpenSSL's libssl on every comparable application-data row
+measured, on x86_64, aarch64, and macOS Apple Silicon. Against rustls it wins on
+AES-GCM on all three, and loses on small ChaCha20 records.
 
 Headline row: AES-128-GCM ping-pong at 1350-byte records, near the common MTU
 boundary, from the x86_64 capture
@@ -31,71 +29,71 @@ boundary, from the x86_64 capture
 | rustls | 1447.5 | 1.83x slower |
 | OpenSSL libssl | 1820.5 | 2.30x slower |
 
-That is not a wall-clock fluke. On this row tls executes 42.7% of libssl's
-cycles per op and 54.8% of rustls's, with the perf counters and hot symbols
-captured next to the timings. libssl spends the difference in `WPACKET` and
-`tls13_cipher` wrapper work over the same OpenSSL primitive. rustls spends it in
-`ChunkVecBuffer::write_to`, an AVX-512 memmove, and malloc. tls's caller-owned
-record path reaches the AEAD primitive with less standing between it and the
-bytes.
+On this row the engine executes 42.7% of libssl's cycles per op and 54.8% of
+rustls's. The perf counters and hot symbols are captured next to the timings.
+libssl spends the difference in `WPACKET` and `tls13_cipher` wrapper work over
+the same OpenSSL primitive. rustls spends it in `ChunkVecBuffer::write_to`, an
+AVX-512 memmove, and malloc.
 
 The evidence is three n=10 captures: a `c7i.2xlarge` (Intel Xeon, x86_64), a
 `c7g.2xlarge` (Graviton3, aarch64), and an M1 Max (macOS). OpenSSL 3.6.3,
-rustls 0.23.4x, Zig 0.15.2 ReleaseFast, captured before tls required Zig 0.16;
-the relative deltas stand and the absolute numbers are historical. The smallest
-win over rustls on a comparable AES-GCM row is +69.86% on x86_64, +39.30% on
-aarch64, and +59.51% on macOS. The smallest win over libssl is +65.25% on x86_64, +24.16% on
-aarch64, and +29.87% on macOS. Every comparable row carries a
-confidence interval and p=0.000.
+rustls 0.23.4x, Zig 0.15.2 ReleaseFast, captured before the library required Zig
+0.16; the relative deltas stand and the absolute numbers are historical. The
+smallest win over rustls on a comparable AES-GCM row is +69.86% on x86_64,
++39.30% on aarch64, and +59.51% on macOS. The smallest win over libssl is
++65.25% on x86_64, +24.16% on aarch64, and +29.87% on macOS. Every comparable
+row carries a confidence interval and p=0.000.
 
-Where it loses, said plainly:
+Where it loses:
 
 - **Small ChaCha20 records.** On x86_64, rustls is 50% to 56% faster at 16 and
-  128 bytes. The tls samples sit in OpenSSL's ChaCha symbols, not in its framing,
-  so this is a backend-primitive gap, not a record-path one. On aarch64 the two
-  tie at 16 bytes and rustls is about 20% ahead at 128 bytes. tls wins from 1350
-  bytes up on both.
-- **Measurement shapes differ.** rustls's harness times batches. tls's and
-  libssl's time single iterations. The row-by-row equivalence accounting is in
-  [`docs/research/PERFORMANCE.md`](docs/research/PERFORMANCE.md).
-- **The handshake is not a head-to-head.** tls verifies the server's
+  128 bytes. The samples sit in OpenSSL's ChaCha symbols, not in the framing, so
+  this is a backend-primitive gap, not a record-path one. On aarch64 the two tie
+  at 16 bytes and rustls is about 20% ahead at 128 bytes. The engine wins from
+  1350 bytes up on both.
+- **Measurement shapes differ.** rustls's harness times batches. The engine's
+  and libssl's time single iterations. The row-by-row equivalence accounting is
+  in [`docs/research/PERFORMANCE.md`](docs/research/PERFORMANCE.md).
+- **The handshake is not a head-to-head.** The library verifies the server's
   CertificateVerify signature, rustls's harness uses a `NoVerifier` that skips
   it, and libssl's behavior without a trust store is opaque. That row is
   reported on its own and never quoted as a comparison.
 
-AMD and older Graviton parts are not measured yet. Full row tables,
-methodology, and the mechanism writeups are in
-[`docs/research/PERFORMANCE.md`](docs/research/PERFORMANCE.md). A 15% regression
-gate on comparable AES-GCM rows runs against the committed n=10 baseline.
+AMD and older Graviton parts are not measured. Full row tables, methodology, and
+the mechanism writeups are in
+[`docs/research/PERFORMANCE.md`](docs/research/PERFORMANCE.md). The 15%
+regression gate compares a fresh n=10 capture against the committed baseline
+(`just bench-regression-check`). It runs on EC2, by hand, not in CI.
 
 ## Why it works this way
 
 Most TLS libraries own their sockets, which means they own your I/O model too:
-blocking calls, or their async runtime, or a callback shape they define. tls
-owns none of that. It is a state machine. Drive it from blocking reads, epoll,
-io_uring, or an in-memory pipe. The examples do all four.
+blocking calls, or their async runtime, or a callback shape they define. The
+engine owns none of that. It is a state machine. Drive it from blocking reads,
+epoll, io_uring, or an in-memory pipe. The examples do all four.
 
-The state machine never calls an allocator. You hand it buffers, it uses those
-buffers, and that is the whole memory story. One caveat: the primitive crypto is
+The engine never calls an allocator. You hand it buffers, it uses those buffers,
+and that is all the memory it touches. One caveat: the primitive crypto is
 delegated to a libcrypto backend (OpenSSL, AWS-LC, or BoringSSL, all three live
 and CI-gated), and those backends allocate during setup and inside their own
-routines. tls's own code, the parsing, framing, transcript, and record
+routines. The engine's own code, the parsing, framing, transcript, and record
 sequencing, allocates nothing.
 
-Scope is narrow on purpose. TLS 1.3 only, on Linux and macOS. No 1.2 fallback to
-get downgraded into, no DTLS, no Windows portability layer. Less code, and a
-smaller thing to attack.
+Scope is narrow. TLS 1.3 only, on Linux and macOS. No 1.2 fallback to get
+downgraded into, no DTLS, no Windows portability layer. Less code, and less to
+attack.
 
 The protocol path is Zig. AEAD, X25519 and P-256 ECDHE, and CertificateVerify
 sign and verify come from the libcrypto backend, as does the SHA-2 under the key
 schedule and transcript hash. Ed25519 certificate-chain signature verification
-stays on `std.crypto`. There is C in the tree, but only at the edge: the partial
-C ABI and its example.
+stays on `std.crypto`. The only C is at the edge: the partial C ABI and its
+example.
 
 ## Start here
 
-The [guide](https://baskingspot.dev/tls/) is the API reference and the drive
-loop. If you would rather read code, start with the examples that run in CI:
+The [guide](https://baskingspot.dev/tls/) covers the buffer model, the drive
+loop, and working client and server code. To start from running code instead,
+these examples are built and run in CI:
 
 - [`examples/in_memory_handshake.zig`](examples/in_memory_handshake.zig): both endpoints in one process, no sockets.
 - [`examples/tcp_loopback.zig`](examples/tcp_loopback.zig): client and server over `std.net.Stream` loopback.
@@ -117,9 +115,9 @@ family from those headers. The default shell selects OpenSSL.
 
 ## Supported surface
 
-tls owns protocol state, record framing, encryption, transcript hashing, alerts,
-and key updates over caller-owned buffers. You own transport I/O, the buffers,
-and the drive loop. Both client and server roles are implemented.
+The engine owns protocol state, record framing, encryption, transcript hashing,
+alerts, and key updates over caller-owned buffers. You own transport I/O, the
+buffers, and the drive loop. Both client and server roles are implemented.
 
 **Supported** means it is exercised in CI. **Partial** means the engine side is
 proven and part of the contract belongs to the caller. **Out of scope** means it
@@ -152,16 +150,16 @@ Crypto primitives come from a libcrypto backend, selected at build time:
 | AWS-LC | Supported; selected by its `libcrypto.pc` and headers |
 | BoringSSL | Supported; selected by its `libcrypto.pc` and headers |
 
-All three RFC 10024 groups use provider-backed pure ML-KEM with tls-owned hybrid
-composition on OpenSSL, AWS-LC, and BoringSSL. The FIPS backend identities do
-not advertise them. `-Dcrypto-fips=true` selects the FIPS capability identity for
-OpenSSL or AWS-LC. It does not verify runtime FIPS-provider activation. A BoGo
-conformance runner is deferred.
+All three RFC 10024 groups use provider-backed pure ML-KEM with engine-owned
+hybrid composition on OpenSSL, AWS-LC, and BoringSSL. The FIPS backend
+identities do not advertise them. `-Dcrypto-fips=true` selects the FIPS
+capability identity for OpenSSL or AWS-LC. It does not verify runtime
+FIPS-provider activation. A BoGo conformance runner is deferred.
 
 ## Install
 
-Use Zig 0.16. tls links a libcrypto-family provider through `pkg-config`; the
-devshell supplies OpenSSL by default.
+Use Zig 0.16. The library links a libcrypto-family provider through
+`pkg-config`; the devshell supplies OpenSSL by default.
 
 ```sh
 zig fetch --save git+https://github.com/baskingspot/tls
@@ -179,8 +177,8 @@ generated:
 },
 ```
 
-If you have checked out the tls repo alongside your project, point at it
-directly instead. The path is relative to your project root:
+If you have checked out the repo alongside your project, point at it directly
+instead. The path is relative to your project root:
 
 ```zig
 .tls = .{ .path = "../tls" },
@@ -223,10 +221,10 @@ const tlsx = @import("tls");
 
 ## C ABI
 
-There is a partial C surface, client side only: `include/ztls.h`, `libztls.a`
-from `zig build -Dcapi`, and `examples/c_client.c`. It is wired into `just ci`
-as `capi-ci`. The names stay `ztls_*` until the C namespace is chosen; the repo
-is `tls`, the C prefix is not, and that decision is
+The C surface is partial and client only: `include/ztls.h`, `libztls.a` from
+`zig build -Dcapi`, and `examples/c_client.c`. It is wired into `just ci` as
+`capi-ci`. The names stay `ztls_*` until the C namespace is chosen. The repo is
+`tls`; the C prefix is not, and `libtls.a` belongs to LibreSSL. That decision is
 [#149](https://github.com/baskingspot/tls/issues/149).
 
 ## Documentation

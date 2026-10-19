@@ -242,7 +242,7 @@ pub const Client = /* ClientWith(.{}) */ struct {
 
 Before socket creation, call `Client.Options.validate()` for exact hybrid and credential policy errors. `connect` repeats the check before key generation. `connect` maps these failures to `InvalidOptions`.
 
-tls returns lent storage unchanged by design ([#81](https://github.com/baskingspot/tls/issues/81)). The wrapper declares and clears all its buffers. These buffers include record data and decrypted application plaintext.
+The wrapper returns lent storage unchanged by design ([#81](https://github.com/baskingspot/tls/issues/81)). The wrapper declares and clears all its buffers. These buffers include record data and decrypted application plaintext.
 
 `Server.Options` carries credentials instead of a verification policy:
 
@@ -611,7 +611,7 @@ in both directions, including mTLS success and rejection paths; an absent
 executable is a test failure, not a skip.
 
 The root workspace delegates to this subproject through `just integrations-ci`,
-which is wired into `just ci`. tls is Zig 0.16-only.
+which is wired into `just ci`. The library is Zig 0.16-only.
 
 Run the example client against a real server:
 

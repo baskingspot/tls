@@ -2,7 +2,7 @@
 
 Linux kTLS data-plane integration for tls, built with Zig 0.16.
 
-tls performs the TLS 1.3 handshake in userspace. `tls-ktls` then installs the
+The core library performs the TLS 1.3 handshake in userspace. `tls-ktls` then installs the
 negotiated TX and RX traffic epochs on the connected TCP socket. Application
 records are encrypted and decrypted by the kernel; tls remains alive as the
 key-schedule owner for later KeyUpdate messages.

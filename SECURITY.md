@@ -1,11 +1,11 @@
 # Security Policy
 
-tls is a TLS 1.3 library. Security is the whole job. Read this before you rely
+This is the security policy for `tls`, a TLS 1.3 library. Security is the whole job. Read it before you rely
 on it for anything.
 
 ## Status: pre-alpha, internally adversarially reviewed
 
-tls has not had an external security audit. The API is not stable. It has not
+The library has not had an external security audit. The API is not stable. It has not
 been deployed anywhere that matters. Do not put it in front of real traffic or
 real secrets yet.
 
@@ -13,7 +13,7 @@ That is not false modesty.
 [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md)
 tracks exactly what is proven and what isn't, with the evidence behind each
 claim. If you're weighing
-tls for anything security-sensitive, read that first, then decide.
+the library for anything security-sensitive, read that first, then decide.
 
 What tls does have: RFC-cited tests, RFC 8448 known-answer vectors, OpenSSL
 interop in both directions, tlsfuzzer and TLS-Anvil conformance runs, Wycheproof
