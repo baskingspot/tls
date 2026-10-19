@@ -1688,7 +1688,7 @@ fn processFlightBytes(
     while (true) {
         const msg = hr.next() catch |err| switch (err) {
             error.UnexpectedEof => {
-                try self.stashHandshakeFragment(payload[hr.r.pos..]);
+                try self.stashHandshakeFragment(payload[hr.r.end..]);
                 return;
             },
         } orelse return;
@@ -1705,7 +1705,7 @@ fn processFlightBuffer(self: *ClientHandshake, policy: certificate.Policy) Fligh
     while (true) {
         const msg = hr.next() catch |err| switch (err) {
             error.UnexpectedEof => {
-                const partial = self.handshake_buf.constSlice()[hr.r.pos..];
+                const partial = self.handshake_buf.constSlice()[hr.r.end..];
                 self.handshake_buf.retainFrom(partial) catch unreachable;
                 return;
             },
@@ -1751,14 +1751,14 @@ fn retainPeerCertificate(
     r.assumeSkip(4); // Handshake header already validated by certificate.parse.
     r.assumeSkip(r.assumeRead(u8)); // certificate_request_context
     const list_len = r.assumeRead(u24);
-    const list_end = r.pos + list_len;
-    while (r.pos < list_end) {
+    const list_end = r.end + list_len;
+    while (r.end < list_end) {
         const cert_len = r.assumeRead(u24);
         const cert_der = r.assumeReadSlice(cert_len);
         r.assumeSkip(r.assumeRead(u16)); // CertificateEntry.extensions
         self.peer_chain.append(cert_der) catch unreachable;
     }
-    assert(r.pos == list_end);
+    assert(r.end == list_end);
 }
 
 fn saveServerFinishedHash(self: *ClientHandshake) void {

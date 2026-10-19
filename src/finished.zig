@@ -61,10 +61,10 @@ pub fn encode(
     if (out.len < total) return error.BufferTooShort;
 
     var w: wire.Writer = .init(out);
-    w.append(handshake.Type, .finished);
-    w.append(u24, Hmac.mac_length);
-    Hmac.create(w.reserve(Hmac.mac_length), transcript_hash, finished_key);
-    return w.written();
+    w.appendAssumeCapacity(handshake.Type, .finished);
+    w.appendAssumeCapacity(u24, Hmac.mac_length);
+    Hmac.create(w.reserveAssumeCapacity(Hmac.mac_length), transcript_hash, finished_key);
+    return w.buffered();
 }
 
 // RFC 8446 §4.4.4

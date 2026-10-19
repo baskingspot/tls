@@ -85,17 +85,17 @@ pub fn encodeWithRequestContext(
     if (out.len < len) return error.BufferTooShort;
     var w: wire.Writer = .init(out);
     const list_len = len - 4 - 1 - request_context.len - 3;
-    w.append(handshake.Type, .certificate);
-    w.append(u24, @intCast(len - 4));
-    w.append(u8, @intCast(request_context.len));
-    w.appendSlice(request_context);
-    w.append(u24, @intCast(list_len));
+    w.appendAssumeCapacity(handshake.Type, .certificate);
+    w.appendAssumeCapacity(u24, @intCast(len - 4));
+    w.appendAssumeCapacity(u8, @intCast(request_context.len));
+    w.appendSliceAssumeCapacity(request_context);
+    w.appendAssumeCapacity(u24, @intCast(list_len));
     for (certs_der) |cert_der| {
-        w.append(u24, @intCast(cert_der.len));
-        w.appendSlice(cert_der);
-        w.append(u16, 0x0000);
+        w.appendAssumeCapacity(u24, @intCast(cert_der.len));
+        w.appendSliceAssumeCapacity(cert_der);
+        w.appendAssumeCapacity(u16, 0x0000);
     }
-    return w.written();
+    return w.buffered();
 }
 
 /// Parse a client Certificate message enough for server-side client-auth state
@@ -126,17 +126,17 @@ pub fn parseClientCertificate(
     if (r.remaining().len < list_len) return error.UnexpectedEof;
     if (list_len == 0) return .empty;
 
-    const list_end = r.pos + list_len;
-    while (r.pos < list_end) {
-        if (list_end - r.pos < 3) return error.UnexpectedEof;
+    const list_end = r.end + list_len;
+    while (r.end < list_end) {
+        if (list_end - r.end < 3) return error.UnexpectedEof;
         const cert_len = r.assumeRead(u24);
-        if (list_end - r.pos < @as(usize, cert_len) + 2) return error.UnexpectedEof;
+        if (list_end - r.end < @as(usize, cert_len) + 2) return error.UnexpectedEof;
         r.assumeSkip(cert_len);
         const ext_len = r.assumeRead(u16);
-        if (list_end - r.pos < ext_len) return error.UnexpectedEof;
+        if (list_end - r.end < ext_len) return error.UnexpectedEof;
         try parseCertificateEntryExtensions(r.assumeReadSlice(ext_len));
     }
-    if (r.pos != list_end) return error.UnexpectedEof;
+    if (r.end != list_end) return error.UnexpectedEof;
     return .present;
 }
 
@@ -169,20 +169,20 @@ pub fn parseClientChain(
     if (list_len == 0) return error.EmptyCertificateList;
     if (r.remaining().len < list_len) return error.UnexpectedEof;
 
-    const list_end = r.pos + list_len;
+    const list_end = r.end + list_len;
     var cert_index: usize = 0;
     var leaf_pub_key: ?[]const u8 = null;
     var leaf_der: ?[]const u8 = null;
     var subject_to_verify: ?Certificate.Parsed = null;
     var chain: buffer.Array(Certificate.Parsed, 8) = .empty;
 
-    while (r.pos < list_end) {
-        if (list_end - r.pos < 3) return error.UnexpectedEof;
+    while (r.end < list_end) {
+        if (list_end - r.end < 3) return error.UnexpectedEof;
         const cert_len = r.assumeRead(u24);
-        if (list_end - r.pos < @as(usize, cert_len) + 2) return error.UnexpectedEof;
+        if (list_end - r.end < @as(usize, cert_len) + 2) return error.UnexpectedEof;
         const cert_der = r.assumeReadSlice(cert_len);
         const ext_len = r.assumeRead(u16);
-        if (list_end - r.pos < ext_len) return error.UnexpectedEof;
+        if (list_end - r.end < ext_len) return error.UnexpectedEof;
         try parseCertificateEntryExtensions(r.assumeReadSlice(ext_len));
 
         const cert: Certificate = .{ .buffer = cert_der, .index = 0 };
@@ -212,7 +212,7 @@ pub fn parseClientChain(
         subject_to_verify = parsed;
         cert_index += 1;
     }
-    if (r.pos != list_end) return error.UnexpectedEof;
+    if (r.end != list_end) return error.UnexpectedEof;
 
     if (chain.constSlice().len == 0) return error.EmptyCertificateList;
     try verifyChainCertificateSignatureAlgorithms(
@@ -348,19 +348,19 @@ pub fn parse(msg: []const u8, policy: Policy) ParseError![]const u8 {
     if (list_len == 0) return error.EmptyCertificateList;
     if (r.remaining().len < list_len) return error.UnexpectedEof;
 
-    const list_end = r.pos + list_len;
+    const list_end = r.end + list_len;
     var cert_index: usize = 0;
     var leaf_pub_key: ?[]const u8 = null;
     var subject_to_verify: ?Certificate.Parsed = null;
     var chain: buffer.Array(Certificate.Parsed, 8) = .empty;
 
-    while (r.pos < list_end) {
-        if (list_end - r.pos < 3) return error.UnexpectedEof;
+    while (r.end < list_end) {
+        if (list_end - r.end < 3) return error.UnexpectedEof;
         const cert_len = r.assumeRead(u24);
-        if (list_end - r.pos < @as(usize, cert_len) + 2) return error.UnexpectedEof;
+        if (list_end - r.end < @as(usize, cert_len) + 2) return error.UnexpectedEof;
         const cert_der = r.assumeReadSlice(cert_len);
         const ext_len = r.assumeRead(u16);
-        if (list_end - r.pos < ext_len) return error.UnexpectedEof;
+        if (list_end - r.end < ext_len) return error.UnexpectedEof;
         try parseCertificateEntryExtensions(r.assumeReadSlice(ext_len));
 
         const cert: Certificate = .{ .buffer = cert_der, .index = 0 };
@@ -389,7 +389,7 @@ pub fn parse(msg: []const u8, policy: Policy) ParseError![]const u8 {
         subject_to_verify = parsed;
         cert_index += 1;
     }
-    if (r.pos != list_end) return error.UnexpectedEof;
+    if (r.end != list_end) return error.UnexpectedEof;
 
     if (chain.constSlice().len == 0) return error.EmptyCertificateList;
     try verifyChainCertificateSignatureAlgorithms(
@@ -518,12 +518,12 @@ pub fn encodeCertificateVerify(
     const len = certificateVerifyEncodedLen(signature);
     if (out.len < len) return error.BufferTooShort;
     var w: wire.Writer = .init(out);
-    w.append(handshake.Type, .certificate_verify);
-    w.append(u24, @intCast(len - 4));
-    w.append(SignatureScheme, scheme);
-    w.append(u16, @intCast(signature.len));
-    w.appendSlice(signature);
-    return w.written();
+    w.appendAssumeCapacity(handshake.Type, .certificate_verify);
+    w.appendAssumeCapacity(u24, @intCast(len - 4));
+    w.appendAssumeCapacity(SignatureScheme, scheme);
+    w.appendAssumeCapacity(u16, @intCast(signature.len));
+    w.appendSliceAssumeCapacity(signature);
+    return w.buffered();
 }
 
 pub const VerifyError = error{

@@ -192,39 +192,39 @@ fn writeTicket(
     seed: u8,
 ) usize {
     var w: wire.Writer = .init(out);
-    w.append(u8, 0x04);
-    const body_len_slot = w.reserve(3);
-    w.append(u32, 3600 + @as(u32, seed));
-    w.append(u32, 0x12345678 + @as(u32, seed));
-    w.append(u8, nonce_len);
-    for (0..nonce_len) |i| w.append(u8, seed +% @as(u8, @truncate(i)));
-    w.append(u16, @intCast(ticket_len));
-    for (0..ticket_len) |i| w.append(u8, 0x40 +% seed +% @as(u8, @truncate(i)));
+    w.appendAssumeCapacity(u8, 0x04);
+    const body_len_slot = w.reserveAssumeCapacity(3);
+    w.appendAssumeCapacity(u32, 3600 + @as(u32, seed));
+    w.appendAssumeCapacity(u32, 0x12345678 + @as(u32, seed));
+    w.appendAssumeCapacity(u8, nonce_len);
+    for (0..nonce_len) |i| w.appendAssumeCapacity(u8, seed +% @as(u8, @truncate(i)));
+    w.appendAssumeCapacity(u16, @intCast(ticket_len));
+    for (0..ticket_len) |i| w.appendAssumeCapacity(u8, 0x40 +% seed +% @as(u8, @truncate(i)));
 
-    const extensions_len_slot = w.reserve(2);
-    const extensions_start = w.pos;
+    const extensions_len_slot = w.reserveAssumeCapacity(2);
+    const extensions_start = w.end;
     if (early_data) {
-        w.append(u16, 0x002a);
-        w.append(u16, 4);
-        w.append(u32, 0x4000 + @as(u32, seed));
+        w.appendAssumeCapacity(u16, 0x002a);
+        w.appendAssumeCapacity(u16, 4);
+        w.appendAssumeCapacity(u32, 0x4000 + @as(u32, seed));
     }
     for (0..unknown_extensions) |i| {
-        w.append(u16, 0xbe00 + @as(u16, @intCast(i)));
-        w.append(u16, 3);
-        w.append(u8, seed +% @as(u8, @truncate(i)));
-        w.append(u8, seed +% @as(u8, @truncate(i + 1)));
-        w.append(u8, seed +% @as(u8, @truncate(i + 2)));
+        w.appendAssumeCapacity(u16, 0xbe00 + @as(u16, @intCast(i)));
+        w.appendAssumeCapacity(u16, 3);
+        w.appendAssumeCapacity(u8, seed +% @as(u8, @truncate(i)));
+        w.appendAssumeCapacity(u8, seed +% @as(u8, @truncate(i + 1)));
+        w.appendAssumeCapacity(u8, seed +% @as(u8, @truncate(i + 2)));
     }
 
-    const extensions_len = w.pos - extensions_start;
+    const extensions_len = w.end - extensions_start;
     extensions_len_slot.* = memx.toBytes(u16, @intCast(extensions_len));
-    const body_len: u24 = @intCast(w.pos - 4);
+    const body_len: u24 = @intCast(w.end - 4);
     body_len_slot.* = .{
         @truncate(body_len >> 16),
         @truncate(body_len >> 8),
         @truncate(body_len),
     };
-    return w.pos;
+    return w.end;
 }
 
 noinline fn parseNewSessionTicketNoInline(

@@ -61,22 +61,22 @@ pub fn encode(out: []u8, ticket: NewSessionTicket) EncodeError![]const u8 {
     if (out.len < encoded_len) return error.BufferTooShort;
 
     var writer: wire.Writer = .init(out);
-    writer.append(handshake.Type, .new_session_ticket);
-    writer.append(u24, @intCast(body_len));
-    writer.append(u32, ticket.ticket_lifetime);
-    writer.append(u32, ticket.ticket_age_add);
-    writer.append(u8, @intCast(ticket.ticket_nonce.len));
-    writer.appendSlice(ticket.ticket_nonce);
-    writer.append(u16, @intCast(ticket.ticket.len));
-    writer.appendSlice(ticket.ticket);
-    writer.append(u16, @intCast(extensions_len));
+    writer.appendAssumeCapacity(handshake.Type, .new_session_ticket);
+    writer.appendAssumeCapacity(u24, @intCast(body_len));
+    writer.appendAssumeCapacity(u32, ticket.ticket_lifetime);
+    writer.appendAssumeCapacity(u32, ticket.ticket_age_add);
+    writer.appendAssumeCapacity(u8, @intCast(ticket.ticket_nonce.len));
+    writer.appendSliceAssumeCapacity(ticket.ticket_nonce);
+    writer.appendAssumeCapacity(u16, @intCast(ticket.ticket.len));
+    writer.appendSliceAssumeCapacity(ticket.ticket);
+    writer.appendAssumeCapacity(u16, @intCast(extensions_len));
     if (ticket.max_early_data_size) |max_early_data_size| {
-        writer.append(ExtensionType, .early_data);
-        writer.append(u16, 4);
-        writer.append(u32, max_early_data_size);
+        writer.appendAssumeCapacity(ExtensionType, .early_data);
+        writer.appendAssumeCapacity(u16, 4);
+        writer.appendAssumeCapacity(u32, max_early_data_size);
     }
-    std.debug.assert(writer.written().len == encoded_len);
-    return writer.written();
+    std.debug.assert(writer.buffered().len == encoded_len);
+    return writer.buffered();
 }
 
 fn slicesOverlap(a: []const u8, b: []const u8) bool {

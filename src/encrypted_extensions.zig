@@ -65,22 +65,22 @@ pub fn encode(
     if (out.len < len) return error.BufferTooShort;
 
     var w: wire.Writer = .init(out);
-    w.append(handshake.Type, .encrypted_extensions);
-    w.append(u24, @intCast(len - 4));
-    w.append(u16, @intCast(len - 6));
+    w.appendAssumeCapacity(handshake.Type, .encrypted_extensions);
+    w.appendAssumeCapacity(u24, @intCast(len - 4));
+    w.appendAssumeCapacity(u16, @intCast(len - 6));
     if (alpn_protocol) |p| {
-        w.append(ExtensionType, .alpn);
-        w.append(u16, @intCast(2 + 1 + p.len));
-        w.append(u16, @intCast(1 + p.len));
-        w.append(u8, @intCast(p.len));
-        w.appendSlice(p);
+        w.appendAssumeCapacity(ExtensionType, .alpn);
+        w.appendAssumeCapacity(u16, @intCast(2 + 1 + p.len));
+        w.appendAssumeCapacity(u16, @intCast(1 + p.len));
+        w.appendAssumeCapacity(u8, @intCast(p.len));
+        w.appendSliceAssumeCapacity(p);
     }
     // RFC 8446 §4.2.10 — empty early_data extension signals 0-RTT acceptance.
     if (early_data_accepted) {
-        w.append(ExtensionType, .early_data);
-        w.append(u16, 0);
+        w.appendAssumeCapacity(ExtensionType, .early_data);
+        w.appendAssumeCapacity(u16, 0);
     }
-    return w.written();
+    return w.buffered();
 }
 
 /// Parse an EncryptedExtensions handshake message.
@@ -109,15 +109,15 @@ pub fn parse(msg: []const u8, offered_alpn: []const []const u8, opts: Options) P
     if (body_len < 2) return error.InvalidHandshakeLength;
     const extensions_len = r.assumeRead(u16);
     if (extensions_len != body_len - 2) return error.InvalidExtensionLength;
-    const extensions_end = r.pos + extensions_len;
-    try extension_type.rejectDuplicateExtensions(msg[r.pos..extensions_end]);
+    const extensions_end = r.end + extensions_len;
+    try extension_type.rejectDuplicateExtensions(msg[r.end..extensions_end]);
 
     var result: Parsed = .{};
-    while (r.pos < extensions_end) {
-        if (extensions_end - r.pos < 4) return error.InvalidExtensionLength;
+    while (r.end < extensions_end) {
+        if (extensions_end - r.end < 4) return error.InvalidExtensionLength;
         const ext_type = r.assumeRead(ExtensionType);
         const ext_len = r.assumeRead(u16);
-        if (r.pos + ext_len > extensions_end) return error.InvalidExtensionLength;
+        if (r.end + ext_len > extensions_end) return error.InvalidExtensionLength;
         const ext = r.assumeReadSlice(ext_len);
 
         if (ext_type.isGrease()) return error.UnexpectedExtension;
@@ -179,7 +179,7 @@ pub fn parse(msg: []const u8, offered_alpn: []const []const u8, opts: Options) P
             else => return error.UnsupportedExtension,
         }
     }
-    if (r.pos != extensions_end) return error.InvalidExtensionLength;
+    if (r.end != extensions_end) return error.InvalidExtensionLength;
     return result;
 }
 
@@ -193,7 +193,7 @@ fn parseAlpn(ext: []const u8, offered: []const []const u8) ParseError![]const u8
     if (protocol_len == 0) return error.EmptyAlpnProtocol;
     if (r.remaining().len < protocol_len) return error.InvalidExtensionLength;
     const protocol = r.assumeReadSlice(protocol_len);
-    if (r.pos != ext.len) return error.TooManyAlpnProtocols;
+    if (r.end != ext.len) return error.TooManyAlpnProtocols;
     for (offered) |candidate| {
         if (mem.eql(u8, candidate, protocol)) return protocol;
     }

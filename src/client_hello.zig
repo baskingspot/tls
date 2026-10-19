@@ -360,18 +360,18 @@ pub fn encodeRetryAfterHrrWithHybridAndPsk(
     var w: wire.Writer = .init(out);
 
     // Handshake header (RFC 8446 §4)
-    w.append(handshake.Type, .client_hello);
-    w.append(u24, @intCast(body_fixed_len + ext_len));
+    w.appendAssumeCapacity(handshake.Type, .client_hello);
+    w.appendAssumeCapacity(u24, @intCast(body_fixed_len + ext_len));
 
     // ClientHello body (RFC 8446 §4.1.2) — same as ClientHello1.
-    w.append(ProtocolVersion, legacy_version);
-    w.appendSlice(&random.data);
-    w.append(u8, 0x00); // legacy_session_id: empty
-    w.append(u16, cipher_suite_count * 2);
-    inline for (supported_cipher_suites) |cs| w.append(CipherSuite, cs);
-    w.append(u8, 0x01); // legacy_compression_methods length
-    w.append(CompressionMethod, .no_compression);
-    w.append(u16, ext_len);
+    w.appendAssumeCapacity(ProtocolVersion, legacy_version);
+    w.appendSliceAssumeCapacity(&random.data);
+    w.appendAssumeCapacity(u8, 0x00); // legacy_session_id: empty
+    w.appendAssumeCapacity(u16, cipher_suite_count * 2);
+    inline for (supported_cipher_suites) |cs| w.appendAssumeCapacity(CipherSuite, cs);
+    w.appendAssumeCapacity(u8, 0x01); // legacy_compression_methods length
+    w.appendAssumeCapacity(CompressionMethod, .no_compression);
+    w.appendAssumeCapacity(u16, ext_len);
 
     // server_name (RFC 8446 §4.2, RFC 6066 §3)
     if (server_name) |name| {
@@ -379,107 +379,111 @@ pub fn encodeRetryAfterHrrWithHybridAndPsk(
         const entry_len: u16 = 1 + 2 + name_len;
         const list_len: u16 = entry_len;
         const ext_data_len: u16 = 2 + entry_len;
-        w.append(ExtensionType, .server_name);
-        w.append(u16, ext_data_len);
-        w.append(u16, list_len);
-        w.append(SniNameType, .host_name);
-        w.append(u16, name_len);
-        w.appendSlice(name);
+        w.appendAssumeCapacity(ExtensionType, .server_name);
+        w.appendAssumeCapacity(u16, ext_data_len);
+        w.appendAssumeCapacity(u16, list_len);
+        w.appendAssumeCapacity(SniNameType, .host_name);
+        w.appendAssumeCapacity(u16, name_len);
+        w.appendSliceAssumeCapacity(name);
     }
 
     // application_layer_protocol_negotiation (RFC 7301 §3.1)
     if (alpn_protocols.len != 0) {
         const ext_data_len = try alpnExtDataLen(alpn_protocols);
-        w.append(ExtensionType, .alpn);
-        w.append(u16, ext_data_len);
-        w.append(u16, ext_data_len - 2);
+        w.appendAssumeCapacity(ExtensionType, .alpn);
+        w.appendAssumeCapacity(u16, ext_data_len);
+        w.appendAssumeCapacity(u16, ext_data_len - 2);
         for (alpn_protocols) |protocol| {
-            w.append(u8, @intCast(protocol.len));
-            w.appendSlice(protocol);
+            w.appendAssumeCapacity(u8, @intCast(protocol.len));
+            w.appendSliceAssumeCapacity(protocol);
         }
     }
 
     // supported_versions (RFC 8446 §4.2.1)
-    w.append(ExtensionType, .supported_versions);
-    w.append(u16, 3);
-    w.append(u8, 0x02); // versions list length
-    w.append(ProtocolVersion, .tls_1_3);
+    w.appendAssumeCapacity(ExtensionType, .supported_versions);
+    w.appendAssumeCapacity(u16, 3);
+    w.appendAssumeCapacity(u8, 0x02); // versions list length
+    w.appendAssumeCapacity(ProtocolVersion, .tls_1_3);
 
     // supported_groups (RFC 8446 §4.2.7) — unchanged from ClientHello1.
-    w.append(ExtensionType, .supported_groups);
-    w.append(u16, @intCast(2 + groupCount(true, include_p384, hybrid_groups) * 2));
-    w.append(u16, @intCast(groupCount(true, include_p384, hybrid_groups) * 2));
-    w.append(NamedGroup, .x25519);
-    w.append(NamedGroup, .secp256r1);
-    if (include_p384) w.append(NamedGroup, .secp384r1);
-    for (hybrid_groups) |group| w.append(NamedGroup, group);
+    w.appendAssumeCapacity(ExtensionType, .supported_groups);
+    w.appendAssumeCapacity(u16, @intCast(2 + groupCount(true, include_p384, hybrid_groups) * 2));
+    w.appendAssumeCapacity(u16, @intCast(groupCount(true, include_p384, hybrid_groups) * 2));
+    w.appendAssumeCapacity(NamedGroup, .x25519);
+    w.appendAssumeCapacity(NamedGroup, .secp256r1);
+    if (include_p384) w.appendAssumeCapacity(NamedGroup, .secp384r1);
+    for (hybrid_groups) |group| w.appendAssumeCapacity(NamedGroup, group);
 
     // signature_algorithms (RFC 8446 §4.2.3)
-    w.append(ExtensionType, .signature_algorithms);
-    w.append(u16, 2 + sig_scheme_count * 2);
-    w.append(u16, sig_scheme_count * 2);
-    inline for (supported_signature_schemes) |s| w.append(SignatureScheme, s);
+    w.appendAssumeCapacity(ExtensionType, .signature_algorithms);
+    w.appendAssumeCapacity(u16, 2 + sig_scheme_count * 2);
+    w.appendAssumeCapacity(u16, sig_scheme_count * 2);
+    inline for (supported_signature_schemes) |s| {
+        w.appendAssumeCapacity(SignatureScheme, s);
+    }
 
     // signature_algorithms_cert (RFC 8446 §4.2.3)
-    w.append(ExtensionType, .signature_algorithms_cert);
-    w.append(u16, 2 + cert_sig_scheme_count * 2);
-    w.append(u16, cert_sig_scheme_count * 2);
-    inline for (supported_certificate_signature_schemes) |s| w.append(SignatureScheme, s);
+    w.appendAssumeCapacity(ExtensionType, .signature_algorithms_cert);
+    w.appendAssumeCapacity(u16, 2 + cert_sig_scheme_count * 2);
+    w.appendAssumeCapacity(u16, cert_sig_scheme_count * 2);
+    inline for (supported_certificate_signature_schemes) |s| {
+        w.appendAssumeCapacity(SignatureScheme, s);
+    }
 
     // key_share (RFC 8446 §4.2.8) — only the selected group's KeyShareEntry.
     const ks_len = try singleKeyShareLen(selected_group, hybrid_share);
-    w.append(ExtensionType, .key_share);
-    w.append(u16, @intCast(2 + ks_len));
-    w.append(u16, @intCast(ks_len));
+    w.appendAssumeCapacity(ExtensionType, .key_share);
+    w.appendAssumeCapacity(u16, @intCast(2 + ks_len));
+    w.appendAssumeCapacity(u16, @intCast(ks_len));
     switch (selected_group) {
         .x25519 => {
-            w.append(NamedGroup, .x25519);
-            w.append(u16, x25519.public_length);
-            w.appendSlice(&x25519_public_key.data);
+            w.appendAssumeCapacity(NamedGroup, .x25519);
+            w.appendAssumeCapacity(u16, x25519.public_length);
+            w.appendSliceAssumeCapacity(&x25519_public_key.data);
         },
         .secp256r1 => {
-            w.append(NamedGroup, .secp256r1);
-            w.append(u16, p256.public_length);
-            w.appendSlice(&p256_public_key.data);
+            w.appendAssumeCapacity(NamedGroup, .secp256r1);
+            w.appendAssumeCapacity(u16, p256.public_length);
+            w.appendSliceAssumeCapacity(&p256_public_key.data);
         },
         .secp384r1 => {
             const public_key = p384_public_key orelse return error.UnsupportedGroup;
-            w.append(NamedGroup, .secp384r1);
-            w.append(u16, p384.public_length);
-            w.appendSlice(&public_key.data);
+            w.appendAssumeCapacity(NamedGroup, .secp384r1);
+            w.appendAssumeCapacity(u16, p384.public_length);
+            w.appendSliceAssumeCapacity(&public_key.data);
         },
         .x25519_mlkem768,
         .secp256r1_mlkem768,
         .secp384r1_mlkem1024,
         => {
             const share = hybrid_share orelse return error.InvalidHybridPolicy;
-            w.append(NamedGroup, share.group);
-            w.append(u16, @intCast(share.data.len));
-            w.appendSlice(share.data);
+            w.appendAssumeCapacity(NamedGroup, share.group);
+            w.appendAssumeCapacity(u16, @intCast(share.data.len));
+            w.appendSliceAssumeCapacity(share.data);
         },
         else => return error.UnsupportedGroup,
     }
 
     // psk_key_exchange_modes (RFC 8446 §4.2.9) is present in every
     // ClientHello1 so it remains unchanged in ClientHello2.
-    w.append(ExtensionType, .psk_key_exchange_modes);
-    w.append(u16, 2);
-    w.append(u8, 1);
-    w.append(
+    w.appendAssumeCapacity(ExtensionType, .psk_key_exchange_modes);
+    w.appendAssumeCapacity(u16, 2);
+    w.appendAssumeCapacity(u8, 1);
+    w.appendAssumeCapacity(
         PskKeyExchangeMode,
         if (psk) |offer| offer.mode else .psk_dhe_ke,
     );
 
     // cookie (RFC 8446 §4.2.2) — echoed verbatim from HelloRetryRequest.
     if (cookie) |c| {
-        w.append(ExtensionType, .cookie);
-        w.append(u16, @intCast(2 + c.len));
-        w.append(u16, @intCast(c.len));
-        w.appendSlice(c);
+        w.appendAssumeCapacity(ExtensionType, .cookie);
+        w.appendAssumeCapacity(u16, @intCast(2 + c.len));
+        w.appendAssumeCapacity(u16, @intCast(c.len));
+        w.appendSliceAssumeCapacity(c);
     }
 
-    var prefix_len: usize = w.pos;
-    var binder_offset: usize = w.pos;
+    var prefix_len: usize = w.end;
+    var binder_offset: usize = w.end;
     var binder_len: u8 = 0;
     if (psk) |offer| {
         const identities_len: usize = 2 + 2 + offer.identity.len + 4;
@@ -488,23 +492,23 @@ pub fn encodeRetryAfterHrrWithHybridAndPsk(
 
         // RFC 8446 §4.1.2, §4.2.11 — ClientHello2 retains pre_shared_key,
         // recomputes its binder, and keeps it as the final extension.
-        w.append(ExtensionType, .pre_shared_key);
-        w.append(u16, @intCast(psk_ext_data_len));
-        w.append(u16, @intCast(identities_len - 2));
-        w.append(u16, @intCast(offer.identity.len));
-        w.appendSlice(offer.identity);
-        w.append(u32, offer.obfuscated_ticket_age);
-        prefix_len = w.pos;
-        w.append(u16, @intCast(binders_len - 2));
-        w.append(u8, offer.binder_len);
-        binder_offset = w.pos;
+        w.appendAssumeCapacity(ExtensionType, .pre_shared_key);
+        w.appendAssumeCapacity(u16, @intCast(psk_ext_data_len));
+        w.appendAssumeCapacity(u16, @intCast(identities_len - 2));
+        w.appendAssumeCapacity(u16, @intCast(offer.identity.len));
+        w.appendSliceAssumeCapacity(offer.identity);
+        w.appendAssumeCapacity(u32, offer.obfuscated_ticket_age);
+        prefix_len = w.end;
+        w.appendAssumeCapacity(u16, @intCast(binders_len - 2));
+        w.appendAssumeCapacity(u8, offer.binder_len);
+        binder_offset = w.end;
         var binder_buf: [48]u8 = @splat(0);
-        w.appendSlice(binder_buf[0..offer.binder_len]);
+        w.appendSliceAssumeCapacity(binder_buf[0..offer.binder_len]);
         binder_len = offer.binder_len;
     }
 
     return .{
-        .msg = w.written(),
+        .msg = w.buffered(),
         .prefix_len = prefix_len,
         .binder_offset = binder_offset,
         .binder_len = binder_len,
@@ -602,10 +606,10 @@ pub const PskOfferIter = struct {
     }
 
     pub fn next(self: *PskOfferIter) Error!?PskOffer {
-        if (self.identities.pos >= self.identities.buf.len) {
+        if (self.identities.end >= self.identities.buffer.len) {
             // Identities exhausted: the binders list must be exhausted too —
             // §4.2.11 requires one binder per identity.
-            if (self.binders.pos != self.binders.buf.len)
+            if (self.binders.end != self.binders.buffer.len)
                 return error.InvalidVectorLength;
             return null;
         }
@@ -837,18 +841,18 @@ pub fn encodeWithPskAndHybridGroups(
 
     // Handshake header — body length includes the full pre_shared_key ext
     // (binders included), per RFC 8446 §4.2.11.2.
-    w.append(handshake.Type, .client_hello);
-    w.append(u24, @intCast(body_fixed_len + ext_len));
+    w.appendAssumeCapacity(handshake.Type, .client_hello);
+    w.appendAssumeCapacity(u24, @intCast(body_fixed_len + ext_len));
 
     // ClientHello body
-    w.append(ProtocolVersion, legacy_version);
-    w.appendSlice(&random.data);
-    w.append(u8, 0x00); // legacy_session_id: empty
-    w.append(u16, cipher_suite_count * 2);
-    inline for (supported_cipher_suites) |cs| w.append(CipherSuite, cs);
-    w.append(u8, 0x01); // legacy_compression_methods length
-    w.append(CompressionMethod, .no_compression);
-    w.append(u16, @intCast(ext_len));
+    w.appendAssumeCapacity(ProtocolVersion, legacy_version);
+    w.appendSliceAssumeCapacity(&random.data);
+    w.appendAssumeCapacity(u8, 0x00); // legacy_session_id: empty
+    w.appendAssumeCapacity(u16, cipher_suite_count * 2);
+    inline for (supported_cipher_suites) |cs| w.appendAssumeCapacity(CipherSuite, cs);
+    w.appendAssumeCapacity(u8, 0x01); // legacy_compression_methods length
+    w.appendAssumeCapacity(CompressionMethod, .no_compression);
+    w.appendAssumeCapacity(u16, @intCast(ext_len));
 
     // The base extensions (server_name, alpn, supported_versions,
     // supported_groups, signature_algorithms, signature_algorithms_cert,
@@ -858,101 +862,106 @@ pub fn encodeWithPskAndHybridGroups(
         const entry_len: u16 = 1 + 2 + name_len;
         const list_len: u16 = entry_len;
         const ext_data_len: u16 = 2 + entry_len;
-        w.append(ExtensionType, .server_name);
-        w.append(u16, ext_data_len);
-        w.append(u16, list_len);
-        w.append(SniNameType, .host_name);
-        w.append(u16, name_len);
-        w.appendSlice(name);
+        w.appendAssumeCapacity(ExtensionType, .server_name);
+        w.appendAssumeCapacity(u16, ext_data_len);
+        w.appendAssumeCapacity(u16, list_len);
+        w.appendAssumeCapacity(SniNameType, .host_name);
+        w.appendAssumeCapacity(u16, name_len);
+        w.appendSliceAssumeCapacity(name);
     }
     if (alpn_protocols.len != 0) {
         const ext_data_len = try alpnExtDataLen(alpn_protocols);
-        w.append(ExtensionType, .alpn);
-        w.append(u16, ext_data_len);
-        w.append(u16, ext_data_len - 2);
+        w.appendAssumeCapacity(ExtensionType, .alpn);
+        w.appendAssumeCapacity(u16, ext_data_len);
+        w.appendAssumeCapacity(u16, ext_data_len - 2);
         for (alpn_protocols) |protocol| {
-            w.append(u8, @intCast(protocol.len));
-            w.appendSlice(protocol);
+            w.appendAssumeCapacity(u8, @intCast(protocol.len));
+            w.appendSliceAssumeCapacity(protocol);
         }
     }
-    w.append(ExtensionType, .supported_versions);
-    w.append(u16, 3);
-    w.append(u8, 0x02);
-    w.append(ProtocolVersion, .tls_1_3);
+    w.appendAssumeCapacity(ExtensionType, .supported_versions);
+    w.appendAssumeCapacity(u16, 3);
+    w.appendAssumeCapacity(u8, 0x02);
+    w.appendAssumeCapacity(ProtocolVersion, .tls_1_3);
 
-    w.append(ExtensionType, .supported_groups);
-    w.append(u16, @intCast(2 + groupCount(include_p256, include_p384, hybrid_groups) * 2));
-    w.append(u16, @intCast(groupCount(include_p256, include_p384, hybrid_groups) * 2));
-    w.append(NamedGroup, .x25519);
-    if (include_p256) w.append(NamedGroup, .secp256r1);
-    if (include_p384) w.append(NamedGroup, .secp384r1);
-    for (hybrid_groups) |group| w.append(NamedGroup, group);
+    w.appendAssumeCapacity(ExtensionType, .supported_groups);
+    const group_count = groupCount(include_p256, include_p384, hybrid_groups);
+    w.appendAssumeCapacity(u16, @intCast(2 + group_count * 2));
+    w.appendAssumeCapacity(u16, @intCast(group_count * 2));
+    w.appendAssumeCapacity(NamedGroup, .x25519);
+    if (include_p256) w.appendAssumeCapacity(NamedGroup, .secp256r1);
+    if (include_p384) w.appendAssumeCapacity(NamedGroup, .secp384r1);
+    for (hybrid_groups) |group| w.appendAssumeCapacity(NamedGroup, group);
 
-    w.append(ExtensionType, .signature_algorithms);
-    w.append(u16, 2 + sig_scheme_count * 2);
-    w.append(u16, sig_scheme_count * 2);
-    inline for (supported_signature_schemes) |s| w.append(SignatureScheme, s);
+    w.appendAssumeCapacity(ExtensionType, .signature_algorithms);
+    w.appendAssumeCapacity(u16, 2 + sig_scheme_count * 2);
+    w.appendAssumeCapacity(u16, sig_scheme_count * 2);
+    inline for (supported_signature_schemes) |s| {
+        w.appendAssumeCapacity(SignatureScheme, s);
+    }
 
-    w.append(ExtensionType, .signature_algorithms_cert);
-    w.append(u16, 2 + cert_sig_scheme_count * 2);
-    w.append(u16, cert_sig_scheme_count * 2);
-    inline for (supported_certificate_signature_schemes) |s| w.append(SignatureScheme, s);
+    w.appendAssumeCapacity(ExtensionType, .signature_algorithms_cert);
+    w.appendAssumeCapacity(u16, 2 + cert_sig_scheme_count * 2);
+    w.appendAssumeCapacity(u16, cert_sig_scheme_count * 2);
+    inline for (supported_certificate_signature_schemes) |s| {
+        w.appendAssumeCapacity(SignatureScheme, s);
+    }
 
     const shares_len = keySharesLen(include_p256, include_p384, hybrid_share);
-    w.append(ExtensionType, .key_share);
-    w.append(u16, @intCast(2 + shares_len));
-    w.append(u16, @intCast(shares_len));
-    w.append(NamedGroup, .x25519);
-    w.append(u16, x25519.public_length);
-    w.appendSlice(&public_key.data);
+    w.appendAssumeCapacity(ExtensionType, .key_share);
+    w.appendAssumeCapacity(u16, @intCast(2 + shares_len));
+    w.appendAssumeCapacity(u16, @intCast(shares_len));
+    w.appendAssumeCapacity(NamedGroup, .x25519);
+    w.appendAssumeCapacity(u16, x25519.public_length);
+    w.appendSliceAssumeCapacity(&public_key.data);
     if (public_key_p256) |key| {
-        w.append(NamedGroup, .secp256r1);
-        w.append(u16, p256.public_length);
-        w.appendSlice(&key.data);
+        w.appendAssumeCapacity(NamedGroup, .secp256r1);
+        w.appendAssumeCapacity(u16, p256.public_length);
+        w.appendSliceAssumeCapacity(&key.data);
     }
     if (public_key_p384) |key| {
-        w.append(NamedGroup, .secp384r1);
-        w.append(u16, p384.public_length);
-        w.appendSlice(&key.data);
+        w.appendAssumeCapacity(NamedGroup, .secp384r1);
+        w.appendAssumeCapacity(u16, p384.public_length);
+        w.appendSliceAssumeCapacity(&key.data);
     }
     if (hybrid_share) |share| {
-        w.append(NamedGroup, share.group);
-        w.append(u16, @intCast(share.data.len));
-        w.appendSlice(share.data);
+        w.appendAssumeCapacity(NamedGroup, share.group);
+        w.appendAssumeCapacity(u16, @intCast(share.data.len));
+        w.appendSliceAssumeCapacity(share.data);
     }
 
     // psk_key_exchange_modes (RFC 8446 §4.2.9). Not the last extension.
-    w.append(ExtensionType, .psk_key_exchange_modes);
-    w.append(u16, 2); // ext_data len
-    w.append(u8, 1); // list len
-    w.append(PskKeyExchangeMode, psk_mode);
+    w.appendAssumeCapacity(ExtensionType, .psk_key_exchange_modes);
+    w.appendAssumeCapacity(u16, 2); // ext_data len
+    w.appendAssumeCapacity(u8, 1); // list len
+    w.appendAssumeCapacity(PskKeyExchangeMode, psk_mode);
 
     // early_data (RFC 8446 §4.2.10) — empty ext_data, offered when the
     // caller opts in to 0-RTT. Must precede pre_shared_key (which is last).
     if (offer_early_data) {
-        w.append(ExtensionType, .early_data);
-        w.append(u16, 0);
+        w.appendAssumeCapacity(ExtensionType, .early_data);
+        w.appendAssumeCapacity(u16, 0);
     }
 
     // pre_shared_key (RFC 8446 §4.2.11) — MUST be the last extension.
-    w.append(ExtensionType, .pre_shared_key);
-    w.append(u16, @intCast(psk_ext_data_len));
+    w.appendAssumeCapacity(ExtensionType, .pre_shared_key);
+    w.appendAssumeCapacity(u16, @intCast(psk_ext_data_len));
     // identities list
-    w.append(u16, @intCast(identities_len - 2));
-    w.append(u16, @intCast(identity.len));
-    w.appendSlice(identity);
-    w.append(u32, obfuscated_ticket_age);
+    w.appendAssumeCapacity(u16, @intCast(identities_len - 2));
+    w.appendAssumeCapacity(u16, @intCast(identity.len));
+    w.appendSliceAssumeCapacity(identity);
+    w.appendAssumeCapacity(u32, obfuscated_ticket_age);
     // The prefix the binder hash covers ends here (after the identities).
-    const prefix_len = w.pos;
+    const prefix_len = w.end;
     // binders list (placeholder zero binder; caller patches it).
-    w.append(u16, @intCast(binders_len - 2)); // binders list len
-    w.append(u8, binder_len); // binder entry len (1-byte, RFC 8446 §4.2.11)
-    const binder_offset = w.pos;
+    w.appendAssumeCapacity(u16, @intCast(binders_len - 2)); // binders list len
+    w.appendAssumeCapacity(u8, binder_len); // binder entry len (1-byte, RFC 8446 §4.2.11)
+    const binder_offset = w.end;
     var binder_buf: [48]u8 = @splat(0);
-    w.appendSlice(binder_buf[0..binder_len]);
+    w.appendSliceAssumeCapacity(binder_buf[0..binder_len]);
 
     return .{
-        .msg = w.written(),
+        .msg = w.buffered(),
         .prefix_len = prefix_len,
         .binder_offset = binder_offset,
         .binder_len = binder_len,
@@ -1027,7 +1036,7 @@ pub const Parsed = struct {
     pub fn selectAlpn(self: Parsed, server_protocols: []const []const u8) ?[]const u8 {
         for (server_protocols) |server_protocol| {
             var r: wire.Reader = .init(self.alpn_protocols);
-            while (r.pos < self.alpn_protocols.len) {
+            while (r.end < self.alpn_protocols.len) {
                 const len = r.read(u8) catch return null;
                 const client_protocol = r.readSlice(len) catch return null;
                 if (mem.eql(u8, server_protocol, client_protocol)) return server_protocol;
@@ -1185,18 +1194,18 @@ fn encodeInternal(
     var w: wire.Writer = .init(out);
 
     // Handshake header (RFC 8446 §4)
-    w.append(handshake.Type, .client_hello);
-    w.append(u24, @intCast(body_fixed_len + ext_len));
+    w.appendAssumeCapacity(handshake.Type, .client_hello);
+    w.appendAssumeCapacity(u24, @intCast(body_fixed_len + ext_len));
 
     // ClientHello body (RFC 8446 §4.1.2)
-    w.append(ProtocolVersion, legacy_version);
-    w.appendSlice(&random.data);
-    w.append(u8, 0x00); // legacy_session_id: empty
-    w.append(u16, cipher_suite_count * 2);
-    inline for (supported_cipher_suites) |cs| w.append(CipherSuite, cs);
-    w.append(u8, 0x01); // legacy_compression_methods length
-    w.append(CompressionMethod, .no_compression);
-    w.append(u16, ext_len);
+    w.appendAssumeCapacity(ProtocolVersion, legacy_version);
+    w.appendSliceAssumeCapacity(&random.data);
+    w.appendAssumeCapacity(u8, 0x00); // legacy_session_id: empty
+    w.appendAssumeCapacity(u16, cipher_suite_count * 2);
+    inline for (supported_cipher_suites) |cs| w.appendAssumeCapacity(CipherSuite, cs);
+    w.appendAssumeCapacity(u8, 0x01); // legacy_compression_methods length
+    w.appendAssumeCapacity(CompressionMethod, .no_compression);
+    w.appendAssumeCapacity(u16, ext_len);
 
     // server_name (RFC 8446 §4.2, RFC 6066 §3)
     if (server_name) |name| {
@@ -1204,86 +1213,91 @@ fn encodeInternal(
         const entry_len: u16 = 1 + 2 + name_len; // NameType + name length field + name
         const list_len: u16 = entry_len;
         const ext_data_len: u16 = 2 + entry_len; // ServerNameList length field + entry
-        w.append(ExtensionType, .server_name);
-        w.append(u16, ext_data_len);
-        w.append(u16, list_len);
-        w.append(SniNameType, .host_name);
-        w.append(u16, name_len);
-        w.appendSlice(name);
+        w.appendAssumeCapacity(ExtensionType, .server_name);
+        w.appendAssumeCapacity(u16, ext_data_len);
+        w.appendAssumeCapacity(u16, list_len);
+        w.appendAssumeCapacity(SniNameType, .host_name);
+        w.appendAssumeCapacity(u16, name_len);
+        w.appendSliceAssumeCapacity(name);
     }
 
     // application_layer_protocol_negotiation (RFC 7301 §3.1)
     if (alpn_protocols.len != 0) {
         const ext_data_len = try alpnExtDataLen(alpn_protocols);
-        w.append(ExtensionType, .alpn);
-        w.append(u16, ext_data_len);
-        w.append(u16, ext_data_len - 2);
+        w.appendAssumeCapacity(ExtensionType, .alpn);
+        w.appendAssumeCapacity(u16, ext_data_len);
+        w.appendAssumeCapacity(u16, ext_data_len - 2);
         for (alpn_protocols) |protocol| {
-            w.append(u8, @intCast(protocol.len));
-            w.appendSlice(protocol);
+            w.appendAssumeCapacity(u8, @intCast(protocol.len));
+            w.appendSliceAssumeCapacity(protocol);
         }
     }
 
     // supported_versions (RFC 8446 §4.2.1)
-    w.append(ExtensionType, .supported_versions);
-    w.append(u16, 3);
-    w.append(u8, 0x02); // versions list length
-    w.append(ProtocolVersion, .tls_1_3);
+    w.appendAssumeCapacity(ExtensionType, .supported_versions);
+    w.appendAssumeCapacity(u16, 3);
+    w.appendAssumeCapacity(u8, 0x02); // versions list length
+    w.appendAssumeCapacity(ProtocolVersion, .tls_1_3);
 
     // supported_groups (RFC 8446 §4.2.7)
-    w.append(ExtensionType, .supported_groups);
-    w.append(u16, @intCast(2 + groupCount(include_p256, include_p384, hybrid_groups) * 2));
-    w.append(u16, @intCast(groupCount(include_p256, include_p384, hybrid_groups) * 2));
-    w.append(NamedGroup, .x25519);
-    if (include_p256) w.append(NamedGroup, .secp256r1);
-    if (include_p384) w.append(NamedGroup, .secp384r1);
-    for (hybrid_groups) |group| w.append(NamedGroup, group);
+    w.appendAssumeCapacity(ExtensionType, .supported_groups);
+    const group_count = groupCount(include_p256, include_p384, hybrid_groups);
+    w.appendAssumeCapacity(u16, @intCast(2 + group_count * 2));
+    w.appendAssumeCapacity(u16, @intCast(group_count * 2));
+    w.appendAssumeCapacity(NamedGroup, .x25519);
+    if (include_p256) w.appendAssumeCapacity(NamedGroup, .secp256r1);
+    if (include_p384) w.appendAssumeCapacity(NamedGroup, .secp384r1);
+    for (hybrid_groups) |group| w.appendAssumeCapacity(NamedGroup, group);
 
     // signature_algorithms (RFC 8446 §4.2.3)
-    w.append(ExtensionType, .signature_algorithms);
-    w.append(u16, 2 + sig_scheme_count * 2);
-    w.append(u16, sig_scheme_count * 2);
-    inline for (supported_signature_schemes) |s| w.append(SignatureScheme, s);
+    w.appendAssumeCapacity(ExtensionType, .signature_algorithms);
+    w.appendAssumeCapacity(u16, 2 + sig_scheme_count * 2);
+    w.appendAssumeCapacity(u16, sig_scheme_count * 2);
+    inline for (supported_signature_schemes) |s| {
+        w.appendAssumeCapacity(SignatureScheme, s);
+    }
 
     // signature_algorithms_cert (RFC 8446 §4.2.3)
-    w.append(ExtensionType, .signature_algorithms_cert);
-    w.append(u16, 2 + cert_sig_scheme_count * 2);
-    w.append(u16, cert_sig_scheme_count * 2);
-    inline for (supported_certificate_signature_schemes) |s| w.append(SignatureScheme, s);
+    w.appendAssumeCapacity(ExtensionType, .signature_algorithms_cert);
+    w.appendAssumeCapacity(u16, 2 + cert_sig_scheme_count * 2);
+    w.appendAssumeCapacity(u16, cert_sig_scheme_count * 2);
+    inline for (supported_certificate_signature_schemes) |s| {
+        w.appendAssumeCapacity(SignatureScheme, s);
+    }
 
     // psk_key_exchange_modes (RFC 8446 §4.2.9) — advertise psk_dhe_ke so the
     // server may issue NewSessionTickets for future resumption.
-    w.append(ExtensionType, .psk_key_exchange_modes);
-    w.append(u16, 2);
-    w.append(u8, 1);
-    w.append(PskKeyExchangeMode, .psk_dhe_ke);
+    w.appendAssumeCapacity(ExtensionType, .psk_key_exchange_modes);
+    w.appendAssumeCapacity(u16, 2);
+    w.appendAssumeCapacity(u8, 1);
+    w.appendAssumeCapacity(PskKeyExchangeMode, .psk_dhe_ke);
 
     // key_share (RFC 8446 §4.2.8)
     const shares_len = keySharesLen(include_p256, include_p384, kem_share);
-    w.append(ExtensionType, .key_share);
-    w.append(u16, @intCast(2 + shares_len));
-    w.append(u16, @intCast(shares_len));
-    w.append(NamedGroup, .x25519);
-    w.append(u16, x25519.public_length); // key_exchange length
-    w.appendSlice(&public_key.data);
+    w.appendAssumeCapacity(ExtensionType, .key_share);
+    w.appendAssumeCapacity(u16, @intCast(2 + shares_len));
+    w.appendAssumeCapacity(u16, @intCast(shares_len));
+    w.appendAssumeCapacity(NamedGroup, .x25519);
+    w.appendAssumeCapacity(u16, x25519.public_length); // key_exchange length
+    w.appendSliceAssumeCapacity(&public_key.data);
     if (public_key_p256) |key| {
-        w.append(NamedGroup, .secp256r1);
-        w.append(u16, p256.public_length); // key_exchange length
-        w.appendSlice(&key.data);
+        w.appendAssumeCapacity(NamedGroup, .secp256r1);
+        w.appendAssumeCapacity(u16, p256.public_length); // key_exchange length
+        w.appendSliceAssumeCapacity(&key.data);
     }
     if (public_key_p384) |key| {
-        w.append(NamedGroup, .secp384r1);
-        w.append(u16, p384.public_length); // key_exchange length
-        w.appendSlice(&key.data);
+        w.appendAssumeCapacity(NamedGroup, .secp384r1);
+        w.appendAssumeCapacity(u16, p384.public_length); // key_exchange length
+        w.appendSliceAssumeCapacity(&key.data);
     }
     // RFC 10024 §4.1 hybrid key_share.
     if (kem_share) |k| {
-        w.append(NamedGroup, k.group);
-        w.append(u16, @intCast(k.data.len));
-        w.appendSlice(k.data);
+        w.appendAssumeCapacity(NamedGroup, k.group);
+        w.appendAssumeCapacity(u16, @intCast(k.data.len));
+        w.appendSliceAssumeCapacity(k.data);
     }
 
-    return w.written();
+    return w.buffered();
 }
 
 pub fn parse(msg: []const u8) ParseError!Parsed {
@@ -1314,9 +1328,9 @@ pub fn parse(msg: []const u8) ParseError!Parsed {
     if (compression_method != .no_compression) return error.InvalidCompressionMethod;
 
     const extensions_len = r.assumeRead(u16);
-    if (extensions_len > msg.len - r.pos) return error.InvalidExtensionLength;
-    const extensions_end = r.pos + extensions_len;
-    try extension_type.rejectDuplicateExtensions(msg[r.pos..extensions_end]);
+    if (extensions_len > msg.len - r.end) return error.InvalidExtensionLength;
+    const extensions_end = r.end + extensions_len;
+    try extension_type.rejectDuplicateExtensions(msg[r.end..extensions_end]);
 
     var parsed: Parsed = .{
         .cipher_suites = cipher_suites,
@@ -1331,11 +1345,11 @@ pub fn parse(msg: []const u8) ParseError!Parsed {
     var got_signature_algorithms = false;
     var got_signature_algorithms_cert = false;
 
-    while (r.pos < extensions_end) {
-        if (extensions_end - r.pos < 4) return error.InvalidExtensionLength;
+    while (r.end < extensions_end) {
+        if (extensions_end - r.end < 4) return error.InvalidExtensionLength;
         const ext_type = r.assumeRead(ExtensionType);
         const ext_len = r.assumeRead(u16);
-        if (ext_len > extensions_end - r.pos) return error.InvalidExtensionLength;
+        if (ext_len > extensions_end - r.end) return error.InvalidExtensionLength;
         const ext = r.assumeReadSlice(ext_len);
 
         switch (ext_type) {
@@ -1402,7 +1416,7 @@ pub fn parse(msg: []const u8) ParseError!Parsed {
             },
             .pre_shared_key => {
                 // RFC 8446 §4.2.11 — pre_shared_key MUST be the last extension.
-                if (r.pos != extensions_end) return error.IllegalParameter;
+                if (r.end != extensions_end) return error.IllegalParameter;
                 if (ext.len < 4) return error.InvalidExtensionLength;
                 const identities_len = (@as(usize, ext[0]) << 8) | ext[1];
                 if (2 + identities_len + 2 > ext.len) return error.InvalidExtensionLength;
@@ -1415,7 +1429,7 @@ pub fn parse(msg: []const u8) ParseError!Parsed {
             else => {},
         }
     }
-    if (r.pos != extensions_end) return error.InvalidExtensionLength;
+    if (r.end != extensions_end) return error.InvalidExtensionLength;
     if (!got_supported_versions) return error.UnsupportedTlsVersion;
     if (!got_supported_groups or !got_signature_algorithms or !got_key_share)
         return error.MissingExtension;
@@ -1437,13 +1451,13 @@ fn clientHelloWithSniForTest(out: []u8, name: ?[]const u8) ![]const u8 {
     const base = try encode(out, .zero, .zero, null, &.{});
     const list_len = if (name) |n| 3 + n.len else 0;
     var w: wire.Writer = .init(out[base.len..]);
-    w.append(ExtensionType, .server_name);
-    w.append(u16, @intCast(2 + list_len));
-    w.append(u16, @intCast(list_len));
+    w.appendAssumeCapacity(ExtensionType, .server_name);
+    w.appendAssumeCapacity(u16, @intCast(2 + list_len));
+    w.appendAssumeCapacity(u16, @intCast(list_len));
     if (name) |n| {
-        w.append(SniNameType, .host_name);
-        w.append(u16, @intCast(n.len));
-        w.appendSlice(n);
+        w.appendAssumeCapacity(SniNameType, .host_name);
+        w.appendAssumeCapacity(u16, @intCast(n.len));
+        w.appendSliceAssumeCapacity(n);
     }
     const total_len = base.len + ext_header_len + 2 + list_len;
     const extensions_at = handshake_header_len + body_fixed_len - 2;
@@ -1526,7 +1540,7 @@ fn parseSni(ext: []const u8) ParseError!?[]const u8 {
     const name_len = r.assumeRead(u16);
     if (r.remaining().len < name_len) return error.InvalidVectorLength;
     const name = r.assumeReadSlice(name_len);
-    if (r.pos != ext.len) return error.InvalidVectorLength;
+    if (r.end != ext.len) return error.InvalidVectorLength;
     if (name_type != .host_name) return null;
     validateServerNameLen(name) catch return error.InvalidVectorLength;
     return name;
@@ -1545,7 +1559,7 @@ fn parseSupportedVersions(ext: []const u8) ParseError!void {
     var r: wire.Reader = .init(ext);
     const list_len = r.assumeRead(u8);
     if (list_len != ext.len - 1 or list_len % 2 != 0) return error.InvalidVectorLength;
-    while (r.pos < ext.len) {
+    while (r.end < ext.len) {
         if (r.assumeRead(ProtocolVersion) == .tls_1_3) return;
     }
     return error.UnsupportedTlsVersion;
@@ -1620,7 +1634,7 @@ fn parseSupportedGroups(ext: []const u8) ParseError!SupportedGroups {
     const list_len = r.assumeRead(u16);
     if (list_len != ext.len - 2 or list_len % 2 != 0) return error.InvalidVectorLength;
     var groups: SupportedGroups = .{};
-    while (r.pos < ext.len) groups.insert(r.assumeRead(NamedGroup));
+    while (r.end < ext.len) groups.insert(r.assumeRead(NamedGroup));
     if (!groups.hasImplemented()) return error.UnsupportedKeyShare;
     return groups;
 }
@@ -1663,7 +1677,7 @@ fn parseKeyShare(ext: []const u8) ParseError!ParsedKeyShares {
     const client_shares_len = r.assumeRead(u16);
     if (client_shares_len != ext.len - 2) return error.InvalidVectorLength;
     var shares: ParsedKeyShares = .{};
-    while (r.pos < ext.len) {
+    while (r.end < ext.len) {
         if (r.remaining().len < 4) return error.InvalidVectorLength;
         const group = r.assumeRead(NamedGroup);
         const key_len = r.assumeRead(u16);
@@ -2456,25 +2470,25 @@ test "parseKeyShare: retains all RFC 10024 hybrid entries" {
     const shares_len = 3 * 4 + 1216 + 1249 + 1665;
     var encoded: [2 + shares_len]u8 = undefined;
     var w: wire.Writer = .init(&encoded);
-    w.append(u16, shares_len);
+    w.appendAssumeCapacity(u16, shares_len);
 
-    w.append(NamedGroup, .secp256r1_mlkem768);
-    w.append(u16, 1249);
-    const p256_mlkem = w.reserve(1249);
+    w.appendAssumeCapacity(NamedGroup, .secp256r1_mlkem768);
+    w.appendAssumeCapacity(u16, 1249);
+    const p256_mlkem = w.reserveAssumeCapacity(1249);
     @memset(p256_mlkem, 0x11);
     p256_mlkem[0] = 0x04;
 
-    w.append(NamedGroup, .x25519_mlkem768);
-    w.append(u16, 1216);
-    @memset(w.reserve(1216), 0x22);
+    w.appendAssumeCapacity(NamedGroup, .x25519_mlkem768);
+    w.appendAssumeCapacity(u16, 1216);
+    @memset(w.reserveAssumeCapacity(1216), 0x22);
 
-    w.append(NamedGroup, .secp384r1_mlkem1024);
-    w.append(u16, 1665);
-    const p384_mlkem = w.reserve(1665);
+    w.appendAssumeCapacity(NamedGroup, .secp384r1_mlkem1024);
+    w.appendAssumeCapacity(u16, 1665);
+    const p384_mlkem = w.reserveAssumeCapacity(1665);
     @memset(p384_mlkem, 0x33);
     p384_mlkem[0] = 0x04;
 
-    const parsed = try parseKeyShare(w.written());
+    const parsed = try parseKeyShare(w.buffered());
     try testing.expectEqual(@as(usize, 3), parsed.hybrid.len);
     try testing.expectEqual(.secp256r1_mlkem768, parsed.hybrid.get(0).group);
     try testing.expectEqual(.x25519_mlkem768, parsed.hybrid.get(1).group);
@@ -2510,9 +2524,9 @@ fn findExtensionOffset(msg: []const u8, ext_type: ExtensionType) !usize {
     const compression_len = r.assumeRead(u8);
     r.assumeSkip(compression_len);
     const extensions_len = r.assumeRead(u16);
-    const extensions_end = r.pos + extensions_len;
-    while (r.pos < extensions_end) {
-        const offset = r.pos;
+    const extensions_end = r.end + extensions_len;
+    while (r.end < extensions_end) {
+        const offset = r.end;
         const current = r.assumeRead(ExtensionType);
         const ext_len = r.assumeRead(u16);
         if (current == ext_type) return offset;

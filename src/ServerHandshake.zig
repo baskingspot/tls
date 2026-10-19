@@ -3702,26 +3702,26 @@ fn clientHelloWithPskIdentities(
 
     @memcpy(out[0..ext_start], base[0..ext_start]);
     var w: wiremod.Writer = .init(out[ext_start..]);
-    w.append(u16, 0x0029); // ExtensionType.pre_shared_key
-    w.append(u16, @intCast(ext_data_len));
-    w.append(u16, @intCast(identities_len));
+    w.appendAssumeCapacity(u16, 0x0029); // ExtensionType.pre_shared_key
+    w.appendAssumeCapacity(u16, @intCast(ext_data_len));
+    w.appendAssumeCapacity(u16, @intCast(identities_len));
     for (offers) |offer| {
-        w.append(u16, @intCast(offer.identity.len));
-        w.appendSlice(offer.identity);
-        w.append(u32, offer.obfuscated_ticket_age);
+        w.appendAssumeCapacity(u16, @intCast(offer.identity.len));
+        w.appendSliceAssumeCapacity(offer.identity);
+        w.appendAssumeCapacity(u32, offer.obfuscated_ticket_age);
     }
     const slack: [8]u8 = @splat(0);
     var slack_left = identities_slack;
-    while (slack_left >= slack.len) : (slack_left -= slack.len) w.appendSlice(&slack);
-    if (slack_left > 0) w.appendSlice(slack[0..slack_left]);
-    const binder_list_offset = ext_start + w.pos;
-    w.append(u16, @intCast(binders_len - 2));
+    while (slack_left >= slack.len) : (slack_left -= slack.len) w.appendSliceAssumeCapacity(&slack);
+    if (slack_left > 0) w.appendSliceAssumeCapacity(slack[0..slack_left]);
+    const binder_list_offset = ext_start + w.end;
+    w.appendAssumeCapacity(u16, @intCast(binders_len - 2));
     for (offers) |offer| {
-        w.append(u8, offer.binder_len);
+        w.appendAssumeCapacity(u8, offer.binder_len);
         var binder: [48]u8 = @splat(0); // max binder length covers SHA-384
-        w.appendSlice(binder[0..offer.binder_len]);
+        w.appendSliceAssumeCapacity(binder[0..offer.binder_len]);
     }
-    assert(w.pos + ext_start == total);
+    assert(w.end + ext_start == total);
 
     // Patch the enclosing lengths: pre_shared_key is the last extension.
     memx.writeInt(u24, out[1..4], @intCast(total - handshake_header_len));

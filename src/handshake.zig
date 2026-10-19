@@ -186,9 +186,9 @@ pub fn sendKeyUpdate(
     if (self.pending_write.isPending()) return error.PendingWrite;
     var msg: [5]u8 = undefined;
     var writer: wire.Writer = .init(&msg);
-    writer.append(Type, .key_update);
-    writer.append(u24, 1);
-    writer.append(KeyUpdateRequest, request);
+    writer.appendAssumeCapacity(Type, .key_update);
+    writer.appendAssumeCapacity(u24, 1);
+    writer.appendAssumeCapacity(KeyUpdateRequest, request);
     const record = try self.tx.encrypt(.handshake, &msg, out);
     try ratchetKtlsTx(sender, self, request);
     self.pending_write.mark();
@@ -421,24 +421,24 @@ pub const Reader = struct {
     }
 
     /// Return the next complete handshake message, or null when the payload is
-    /// drained. On UnexpectedEof, `r.pos` is restored to the start of the
+    /// drained. On UnexpectedEof, `r.end` is restored to the start of the
     /// partial message so the caller can retain exactly the unfinished suffix
     /// for cross-record reassembly.
     pub fn next(self: *Reader) error{UnexpectedEof}!?Message {
         if (self.r.remaining().len == 0) return null;
-        const begin = self.r.pos;
+        const begin = self.r.end;
         if (self.r.remaining().len < 4) {
-            self.r.pos = begin;
+            self.r.end = begin;
             return error.UnexpectedEof;
         }
         const msg_type = self.r.assumeRead(Type);
         const len = self.r.assumeRead(u24);
         if (self.r.remaining().len < len) {
-            self.r.pos = begin;
+            self.r.end = begin;
             return error.UnexpectedEof;
         }
         _ = self.r.assumeReadSlice(len);
-        return .{ .type = msg_type, .raw = self.r.buf[begin..self.r.pos] };
+        return .{ .type = msg_type, .raw = self.r.buffer[begin..self.r.end] };
     }
 };
 

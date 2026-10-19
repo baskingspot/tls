@@ -56,17 +56,17 @@ pub fn encode(out: []u8, sig_algs: []const SignatureScheme) EncodeError![]const 
     if (out.len < len) return error.BufferTooShort;
 
     var w: wire.Writer = .init(out);
-    w.append(handshake.Type, .certificate_request);
-    w.append(u24, @intCast(len - 4));
-    w.append(u8, 0x00); // empty request_context
+    w.appendAssumeCapacity(handshake.Type, .certificate_request);
+    w.appendAssumeCapacity(u24, @intCast(len - 4));
+    w.appendAssumeCapacity(u8, 0x00); // empty request_context
 
     const sig_algs_ext_len = 2 + 2 + 2 + sig_algs.len * 2;
-    w.append(u16, @intCast(sig_algs_ext_len));
-    w.append(ExtensionType, .signature_algorithms);
-    w.append(u16, @intCast(2 + sig_algs.len * 2));
-    w.append(u16, @intCast(sig_algs.len * 2));
-    for (sig_algs) |scheme| w.append(SignatureScheme, scheme);
-    return w.written();
+    w.appendAssumeCapacity(u16, @intCast(sig_algs_ext_len));
+    w.appendAssumeCapacity(ExtensionType, .signature_algorithms);
+    w.appendAssumeCapacity(u16, @intCast(2 + sig_algs.len * 2));
+    w.appendAssumeCapacity(u16, @intCast(sig_algs.len * 2));
+    for (sig_algs) |scheme| w.appendAssumeCapacity(SignatureScheme, scheme);
+    return w.buffered();
 }
 
 /// Parse a complete CertificateRequest handshake message. Returned slices alias

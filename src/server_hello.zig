@@ -180,9 +180,9 @@ pub fn parseHelloRetryRequestWithSessionIdEcho(
     if (compression_method != .no_compression) return error.InvalidCompressionMethod;
 
     const extensions_len = r.assumeRead(u16);
-    if (extensions_len != msg.len - r.pos) return error.InvalidExtensionLength;
-    const extensions_end = r.pos + extensions_len;
-    try extension_type.rejectDuplicateExtensions(msg[r.pos..extensions_end]);
+    if (extensions_len != msg.len - r.end) return error.InvalidExtensionLength;
+    const extensions_end = r.end + extensions_len;
+    try extension_type.rejectDuplicateExtensions(msg[r.end..extensions_end]);
 
     var selected_group: ?NamedGroup = null;
     var cookie: ?[]const u8 = null;
@@ -190,11 +190,11 @@ pub fn parseHelloRetryRequestWithSessionIdEcho(
     var got_key_share = false;
     var got_cookie = false;
 
-    while (r.pos < extensions_end) {
-        if (extensions_end - r.pos < 4) return error.InvalidExtensionLength;
+    while (r.end < extensions_end) {
+        if (extensions_end - r.end < 4) return error.InvalidExtensionLength;
         const ext_type = r.assumeRead(ExtensionType);
         const ext_len = r.assumeRead(u16);
-        if (ext_len > extensions_end - r.pos) return error.InvalidExtensionLength;
+        if (ext_len > extensions_end - r.end) return error.InvalidExtensionLength;
 
         switch (ext_type) {
             // supported_versions (RFC 8446 §4.2.1)
@@ -254,7 +254,7 @@ pub fn parseHelloRetryRequestWithSessionIdEcho(
         }
     }
 
-    if (r.pos != extensions_end) return error.InvalidExtensionLength;
+    if (r.end != extensions_end) return error.InvalidExtensionLength;
     if (!got_supported_versions) return error.MissingExtension;
 
     return .{
@@ -312,23 +312,23 @@ pub fn encodeHelloRetryRequest(
     if (out.len < total) return error.BufferTooShort;
 
     var w: wire.Writer = .init(out);
-    w.append(handshake.Type, .server_hello);
-    w.append(u24, @intCast(body_len));
-    w.append(ProtocolVersion, .tls_1_2);
-    w.appendSlice(&hello_retry_request_random);
-    w.append(u8, @intCast(legacy_session_id_echo.len));
-    w.appendSlice(legacy_session_id_echo);
-    w.append(CipherSuite, cipher_suite);
-    w.append(CompressionMethod, .no_compression);
+    w.appendAssumeCapacity(handshake.Type, .server_hello);
+    w.appendAssumeCapacity(u24, @intCast(body_len));
+    w.appendAssumeCapacity(ProtocolVersion, .tls_1_2);
+    w.appendSliceAssumeCapacity(&hello_retry_request_random);
+    w.appendAssumeCapacity(u8, @intCast(legacy_session_id_echo.len));
+    w.appendSliceAssumeCapacity(legacy_session_id_echo);
+    w.appendAssumeCapacity(CipherSuite, cipher_suite);
+    w.appendAssumeCapacity(CompressionMethod, .no_compression);
 
-    w.append(u16, extensions_len);
-    w.append(ExtensionType, .key_share);
-    w.append(u16, 2);
-    w.append(NamedGroup, selected_group);
-    w.append(ExtensionType, .supported_versions);
-    w.append(u16, 2);
-    w.append(ProtocolVersion, .tls_1_3);
-    return w.written();
+    w.appendAssumeCapacity(u16, extensions_len);
+    w.appendAssumeCapacity(ExtensionType, .key_share);
+    w.appendAssumeCapacity(u16, 2);
+    w.appendAssumeCapacity(NamedGroup, selected_group);
+    w.appendAssumeCapacity(ExtensionType, .supported_versions);
+    w.appendAssumeCapacity(u16, 2);
+    w.appendAssumeCapacity(ProtocolVersion, .tls_1_3);
+    return w.buffered();
 }
 
 /// Encode a TLS 1.3 ServerHello handshake message. The caller supplies the
@@ -367,25 +367,25 @@ pub fn encodeWithKeyShare(
     if (out.len < len) return error.BufferTooShort;
 
     var w: wire.Writer = .init(out);
-    w.append(handshake.Type, .server_hello);
-    w.append(u24, @intCast(len - 4));
-    w.append(ProtocolVersion, .tls_1_2);
-    w.appendSlice(&random);
-    w.append(u8, @intCast(session_id_echo.len));
-    w.appendSlice(session_id_echo);
-    w.append(CipherSuite, cipher_suite);
-    w.append(CompressionMethod, .no_compression);
+    w.appendAssumeCapacity(handshake.Type, .server_hello);
+    w.appendAssumeCapacity(u24, @intCast(len - 4));
+    w.appendAssumeCapacity(ProtocolVersion, .tls_1_2);
+    w.appendSliceAssumeCapacity(&random);
+    w.appendAssumeCapacity(u8, @intCast(session_id_echo.len));
+    w.appendSliceAssumeCapacity(session_id_echo);
+    w.appendAssumeCapacity(CipherSuite, cipher_suite);
+    w.appendAssumeCapacity(CompressionMethod, .no_compression);
 
-    w.append(u16, extensions_len);
-    w.append(ExtensionType, .key_share);
-    w.append(u16, key_share_ext_len);
-    w.append(NamedGroup, key_share.group());
-    w.append(u16, @intCast(key.len));
-    w.appendSlice(key);
-    w.append(ExtensionType, .supported_versions);
-    w.append(u16, 0x0002);
-    w.append(ProtocolVersion, .tls_1_3);
-    return w.written();
+    w.appendAssumeCapacity(u16, extensions_len);
+    w.appendAssumeCapacity(ExtensionType, .key_share);
+    w.appendAssumeCapacity(u16, key_share_ext_len);
+    w.appendAssumeCapacity(NamedGroup, key_share.group());
+    w.appendAssumeCapacity(u16, @intCast(key.len));
+    w.appendSliceAssumeCapacity(key);
+    w.appendAssumeCapacity(ExtensionType, .supported_versions);
+    w.appendAssumeCapacity(u16, 0x0002);
+    w.appendAssumeCapacity(ProtocolVersion, .tls_1_3);
+    return w.buffered();
 }
 
 /// Encode a ServerHello that selects a PSK identity (RFC 8446 §4.1.3, §4.2.11).
@@ -409,30 +409,30 @@ pub fn encodeWithKeyShareAndPsk(
     if (out.len < len) return error.BufferTooShort;
 
     var w: wire.Writer = .init(out);
-    w.append(handshake.Type, .server_hello);
-    w.append(u24, @intCast(len - 4));
-    w.append(ProtocolVersion, .tls_1_2);
-    w.appendSlice(&random);
-    w.append(u8, @intCast(session_id_echo.len));
-    w.appendSlice(session_id_echo);
-    w.append(CipherSuite, cipher_suite);
-    w.append(CompressionMethod, .no_compression);
+    w.appendAssumeCapacity(handshake.Type, .server_hello);
+    w.appendAssumeCapacity(u24, @intCast(len - 4));
+    w.appendAssumeCapacity(ProtocolVersion, .tls_1_2);
+    w.appendSliceAssumeCapacity(&random);
+    w.appendAssumeCapacity(u8, @intCast(session_id_echo.len));
+    w.appendSliceAssumeCapacity(session_id_echo);
+    w.appendAssumeCapacity(CipherSuite, cipher_suite);
+    w.appendAssumeCapacity(CompressionMethod, .no_compression);
 
-    w.append(u16, extensions_len);
-    w.append(ExtensionType, .key_share);
-    w.append(u16, key_share_ext_len);
-    w.append(NamedGroup, key_share.group());
-    w.append(u16, @intCast(key.len));
-    w.appendSlice(key);
-    w.append(ExtensionType, .supported_versions);
-    w.append(u16, 0x0002);
-    w.append(ProtocolVersion, .tls_1_3);
+    w.appendAssumeCapacity(u16, extensions_len);
+    w.appendAssumeCapacity(ExtensionType, .key_share);
+    w.appendAssumeCapacity(u16, key_share_ext_len);
+    w.appendAssumeCapacity(NamedGroup, key_share.group());
+    w.appendAssumeCapacity(u16, @intCast(key.len));
+    w.appendSliceAssumeCapacity(key);
+    w.appendAssumeCapacity(ExtensionType, .supported_versions);
+    w.appendAssumeCapacity(u16, 0x0002);
+    w.appendAssumeCapacity(ProtocolVersion, .tls_1_3);
     // pre_shared_key (RFC 8446 §4.2.11): ext_data is a single u16
     // selected_identity.
-    w.append(ExtensionType, .pre_shared_key);
-    w.append(u16, 2);
-    w.append(u16, selected_identity);
-    return w.written();
+    w.appendAssumeCapacity(ExtensionType, .pre_shared_key);
+    w.appendAssumeCapacity(u16, 2);
+    w.appendAssumeCapacity(u16, selected_identity);
+    return w.buffered();
 }
 ///
 /// `msg` must be the complete handshake message including the 4-byte header
@@ -483,20 +483,20 @@ pub fn parseWithSessionIdEcho(
 
     // Extensions
     const extensions_len = r.assumeRead(u16);
-    if (extensions_len > msg.len - r.pos) return error.InvalidExtensionLength;
-    const extensions_end = r.pos + extensions_len;
-    try extension_type.rejectDuplicateExtensions(msg[r.pos..extensions_end]);
+    if (extensions_len > msg.len - r.end) return error.InvalidExtensionLength;
+    const extensions_end = r.end + extensions_len;
+    try extension_type.rejectDuplicateExtensions(msg[r.end..extensions_end]);
 
     var got_supported_versions = false;
     var key_share: KeyShare = undefined;
     var got_key_share = false;
     var selected_identity: ?u16 = null;
 
-    while (r.pos < extensions_end) {
-        if (extensions_end - r.pos < 4) return error.InvalidExtensionLength;
+    while (r.end < extensions_end) {
+        if (extensions_end - r.end < 4) return error.InvalidExtensionLength;
         const ext_type = r.assumeRead(ExtensionType);
         const ext_len = r.assumeRead(u16);
-        if (ext_len > extensions_end - r.pos) return error.InvalidExtensionLength;
+        if (ext_len > extensions_end - r.end) return error.InvalidExtensionLength;
 
         switch (ext_type) {
             // supported_versions (RFC 8446 §4.2.1)
@@ -512,21 +512,21 @@ pub fn parseWithSessionIdEcho(
             // key_share (RFC 8446 §4.2.8)
             .key_share => {
                 if (got_key_share) return error.DuplicateExtension;
-                const ext_end = r.pos + ext_len;
+                const ext_end = r.end + ext_len;
                 if (ext_len < 4) return error.InvalidExtensionLength;
                 const group = r.assumeRead(NamedGroup);
                 const key_len = r.assumeRead(u16);
                 switch (group) {
                     .x25519 => {
                         if (key_len != x25519.public_length) return error.UnsupportedKeyShareGroup;
-                        if (ext_end - r.pos < x25519.public_length)
+                        if (ext_end - r.end < x25519.public_length)
                             return error.InvalidExtensionLength;
                         const key = r.assumeReadSlice(x25519.public_length);
                         key_share = .{ .x25519 = .init(key[0..x25519.public_length].*) };
                     },
                     .secp256r1 => {
                         if (key_len != p256.public_length) return error.UnsupportedKeyShareGroup;
-                        if (ext_end - r.pos < p256.public_length)
+                        if (ext_end - r.end < p256.public_length)
                             return error.InvalidExtensionLength;
                         const key = r.assumeReadSlice(p256.public_length);
                         if (key[0] != 0x04) return error.UnsupportedKeyShareGroup;
@@ -534,7 +534,7 @@ pub fn parseWithSessionIdEcho(
                     },
                     .secp384r1 => {
                         if (key_len != p384.public_length) return error.UnsupportedKeyShareGroup;
-                        if (ext_end - r.pos < p384.public_length)
+                        if (ext_end - r.end < p384.public_length)
                             return error.InvalidExtensionLength;
                         const key = r.assumeReadSlice(p384.public_length);
                         if (key[0] != 0x04) return error.UnsupportedKeyShareGroup;
@@ -545,7 +545,7 @@ pub fn parseWithSessionIdEcho(
                     .x25519_mlkem768, .secp256r1_mlkem768, .secp384r1_mlkem1024 => {
                         if (key_len != group.serverKeyShareLen().?)
                             return error.MalformedKeyShare;
-                        if (ext_end - r.pos < key_len) return error.InvalidExtensionLength;
+                        if (ext_end - r.end < key_len) return error.InvalidExtensionLength;
                         const key = r.assumeReadSlice(key_len);
                         if ((group == .secp256r1_mlkem768 or
                             group == .secp384r1_mlkem1024) and key[0] != 0x04)
@@ -561,7 +561,7 @@ pub fn parseWithSessionIdEcho(
                     },
                     else => return error.UnsupportedKeyShareGroup,
                 }
-                if (r.pos != ext_end) return error.InvalidExtensionLength;
+                if (r.end != ext_end) return error.InvalidExtensionLength;
                 got_key_share = true;
             },
             // pre_shared_key (RFC 8446 §4.2.11): server selects a PSK identity.
@@ -569,7 +569,7 @@ pub fn parseWithSessionIdEcho(
             // extension.
             .pre_shared_key => {
                 if (selected_identity != null) return error.DuplicateExtension;
-                if (r.pos + ext_len != extensions_end) return error.IllegalParameter;
+                if (r.end + ext_len != extensions_end) return error.IllegalParameter;
                 if (ext_len != 2) return error.InvalidExtensionLength;
                 selected_identity = r.assumeRead(u16);
             },
@@ -604,7 +604,7 @@ pub fn parseWithSessionIdEcho(
             },
         }
     }
-    if (r.pos != extensions_end) return error.InvalidExtensionLength;
+    if (r.end != extensions_end) return error.InvalidExtensionLength;
 
     if (!got_supported_versions) {
         // RFC 8446 §4.1.3: without supported_versions this is a legacy ServerHello
