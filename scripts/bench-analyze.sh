@@ -149,12 +149,12 @@ normalize_rustls_csv() {
   fi
 }
 
-tls_norm="${tmp_dir}/tls.txt"
+tls_raw_norm="${tmp_dir}/tls.txt"
 evp_norm="${tmp_dir}/evp.txt"
 libssl_norm="${tmp_dir}/libssl.txt"
 rustls_norm="${tmp_dir}/rustls.txt"
 
-normalize_go tls "${run}/tls.txt" "${tls_norm}"
+normalize_go tls "${run}/tls.txt" "${tls_raw_norm}"
 normalize_go evp "${run}/evp.txt" "${evp_norm}"
 normalize_go openssl "${run}/libssl.txt" "${libssl_norm}"
 # rustls captures may be in the old CSV format (pre-Go-bench captures) or
@@ -172,7 +172,7 @@ tls_norm="${tmp_dir}/tls-comparable.txt"
 handshake_norm="${tmp_dir}/handshake-non-equivalent.txt"
 crypto_norm="${tmp_dir}/crypto-floor.txt"
 other_norm="${tmp_dir}/tls-non-comparable.txt"
-cat "${tls_norm}" "${evp_norm}" "${libssl_norm}" "${rustls_norm}" > "${all_norm}"
+cat "${tls_raw_norm}" "${evp_norm}" "${libssl_norm}" "${rustls_norm}" > "${all_norm}"
 
 awk '
   /^Benchmark(AppClientToServer|AppServerToClient|AppPingPong)\// { print }

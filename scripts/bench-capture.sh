@@ -97,7 +97,7 @@ case "${crypto_backend}" in
   *) backend_pkg_config_path="${openssl_pkg_config_path}" ;;
 esac
 PKG_CONFIG_PATH="${backend_pkg_config_path}" \
-  scripts/assert-libcrypto-family.sh "${crypto_backend}"
+  scripts/assert-libcrypto-family.sh "${crypto_backend}" >&2
 backend_lib_dir="$(PKG_CONFIG_PATH="${backend_pkg_config_path}" \
   pkg-config --variable=libdir libcrypto)"
 
