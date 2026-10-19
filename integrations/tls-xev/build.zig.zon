@@ -19,8 +19,8 @@
         // Development-only: test runner and comptime fixtures. Lazy so
         // consumers of this package never fetch it.
         .testingx = .{
-            .url = "git+https://github.com/baskingspot/testingx#c9b81a4bbf8a41f1317dc0f158ba851cebdae491",
-            .hash = "testingx-0.0.0-ib95-4WvAgDlIY73PBF6aDm9FBntyPof0zrluXvyz-v5",
+            .url = "git+https://github.com/baskingspot/testingx#6fb61e21bf7edbe5518e3709b3e9437f05f73eeb",
+            .hash = "testingx-0.0.0-ib95-4yvAgBPHm1qtBF-TRPkkPby7ogCZo42IvdQtErN",
             .lazy = true,
         },
     },
