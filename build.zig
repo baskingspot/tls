@@ -225,6 +225,7 @@ pub fn build(b: *Build) void {
         // capi.zig imports root.zig relatively, so it compiles the crypto
         // tree (and c_openssl.zig) within itself (#145).
         capi_mod.addImport("openssl_c", c_modules.openssl_c);
+        capi_mod.addImport("stdx", stdx_dep.module("stdx"));
         capi_mod.link_libc = true;
 
         const crypto_cflags = b.run(&.{ "pkg-config", "--cflags-only-I", "libcrypto" });
