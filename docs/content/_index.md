@@ -11,7 +11,7 @@ It is in production use. The API can still change, so pin a commit.
 - [Why this exists](#why-this-exists): when to reach for it, and when to use something mature instead.
 - [Guide](#guide): buffer ownership, the drive loop, and working client and server code.
 - [API reference](api/): every public declaration.
-- [Security](#security): status and how to report a vulnerability.
+- [Stability](#stability): the API is not frozen, and how to pin it.
 
 # Why this exists
 
@@ -887,13 +887,10 @@ for the examples above:
   cover `std.Io`, libxev, and Linux kTLS without moving transport I/O into the
   core engine.
 
-# Security
+# Stability
 
-The library is in production use. No external security audit has happened. Three
-findings from an internal adversarial review are fixed, each with a regression test.
+The API is not frozen. Signatures move, and there are no release tags yet;
+`main` is the only artifact. Pin a commit and read this guide at that commit.
 
-To report a vulnerability, use
-[GitHub's private advisory form](https://github.com/baskingspot/tls/security/advisories/new).
-The full policy, including scope and what counts, is
-[SECURITY.md](https://github.com/baskingspot/tls/blob/main/SECURITY.md) in the
-repository.
+For security reports, see
+[SECURITY.md](https://github.com/baskingspot/tls/blob/main/SECURITY.md).

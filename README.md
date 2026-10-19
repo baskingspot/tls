@@ -11,7 +11,7 @@ The library is a TLS 1.3 state machine. You feed it the bytes you read off the
 wire and it hands back the bytes to write. The socket, the event loop, and the
 buffers stay yours.
 
-It is in production use. The API can still change, so pin a commit.
+It is in production use. The API is not frozen, so pin a commit.
 
 ## Performance
 
@@ -233,7 +233,7 @@ The C surface is partial and client only: `include/ztls.h`, `libztls.a` from
 - The [API reference](https://baskingspot.dev/tls/api/) documents every public declaration.
 - [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) is the single source of truth for status.
 - Design notes, the threat model, and the performance evidence live under [`docs/research/`](docs/research/).
-- [`SECURITY.md`](SECURITY.md) is the security policy. An internal adversarial review found three vulnerabilities, all fixed with regression tests. It is not an external audit.
+- [`SECURITY.md`](SECURITY.md) is the security policy.
 
 ## Work on it
 
