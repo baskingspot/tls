@@ -19,7 +19,8 @@ const testing = std.testing;
 const fuzz_compat = @import("fuzz_compat.zig");
 const assert = std.debug.assert;
 
-const ArrayBuffer = @import("array_buffer.zig").ArrayBuffer;
+const stdx = @import("stdx");
+const buffer = stdx.buffer;
 const memx = @import("memx.zig");
 const ProtocolVersion = @import("protocol_version.zig").ProtocolVersion;
 
@@ -36,7 +37,7 @@ pub const header_len = 5;
 /// Largest a single record can be on the wire: header + maximum ciphertext.
 /// An output buffer of this size always holds any one record we emit.
 pub const max_wire_record_len = header_len + max_ciphertext_len;
-pub const OutBuffer = ArrayBuffer(u8, max_wire_record_len);
+pub const OutBuffer = buffer.Array(u8, max_wire_record_len);
 
 /// RFC 8446 §5.1 — legacy_record_version is fixed at TLS 1.2 for all TLS 1.3
 /// records after the initial ClientHello.

@@ -8,7 +8,8 @@ const testing = std.testing;
 const fixtures = @import("fixtures");
 const fuzz_compat = @import("fuzz_compat.zig");
 
-const ArrayBuffer = @import("array_buffer.zig").ArrayBuffer;
+const stdx = @import("stdx");
+const buffer = stdx.buffer;
 const certificate_policy = @import("certificate_policy.zig");
 pub const LeafUsage = certificate_policy.LeafUsage;
 pub const Policy = certificate_policy.Policy;
@@ -173,7 +174,7 @@ pub fn parseClientChain(
     var leaf_pub_key: ?[]const u8 = null;
     var leaf_der: ?[]const u8 = null;
     var subject_to_verify: ?Certificate.Parsed = null;
-    var chain: ArrayBuffer(Certificate.Parsed, 8) = .empty;
+    var chain: buffer.Array(Certificate.Parsed, 8) = .empty;
 
     while (r.pos < list_end) {
         if (list_end - r.pos < 3) return error.UnexpectedEof;
@@ -351,7 +352,7 @@ pub fn parse(msg: []const u8, policy: Policy) ParseError![]const u8 {
     var cert_index: usize = 0;
     var leaf_pub_key: ?[]const u8 = null;
     var subject_to_verify: ?Certificate.Parsed = null;
-    var chain: ArrayBuffer(Certificate.Parsed, 8) = .empty;
+    var chain: buffer.Array(Certificate.Parsed, 8) = .empty;
 
     while (r.pos < list_end) {
         if (list_end - r.pos < 3) return error.UnexpectedEof;
@@ -1820,13 +1821,13 @@ test "parse: malformed DER length is rejected, not crashed" {
 // Build a Parsed leaf carrying only the fields certificate_policy.verifyServerAuth reads,
 // so policy enforcement can be tested without generating full DER fixtures.
 fn policyLeaf(
-    buffer: []const u8,
+    der: []const u8,
     key_usage: Certificate.Parsed.Slice,
     ext_key_usage: Certificate.Parsed.Slice,
     signature_algorithm: Certificate.Algorithm,
 ) Certificate.Parsed {
     return policyLeafWithVersion(
-        buffer,
+        der,
         key_usage,
         ext_key_usage,
         signature_algorithm,
@@ -1835,14 +1836,14 @@ fn policyLeaf(
 }
 
 fn policyLeafWithVersion(
-    buffer: []const u8,
+    der: []const u8,
     key_usage: Certificate.Parsed.Slice,
     ext_key_usage: Certificate.Parsed.Slice,
     signature_algorithm: Certificate.Algorithm,
     version: Certificate.Version,
 ) Certificate.Parsed {
     return .{
-        .certificate = .{ .buffer = buffer, .index = 0 },
+        .certificate = .{ .buffer = der, .index = 0 },
         .issuer_slice = .empty,
         .subject_slice = .empty,
         .common_name_slice = .empty,
@@ -1862,12 +1863,12 @@ fn policyLeafWithVersion(
 }
 
 fn policyChainCert(
-    buffer: []const u8,
+    der: []const u8,
     issuer: Certificate.Parsed.Slice,
     subject: Certificate.Parsed.Slice,
     signature_algorithm: Certificate.Algorithm,
 ) Certificate.Parsed {
-    var cert = policyLeaf(buffer, .empty, .empty, signature_algorithm);
+    var cert = policyLeaf(der, .empty, .empty, signature_algorithm);
     cert.issuer_slice = issuer;
     cert.subject_slice = subject;
     return cert;

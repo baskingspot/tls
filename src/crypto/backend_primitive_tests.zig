@@ -11,6 +11,7 @@
 //! facade-direct Wycheproof vectors, but is not a full Wycheproof harness or
 //! full provider matrix claim.
 const std = @import("std");
+const stdx = @import("stdx");
 const testing = std.testing;
 
 const backend = @import("backend.zig");
@@ -19,24 +20,19 @@ const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
 const fixtures = @import("fixtures");
 
-const hex = @import("../memx.zig").hex;
-
 // ---------------------------------------------------------------------------
 // X25519 — direct backend.x25519 facade
 // ---------------------------------------------------------------------------
 
 // RFC 7748 §5.2 — X25519 scalar multiplication test vector.
 test "backend.x25519: RFC 7748 §5.2 shared secret" {
-    const scalar: [32]u8 = hex(
-        32,
+    const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4",
     );
-    const peer_pub: [32]u8 = hex(
-        32,
+    const peer_pub: [32]u8 = stdx.fmt.comptimeHex(
         "e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c",
     );
-    const want: [32]u8 = hex(
-        32,
+    const want: [32]u8 = stdx.fmt.comptimeHex(
         "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552",
     );
 
@@ -52,12 +48,10 @@ test "backend.x25519: RFC 7748 §5.2 shared secret" {
 
 // RFC 7748 §6.1 — two parties derive the same shared secret.
 test "backend.x25519: RFC 7748 §6.1 mutual key agreement" {
-    const alice_secret: [32]u8 = hex(
-        32,
+    const alice_secret: [32]u8 = stdx.fmt.comptimeHex(
         "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
     );
-    const bob_secret: [32]u8 = hex(
-        32,
+    const bob_secret: [32]u8 = stdx.fmt.comptimeHex(
         "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
     );
 
@@ -85,16 +79,13 @@ test "backend.x25519: RFC 7748 §6.1 mutual key agreement" {
 // Wycheproof v1 (google-wycheproof 0.9rc5) — X25519 tcId 1, normal case,
 // exercised directly through the backend facade.
 test "backend.x25519: Wycheproof tcId 1 shared secret" {
-    const scalar: [32]u8 = hex(
-        32,
+    const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "c8a9d5a91091ad851c668b0736c1c9a02936c0d3ad62670858088047ba057475",
     );
-    const peer_pub: [32]u8 = hex(
-        32,
+    const peer_pub: [32]u8 = stdx.fmt.comptimeHex(
         "504a36999f489cd2fdbc08baff3d88fa00569ba986cba22548ffde80f9806829",
     );
-    const want: [32]u8 = hex(
-        32,
+    const want: [32]u8 = stdx.fmt.comptimeHex(
         "436a2c040cf45fea9b29a0cb81b1f41458f863d0d61b453d0a982720d6d61320",
     );
 
@@ -111,8 +102,7 @@ test "backend.x25519: Wycheproof tcId 1 shared secret" {
 // RFC 7748 §6.1 / Wycheproof low-order public keys — all-zero shared secret
 // indicates a low-order peer public key and must be rejected by the backend facade.
 test "backend.x25519: all-zero public key is rejected (IdentityElement)" {
-    const scalar: [32]u8 = hex(
-        32,
+    const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4",
     );
     const zero_pub: [32]u8 = @splat(0);
@@ -131,12 +121,10 @@ test "backend.x25519: all-zero public key is rejected (IdentityElement)" {
 
 // RFC 7748 §6.1 — a small-order twist public key produces all-zero output.
 test "backend.x25519: small-order public key is rejected (IdentityElement)" {
-    const scalar: [32]u8 = hex(
-        32,
+    const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4",
     );
-    const small_order_pub: [32]u8 = hex(
-        32,
+    const small_order_pub: [32]u8 = stdx.fmt.comptimeHex(
         "0100000000000000000000000000000000000000000000000000000000000000",
     );
 
@@ -230,12 +218,12 @@ test "backend.aead: ciphertext corruption is rejected for every advertised ciphe
 // Wycheproof v1 (google-wycheproof 0.9rc5) — AES-128-GCM tcId 2, exercised
 // directly through the backend facade with tag corruption rejection.
 test "backend.aead: Wycheproof AES-128-GCM tcId 2" {
-    const key: [16]u8 = hex(16, "5b9604fe14eadba931b0ccf34843dab9");
-    const nonce: [12]u8 = hex(12, "921d2507fa8007b7bd067d34");
-    const ad = hex(16, "00112233445566778899aabbccddeeff");
-    const plaintext = hex(16, "001d0c231287c1182784554ca3a21908");
-    const expected_ct = hex(16, "49d8b9783e911913d87094d1f63cc765");
-    const expected_tag = hex(16, "1e348ba07cca2cf04c618cb4d43a5b92");
+    const key: [16]u8 = stdx.fmt.comptimeHex("5b9604fe14eadba931b0ccf34843dab9");
+    const nonce: [12]u8 = stdx.fmt.comptimeHex("921d2507fa8007b7bd067d34");
+    const ad = stdx.fmt.comptimeHex("00112233445566778899aabbccddeeff");
+    const plaintext = stdx.fmt.comptimeHex("001d0c231287c1182784554ca3a21908");
+    const expected_ct = stdx.fmt.comptimeHex("49d8b9783e911913d87094d1f63cc765");
+    const expected_tag = stdx.fmt.comptimeHex("1e348ba07cca2cf04c618cb4d43a5b92");
 
     var ctx: backend.aead.Context = try backend.aead.init(.aes_128_gcm_sha256, &key);
     defer backend.aead.deinit(&ctx);
@@ -260,15 +248,14 @@ test "backend.aead: Wycheproof AES-128-GCM tcId 2" {
 // Wycheproof v1 (google-wycheproof 0.9rc5) — AES-256-GCM non-empty AAD
 // boundary vector, exercised directly through the backend facade.
 test "backend.aead: Wycheproof AES-256-GCM AAD boundary" {
-    const key: [32]u8 = hex(
-        32,
+    const key: [32]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     );
-    const nonce: [12]u8 = hex(12, "000102030405060708090a0b");
-    const ad = hex(16, "00112233445566778899aabbccddeeff");
-    const plaintext = hex(16, "001d0c231287c1182784554ca3a21908");
-    const expected_ct = hex(16, "471fda38d7620303aac5c2c7124b6165");
-    const expected_tag = hex(16, "01af015e2daf8b415dc2027e8d51aa80");
+    const nonce: [12]u8 = stdx.fmt.comptimeHex("000102030405060708090a0b");
+    const ad = stdx.fmt.comptimeHex("00112233445566778899aabbccddeeff");
+    const plaintext = stdx.fmt.comptimeHex("001d0c231287c1182784554ca3a21908");
+    const expected_ct = stdx.fmt.comptimeHex("471fda38d7620303aac5c2c7124b6165");
+    const expected_tag = stdx.fmt.comptimeHex("01af015e2daf8b415dc2027e8d51aa80");
 
     var ctx: backend.aead.Context = try backend.aead.init(.aes_256_gcm_sha384, &key);
     defer backend.aead.deinit(&ctx);
@@ -293,15 +280,14 @@ test "backend.aead: Wycheproof AES-256-GCM AAD boundary" {
 // Wycheproof v1 (google-wycheproof 0.9rc5) — ChaCha20-Poly1305 non-empty AAD
 // boundary vector, exercised directly through the backend facade.
 test "backend.aead: Wycheproof ChaCha20-Poly1305 AAD boundary" {
-    const key: [32]u8 = hex(
-        32,
+    const key: [32]u8 = stdx.fmt.comptimeHex(
         "cc56b680552eb75008f5484b4cb803fa5063ebd6eab91f6ab6aef4916a766273",
     );
-    const nonce: [12]u8 = hex(12, "99e23ec48985bccdeeab60f1");
-    const ad = hex(16, "00112233445566778899aabbccddeeff");
-    const plaintext = hex(1, "2a");
-    const expected_ct = hex(1, "3a");
-    const expected_tag = hex(16, "d7d9204f3da54c5438a2454128a7438e");
+    const nonce: [12]u8 = stdx.fmt.comptimeHex("99e23ec48985bccdeeab60f1");
+    const ad = stdx.fmt.comptimeHex("00112233445566778899aabbccddeeff");
+    const plaintext = stdx.fmt.comptimeHex("2a");
+    const expected_ct = stdx.fmt.comptimeHex("3a");
+    const expected_tag = stdx.fmt.comptimeHex("d7d9204f3da54c5438a2454128a7438e");
 
     var ctx: backend.aead.Context = try backend.aead.init(.chacha20_poly1305_sha256, &key);
     defer backend.aead.deinit(&ctx);
@@ -325,27 +311,24 @@ test "backend.aead: Wycheproof ChaCha20-Poly1305 AAD boundary" {
 
 // RFC 8439 §2.8.2 — ChaCha20-Poly1305 known-answer vector through the backend facade.
 test "backend.aead: ChaCha20-Poly1305 RFC 8439 §2.8.2 known-answer vector" {
-    const key: [32]u8 = hex(
-        32,
+    const key: [32]u8 = stdx.fmt.comptimeHex(
         "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
     );
-    const nonce: [12]u8 = hex(12, "070000004041424344454647");
-    const ad = hex(12, "50515253c0c1c2c3c4c5c6c7");
-    const plaintext = hex(
-        114,
+    const nonce: [12]u8 = stdx.fmt.comptimeHex("070000004041424344454647");
+    const ad = stdx.fmt.comptimeHex("50515253c0c1c2c3c4c5c6c7");
+    const plaintext = stdx.fmt.comptimeHex(
         "4c616469657320616e642047656e746c656d656e206f662074686520636c61737320" ++
             "6f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c7920" ++
             "6f6e652074697020666f7220746865206675747572652c2073756e73637265656e20" ++
             "776f756c642062652069742e",
     );
-    const expected_ct = hex(
-        114,
+    const expected_ct = stdx.fmt.comptimeHex(
         "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d" ++
             "63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b" ++
             "3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831" ++
             "d7bc3ff4def08e4b7a9de576d26586cec64b6116",
     );
-    const expected_tag = hex(16, "1ae10b594f09e26a7e902ecbd0600691");
+    const expected_tag = stdx.fmt.comptimeHex("1ae10b594f09e26a7e902ecbd0600691");
 
     var ctx: backend.aead.Context = try backend.aead.init(
         .chacha20_poly1305_sha256,
@@ -379,12 +362,10 @@ fn keyLenForSuite(suite: CipherSuite) usize {
 // 65 bytes: 0x04 || X || Y. Two parties with fixed scalars must derive the
 // same 32-byte shared secret through the backend facade.
 test "backend.p256: mutual key agreement with fixed scalars" {
-    const alice_scalar: [32]u8 = hex(
-        32,
+    const alice_scalar: [32]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     );
-    const bob_scalar: [32]u8 = hex(
-        32,
+    const bob_scalar: [32]u8 = stdx.fmt.comptimeHex(
         "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
     );
 
@@ -468,17 +449,14 @@ test "backend.p256: zero scalar private key is rejected" {
 // point extracted from the Wycheproof SPKI; the private scalar and shared
 // secret are taken verbatim from the test vector.
 test "backend.p256: Wycheproof tcId 1 shared secret" {
-    const scalar: [32]u8 = hex(
-        32,
+    const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "0612465c89a023ab17855b0a6bcebfd3febb53aef84138647b5352e02c10c346",
     );
-    const peer_pub: [65]u8 = hex(
-        65,
+    const peer_pub: [65]u8 = stdx.fmt.comptimeHex(
         "0462d5bd3372af75fe85a040715d0f502428e07046868b0bfdfa61d731afe44f26" ++
             "ac333a93a9e70a81cd5a95b5bf8d13990eb741c8c38872b4a07d275a014e30cf",
     );
-    const want: [32]u8 = hex(
-        32,
+    const want: [32]u8 = stdx.fmt.comptimeHex(
         "53020d908b0219328b658b525f26780e3ae12bcd952bb25a93bc0895e1714285",
     );
 
@@ -496,11 +474,11 @@ test "backend.p256: Wycheproof tcId 1 shared secret" {
 // produce the point the checked key construction stores, for every scalar.
 test "backend.p256: publicFromSecret matches the checked construction" {
     const scalars = [_][32]u8{
-        hex(32, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
-        hex(32, "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"),
-        hex(32, "0612465c89a023ab17855b0a6bcebfd3febb53aef84138647b5352e02c10c346"),
+        stdx.fmt.comptimeHex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+        stdx.fmt.comptimeHex("202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"),
+        stdx.fmt.comptimeHex("0612465c89a023ab17855b0a6bcebfd3febb53aef84138647b5352e02c10c346"),
         // n - 1, the largest valid scalar.
-        hex(32, "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550"),
+        stdx.fmt.comptimeHex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550"),
     };
     for (&scalars) |*scalar| {
         const priv = try backend.p256.privateKeyFromSecret(scalar);
@@ -515,17 +493,14 @@ test "backend.p256: publicFromSecret matches the checked construction" {
 // the Wycheproof tcId 1 secret, and both new entry points keep the SEC 1
 // §3.2.1 range check: 0 and n are `IdentityElement` (#88).
 test "backend.p256: ecdhKeyFromSecret derives the Wycheproof secret and range-checks" {
-    const scalar: [32]u8 = hex(
-        32,
+    const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "0612465c89a023ab17855b0a6bcebfd3febb53aef84138647b5352e02c10c346",
     );
-    const peer_pub: [65]u8 = hex(
-        65,
+    const peer_pub: [65]u8 = stdx.fmt.comptimeHex(
         "0462d5bd3372af75fe85a040715d0f502428e07046868b0bfdfa61d731afe44f26" ++
             "ac333a93a9e70a81cd5a95b5bf8d13990eb741c8c38872b4a07d275a014e30cf",
     );
-    const want: [32]u8 = hex(
-        32,
+    const want: [32]u8 = stdx.fmt.comptimeHex(
         "53020d908b0219328b658b525f26780e3ae12bcd952bb25a93bc0895e1714285",
     );
     const ours = try backend.p256.ecdhKeyFromSecret(&scalar);
@@ -537,8 +512,7 @@ test "backend.p256: ecdhKeyFromSecret derives the Wycheproof secret and range-ch
     try testing.expectEqualSlices(u8, &want, &shared);
 
     const zero: [32]u8 = @splat(0);
-    const order: [32]u8 = hex(
-        32,
+    const order: [32]u8 = stdx.fmt.comptimeHex(
         "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
     );
     for ([_]*const [32]u8{ &zero, &order }) |bad| {
@@ -562,14 +536,12 @@ test "backend.p256: ecdhKeyFromSecret derives the Wycheproof secret and range-ch
 // 97 bytes: 0x04 || X || Y. Two parties with fixed scalars must derive the
 // same 48-byte shared secret through the backend facade.
 test "backend.p384: mutual key agreement with fixed scalars" {
-    const alice_scalar: [48]u8 = hex(
-        48,
+    const alice_scalar: [48]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f" ++
             "101112131415161718191a1b1c1d1e1f" ++
             "202122232425262728292a2b2c2d2e2f",
     );
-    const bob_scalar: [48]u8 = hex(
-        48,
+    const bob_scalar: [48]u8 = stdx.fmt.comptimeHex(
         "303132333435363738393a3b3c3d3e3f" ++
             "404142434445464748494a4b4c4d4e4f" ++
             "505152535455565758595a5b5c5d5e5f",
@@ -646,19 +618,16 @@ test "backend.p384: zero scalar private key is rejected" {
 // point extracted from the Wycheproof SPKI; the private scalar and shared
 // secret are taken verbatim from the test vector.
 test "backend.p384: Wycheproof tcId 1 shared secret" {
-    const scalar: [48]u8 = hex(
-        48,
+    const scalar: [48]u8 = stdx.fmt.comptimeHex(
         "766e61425b2da9f846c09fc3564b93a6f8603b7392c785165bf20da948c49fd1" ++
             "fb1dee4edd64356b9f21c588b75dfd81",
     );
-    const peer_pub: [97]u8 = hex(
-        97,
+    const peer_pub: [97]u8 = stdx.fmt.comptimeHex(
         "04790a6e059ef9a5940163183d4a7809135d29791643fc43a2f17ee8bf677ab84f" ++
             "791b64a6be15969ffa012dd9185d8796d9b954baa8a75e82df711b3b56eadff6b" ++
             "0f668c3b26b4b1aeb308a1fcc1c680d329a6705025f1c98a0b5e5bfcb163caa",
     );
-    const want: [48]u8 = hex(
-        48,
+    const want: [48]u8 = stdx.fmt.comptimeHex(
         "6461defb95d996b24296f5a1832b34db05ed031114fbe7d98d098f93859866e4" ++
             "de1e229da71fef0c77fe49b249190135",
     );
@@ -774,8 +743,7 @@ test "backend.sign: RSA-PSS SHA-384 sign/verify round-trip and tamper rejection"
 // RFC 8446 §4.4.3 — ECDSA P-256 SHA-256 sign/verify round-trip through the
 // backend facade using a deterministic scalar.
 test "backend.sign: ECDSA P-256 SHA-256 sign/verify round-trip" {
-    const scalar: [32]u8 = hex(
-        32,
+    const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     );
 
@@ -807,8 +775,7 @@ test "backend.sign: ECDSA P-256 SHA-256 sign/verify round-trip" {
 
 // RFC 8446 §4.4.3 — ECDSA signature verification must reject a tampered signature.
 test "backend.sign: ECDSA P-256 SHA-256 rejects tampered signature" {
-    const scalar: [32]u8 = hex(
-        32,
+    const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     );
 
@@ -842,8 +809,7 @@ test "backend.sign: ECDSA P-256 SHA-256 rejects tampered signature" {
 // RFC 8446 §4.4.3 — ECDSA P-384 SHA-384 is advertised for CertificateVerify
 // and must round-trip through the backend facade under every provider lane.
 test "backend.sign: ECDSA P-384 SHA-384 sign/verify round-trip and tamper rejection" {
-    const scalar: [48]u8 = hex(
-        48,
+    const scalar: [48]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f" ++
             "101112131415161718191a1b1c1d1e1f" ++
             "202122232425262728292a2b2c2d2e2f",
@@ -931,8 +897,7 @@ test "backend.sign: key/scheme mismatch is a libcrypto failure" {
 // the Wycheproof sLen=32.
 test "backend.sign: Wycheproof RSA-PSS tcId 3 verify" {
     // RSAPublicKey DER (PKCS#1) extracted from the Wycheproof SPKI.
-    const pub_der = hex(
-        270,
+    const pub_der = stdx.fmt.comptimeHex(
         "3082010a0282010100a2b451a07d0aa5f96e455671513550514a8a5b462ebef717" ++
             "094fa1fee82224e637f9746d3f7cafd31878d80325b6ef5a1700f65903b469429" ++
             "e89d6eac8845097b5ab393189db92512ed8a7711a1253facd20f79c15e8247f3" ++
@@ -943,9 +908,8 @@ test "backend.sign: Wycheproof RSA-PSS tcId 3 verify" {
             "22c4e5ac0f7c1a45d12569a62807d3b9a02e5a530e773066f453d1f5b4c2e9cf" ++
             "7820283f742b9d50203010001",
     );
-    const msg = hex(4, "54657374"); // "Test"
-    const sig = hex(
-        256,
+    const msg = stdx.fmt.comptimeHex("54657374"); // "Test"
+    const sig = stdx.fmt.comptimeHex(
         "401eb03cdb47ca88033e3030f6bdecbac8f5c8fc1dd6a13d23d379ed9a2b3098" ++
             "91d13d74fea9d21d159b9e6d8f37efa2489962e24555f56dd434ff1d31ce4f9f" ++
             "5abd3f22cbea8b691d6a11e44efb83e2bca155e6a164325e0fde2a8865afd5c9" ++
@@ -973,8 +937,7 @@ test "backend.sign: Wycheproof RSA-PSS tcId 3 verify" {
 // Source: rsa_pss_2048_sha256_mgf1_32_test.json. The signature is valid for a
 // different message hash; verification must fail for the given message.
 test "backend.sign: Wycheproof RSA-PSS tcId 62 invalid signature" {
-    const pub_der = hex(
-        270,
+    const pub_der = stdx.fmt.comptimeHex(
         "3082010a0282010100a2b451a07d0aa5f96e455671513550514a8a5b462ebef717" ++
             "094fa1fee82224e637f9746d3f7cafd31878d80325b6ef5a1700f65903b469429" ++
             "e89d6eac8845097b5ab393189db92512ed8a7711a1253facd20f79c15e8247f3" ++
@@ -985,9 +948,8 @@ test "backend.sign: Wycheproof RSA-PSS tcId 62 invalid signature" {
             "22c4e5ac0f7c1a45d12569a62807d3b9a02e5a530e773066f453d1f5b4c2e9cf" ++
             "7820283f742b9d50203010001",
     );
-    const msg = hex(6, "313233343030"); // "123400"
-    const sig = hex(
-        256,
+    const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
+    const sig = stdx.fmt.comptimeHex(
         "67d1d1c0a398148625317c3f5e44b738bdf461c27a59594b39ebb2aebef233c7" ++
             "809379e54411411b82d2e7ac88f989b58373d532c758baea121878ce97594417" ++
             "38d121881c1fa2d04421f02dd565b12770d844611ed1873a0b64d822709a6b78" ++
@@ -1011,13 +973,11 @@ test "backend.sign: Wycheproof RSA-PSS tcId 62 invalid signature" {
 // valid (pseudorandom signature). Source: ecdsa_secp256r1_sha256_test.json.
 // The public key is the SEC1 uncompressed point from the Wycheproof group.
 test "backend.sign: Wycheproof ECDSA P-256 tcId 1 verify" {
-    const pub_sec1: [65]u8 = hex(
-        65,
+    const pub_sec1: [65]u8 = stdx.fmt.comptimeHex(
         "0404aaec73635726f213fb8a9e64da3b8632e41495a944d0045b522eba7240fad5" ++
             "87d9315798aaa3a5ba01775787ced05eaaf7b4e09fc81d6d1aa546e8365d525d",
     );
-    const sig = hex(
-        71,
+    const sig = stdx.fmt.comptimeHex(
         "3045022100b292a619339f6e567a305c951c0dcbcc42d16e47f219f9e98e76e09d" ++
             "8770b34a02200177e60492c5a8242f76f07bfe3661bde59ec2a17ce5bd2dab2a" ++
             "bebdf89a62e2",
@@ -1043,14 +1003,12 @@ test "backend.sign: Wycheproof ECDSA P-256 tcId 1 verify" {
 // making it a malformed DER encoding that must be rejected.
 test "backend.sign: Wycheproof ECDSA P-256 tcId 6 invalid signature" {
     // Group 1 public key (different from group 0).
-    const pub_sec1: [65]u8 = hex(
-        65,
+    const pub_sec1: [65]u8 = stdx.fmt.comptimeHex(
         "042927b10512bae3eddcfe467828128bad2903269919f7086069c8c4df6c73283" ++
             "8c7787964eaac00e5921fb1498a60f4606766b3d9685001558d1a974e7341513e",
     );
-    const msg = hex(6, "313233343030"); // "123400"
-    const sig = hex(
-        70,
+    const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
+    const sig = stdx.fmt.comptimeHex(
         "304402202ba3a8be6b94d5ec80a6d9d1190a436effe50d85a1eee859b8cc6af9" ++
             "bd5c2e180220b329f479a2bbd0a5c384ee1493b1f5186a87139cac5df4087c13" ++
             "4b49156847db",
@@ -1068,14 +1026,12 @@ test "backend.sign: Wycheproof ECDSA P-256 tcId 6 invalid signature" {
 // Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-384 SHA-384 tcId 1,
 // valid (pseudorandom signature). Source: ecdsa_secp384r1_sha384_test.json.
 test "backend.sign: Wycheproof ECDSA P-384 tcId 1 verify" {
-    const pub_sec1: [97]u8 = hex(
-        97,
+    const pub_sec1: [97]u8 = stdx.fmt.comptimeHex(
         "0429bdb76d5fa741bfd70233cb3a66cc7d44beb3b0663d92a8136650478bcefb61" ++
             "ef182e155a54345a5e8e5e88f064e5bc9a525ab7f764dad3dae1468c2b419f3b6" ++
             "2b9ba917d5e8c4fb1ec47404a3fc76474b2713081be9db4c00e043ada9fc4a3",
     );
-    const sig = hex(
-        102,
+    const sig = stdx.fmt.comptimeHex(
         "3064023032401249714e9091f05a5e109d5c1216fdc05e98614261aa0dbd9e9c" ++
             "d4415dee29238afbd3b103c1e40ee5c9144aee0f02304326756fb2c4fd726360" ++
             "dd6479b5849478c7a9d054a833a58c1631c33b63c3441336ddf2c7fe0ed129aa" ++
@@ -1098,15 +1054,13 @@ test "backend.sign: Wycheproof ECDSA P-384 tcId 1 verify" {
 // invalid (Legacy: ASN encoding of s misses leading 0).
 // Source: ecdsa_secp384r1_sha384_test.json.
 test "backend.sign: Wycheproof ECDSA P-384 tcId 6 invalid signature" {
-    const pub_sec1: [97]u8 = hex(
-        97,
+    const pub_sec1: [97]u8 = stdx.fmt.comptimeHex(
         "042da57dda1089276a543f9ffdac0bff0d976cad71eb7280e7d9bfd9fee4bdb2f2" ++
             "0f47ff888274389772d98cc5752138aa4b6d054d69dcf3e25ec49df870715e34" ++
             "883b1836197d76f8ad962e78f6571bbc7407b0d6091f9e4d88f014274406174f",
     );
-    const msg = hex(6, "313233343030"); // "123400"
-    const sig = hex(
-        102,
+    const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
+    const sig = stdx.fmt.comptimeHex(
         "3064023012b30abef6b5476fe6b612ae557c0425661e26b44b1bfe19daf2ca28" ++
             "e3113083ba8e4ae4cc45a0320abd3394f1c548d70230e7bf25603e2d07076ff" ++
             "30b7a2abec473da8b11c572b35fc631991d5de62ddca7525aaba89325dfd04f" ++

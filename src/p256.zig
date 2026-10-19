@@ -2,19 +2,18 @@
 //!
 //! RFC 8446 §4.2.8.2; RFC 8422 §5.1.1
 const std = @import("std");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
 const entropy = @import("entropy.zig");
-const memx = @import("memx.zig");
-const hex = memx.hex;
 
 pub const public_length = 65;
 pub const secret_length = 32;
 
-pub const PublicKey = memx.Array(public_length);
-pub const SecretKey = memx.Array(secret_length);
+pub const PublicKey = stdx.mem.Array(public_length);
+pub const SecretKey = stdx.mem.Array(secret_length);
 
 pub const Error = backend.p256.Error;
 
@@ -114,17 +113,19 @@ pub fn sharedSecret(
     try backend.p256.sharedSecretDerive(ours, peer, out);
 }
 
-const test_seed_a = hex(32, "000102030405060708090a0b0c0d0e0f" ++
+const test_seed_a = stdx.fmt.comptimeHex("000102030405060708090a0b0c0d0e0f" ++
     "101112131415161718191a1b1c1d1e1f");
-const test_seed_b = hex(32, "202122232425262728292a2b2c2d2e2f" ++
+const test_seed_b = stdx.fmt.comptimeHex("202122232425262728292a2b2c2d2e2f" ++
     "303132333435363738393a3b3c3d3e3f");
 
 // RFC 8448 §5 — the fixed P-256 scalar derives the documented SEC1 public key.
 test "KeyPair.fromSecret: RFC 8448 public key" {
-    const secret = hex(32, "ab5473467e19346ceb0a0414e41da21d" ++
+    const secret = stdx.fmt.comptimeHex("ab5473467e19346ceb0a0414e41da21d" ++
         "4d2445bc3025afe97c4e8dc8d513da39");
-    const expected = hex(65, "04a6da7392ec591e17abfd535964b99894d13befb221b3def2ebe3830eac8f0151" ++
-        "812677c4d6d2237e85cf01d6910cfb83954e76ba7352830534159897e8065780");
+    const expected = stdx.fmt.comptimeHex(
+        "04a6da7392ec591e17abfd535964b99894d13befb221b3def2ebe3830eac8f0151" ++
+            "812677c4d6d2237e85cf01d6910cfb83954e76ba7352830534159897e8065780",
+    );
     const keypair = try KeyPair.fromSecret(.init(secret));
     try testing.expectEqualSlices(u8, &expected, &keypair.public_key.data);
 }
@@ -242,7 +243,7 @@ test "generateRetry: retries a bad draw and succeeds" {
 // against the group order judges it before any point math (#88).
 test "KeyPair.fromSecret enforces the scalar range [1, n-1]" {
     // n, the P-256 base-point order (SEC 2, "secp256r1").
-    const order = hex(32, "ffffffff00000000ffffffffffffffff" ++
+    const order = stdx.fmt.comptimeHex("ffffffff00000000ffffffffffffffff" ++
         "bce6faada7179e84f3b9cac2fc632551");
     // zero: below the range.
     try testing.expectError(

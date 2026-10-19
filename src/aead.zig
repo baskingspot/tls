@@ -8,17 +8,17 @@
 //! All three share the same tag length (16 bytes) and nonce length (12 bytes).
 //! Keys are derived during the handshake and held for the connection lifetime.
 const std = @import("std");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 const memx = @import("memx.zig");
-const hex = memx.hex;
 
 pub const nonce_len = 12;
-pub const Nonce = memx.Array(nonce_len);
-pub const Iv = memx.Array(nonce_len);
+pub const Nonce = stdx.mem.Array(nonce_len);
+pub const Iv = stdx.mem.Array(nonce_len);
 
 const NonceVec = @Vector(nonce_len, u8);
 
@@ -43,11 +43,11 @@ comptime {
 
 /// Authentication tag — 16 bytes for all TLS 1.3 ciphers.
 pub const tag_len = 16;
-pub const Tag = memx.Array(tag_len);
+pub const Tag = stdx.mem.Array(tag_len);
 
-pub const Aes128GcmKey = memx.Array(16);
-pub const Aes256GcmKey = memx.Array(32);
-pub const ChaCha20Poly1305Key = memx.Array(32);
+pub const Aes128GcmKey = stdx.mem.Array(16);
+pub const Aes256GcmKey = stdx.mem.Array(32);
+pub const ChaCha20Poly1305Key = stdx.mem.Array(32);
 
 pub const Error = error{
     AuthenticationFailed,
@@ -245,27 +245,24 @@ test "ChaCha20Poly1305: encrypt/decrypt round-trip" {
 
 // RFC 8439 §2.8.2 — ChaCha20-Poly1305 AEAD construction test vector
 test "ChaCha20Poly1305: RFC 8439 known-answer vector" {
-    const key: ChaCha20Poly1305Key = .init(hex(
-        32,
+    const key: ChaCha20Poly1305Key = .init(stdx.fmt.comptimeHex(
         "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
     ));
-    const npub: Nonce = .init(hex(12, "070000004041424344454647"));
-    const ad = hex(12, "50515253c0c1c2c3c4c5c6c7");
-    const plaintext = hex(
-        114,
+    const npub: Nonce = .init(stdx.fmt.comptimeHex("070000004041424344454647"));
+    const ad = stdx.fmt.comptimeHex("50515253c0c1c2c3c4c5c6c7");
+    const plaintext = stdx.fmt.comptimeHex(
         "4c616469657320616e642047656e746c656d656e206f662074686520636c61737320" ++
             "6f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c7920" ++
             "6f6e652074697020666f7220746865206675747572652c2073756e73637265656e20" ++
             "776f756c642062652069742e",
     );
-    const expected_ciphertext = hex(
-        114,
+    const expected_ciphertext = stdx.fmt.comptimeHex(
         "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d" ++
             "63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b" ++
             "3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831" ++
             "d7bc3ff4def08e4b7a9de576d26586cec64b6116",
     );
-    const expected_tag = hex(16, "1ae10b594f09e26a7e902ecbd0600691");
+    const expected_tag = stdx.fmt.comptimeHex("1ae10b594f09e26a7e902ecbd0600691");
 
     var ciphertext: [plaintext.len]u8 = undefined;
     var tag: Tag = undefined;
@@ -284,13 +281,12 @@ test "ChaCha20Poly1305: RFC 8439 known-answer vector" {
 
 // RFC 8439 §2.8 — empty plaintext authenticates AAD and lengths.
 test "ChaCha20Poly1305: empty plaintext known-answer vector" {
-    const key: ChaCha20Poly1305Key = .init(hex(
-        32,
+    const key: ChaCha20Poly1305Key = .init(stdx.fmt.comptimeHex(
         "1c9240a5eb55d38af333888604f6b5f0473917c1402b80099dca5cbc207075c0",
     ));
-    const npub: Nonce = .init(hex(12, "000000000102030405060708"));
-    const ad = hex(12, "f33388860000000000004e91");
-    const expected_tag = hex(16, "66f09890d77129cc79e1ed577bd95c04");
+    const npub: Nonce = .init(stdx.fmt.comptimeHex("000000000102030405060708"));
+    const ad = stdx.fmt.comptimeHex("f33388860000000000004e91");
+    const expected_tag = stdx.fmt.comptimeHex("66f09890d77129cc79e1ed577bd95c04");
 
     var tag: Tag = undefined;
     const aead: Aead = .{ .chacha20_poly1305_sha256 = key };

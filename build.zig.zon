@@ -4,6 +4,12 @@
     .fingerprint = 0x767a5b455ec37148,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
+        // Production: fixed-capacity containers and memory scans shared with
+        // the rest of the baskingspot tree. Not lazy — the library imports it.
+        .stdx = .{
+            .url = "git+https://github.com/baskingspot/stdx#7c37f9a1043f5c5ed781a9b245e41962db8ac5cf",
+            .hash = "stdx-0.0.0-CcWegqfyCAB4ibRs0SyRmJobf6SL2wyZpBM2i2iZMs_3",
+        },
         // Development-only: the test runner, benchmarks, and comptime txtar
         // fixtures. Lazy so consumers of the library never fetch it.
         .testingx = .{

@@ -3,6 +3,7 @@
 //! Composes record framing, nonce construction, and AEAD to implement
 //! TLSCiphertext encrypt/decrypt. RFC 8446 §5.2
 const std = @import("std");
+const stdx = @import("stdx");
 const mem = std.mem;
 const testing = std.testing;
 const fuzz_compat = @import("fuzz_compat.zig");
@@ -216,7 +217,7 @@ pub fn decrypt(self: *RecordLayer, buf: []u8) DecryptError!DecryptedRecord {
     self.seq += 1;
 
     // RFC 8446 §5.2: last non-zero byte is the real ContentType.
-    const i = memx.lastIndexOfNonZero(inner) orelse return error.InvalidInnerPlaintext;
+    const i = stdx.mem.lastIndexOfNonZero(inner) orelse return error.InvalidInnerPlaintext;
     return .{
         .content_type = @enumFromInt(inner[i]),
         .content = inner[0..i],

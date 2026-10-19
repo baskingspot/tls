@@ -1,150 +1,37 @@
-//! Extensions to std.mem for ztls.
+//! TLS wire-format integer helpers.
 //!
-//! TLS is entirely big-endian, so readInt/writeInt drop the endian argument.
+//! TLS is entirely big-endian, so these drop the endian argument that
+//! `std.mem.readInt` and `std.mem.writeInt` require. Generic containers and
+//! memory scans live in `stdx`, not here.
+
 const std = @import("std");
-const mem = std.mem;
-const assert = std.debug.assert;
 const testing = std.testing;
 
-/// A fixed-size byte array wrapper with explicit initialization and zeroing.
-pub fn Array(comptime len: comptime_int) type {
-    return struct {
-        const Self = @This();
-        pub const Data = [len]u8;
-
-        data: Data,
-
-        pub const empty: Self = .{ .data = undefined };
-        pub const zero: Self = .{ .data = @splat(0) };
-
-        pub inline fn init(data: Data) Self {
-            return .{ .data = data };
-        }
-
-        pub inline fn secureZero(self: *Self) void {
-            std.crypto.secureZero(u8, &self.data);
-        }
-    };
-}
-
 pub inline fn readInt(comptime T: type, buf: *const [@divExact(@bitSizeOf(T), 8)]u8) T {
-    return mem.readInt(T, buf, .big);
+    return std.mem.readInt(T, buf, .big);
 }
 
 pub inline fn writeInt(comptime T: type, buf: *[@divExact(@bitSizeOf(T), 8)]u8, value: T) void {
-    mem.writeInt(T, buf, value, .big);
+    std.mem.writeInt(T, buf, value, .big);
 }
 
 pub inline fn toBytes(comptime T: type, value: T) [@sizeOf(T)]u8 {
-    return mem.toBytes(mem.nativeTo(T, value, .big));
+    return std.mem.toBytes(std.mem.nativeTo(T, value, .big));
 }
 
-pub fn hex(comptime len: usize, comptime encoded: []const u8) [len]u8 {
-    var out: [len]u8 = @splat(0);
-    _ = std.fmt.hexToBytes(&out, encoded) catch unreachable;
-    return out;
+// RFC 8446 Appendix B — every multi-byte integer on the wire is big-endian.
+test "readInt and writeInt round-trip big-endian" {
+    var buf: [4]u8 = undefined;
+    writeInt(u32, &buf, 0x01020304);
+    try testing.expectEqualSlices(u8, &.{ 0x01, 0x02, 0x03, 0x04 }, &buf);
+    try testing.expectEqual(@as(u32, 0x01020304), readInt(u32, &buf));
+
+    var wide: [8]u8 = undefined;
+    writeInt(u64, &wide, 0x0102030405060708);
+    try testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6, 7, 8 }, &wide);
+    try testing.expectEqual(@as(u64, 0x0102030405060708), readInt(u64, &wide));
 }
 
-const vector_chunk_len = @min(std.simd.suggestVectorLength(u8) orelse 16, 32);
-// ziglint-ignore: Z006 — @Int() builtin result is a type; ziglint only
-// recognizes std.meta.Int-style calls as type constructors.
-const VectorMask = @Int(.unsigned, vector_chunk_len);
-
-/// Return the index of the last non-zero byte in `buf`, or null if all zeros.
-///
-/// Fast path: if the last byte is non-zero, returns immediately.
-/// SIMD path: processes `chunk_len` bytes at a time backwards, where
-/// `chunk_len` is target-optimal (suggestVectorLength), defaulting to 16
-/// and capped at 32.
-/// Scalar path: handles the remaining prefix shorter than `chunk_len`.
-///
-/// `buf` must be non-empty — caller is responsible for ensuring this.
-pub fn lastIndexOfNonZero(buf: []const u8) ?usize {
-    assert(buf.len > 0);
-
-    var i = buf.len - 1;
-    if (buf[i] != 0) return i;
-
-    const Vec = @Vector(vector_chunk_len, u8);
-    const zero: Vec = @splat(0);
-
-    while (i >= vector_chunk_len) {
-        i -= vector_chunk_len;
-        const chunk: Vec = buf[i..][0..vector_chunk_len].*;
-        const non_zero = chunk != zero;
-        const mask: VectorMask = @bitCast(non_zero);
-        if (mask != 0) return i + vector_chunk_len - 1 - @clz(mask);
-    }
-
-    while (i > 0) {
-        i -= 1;
-        if (buf[i] != 0) return i;
-    }
-
-    return null;
-}
-
-test "Array.secureZero clears contents" {
-    var secret: Array(4) = .init(.{ 1, 2, 3, 4 });
-    secret.secureZero();
-    try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &secret.data);
-}
-
-test "lastIndexOfNonZero: last byte non-zero (fast path)" {
-    const buf = [_]u8{ 0, 0, 0, 0xab };
-    try testing.expectEqual(@as(?usize, 3), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: all zeros" {
-    const buf = [_]u8{ 0, 0, 0, 0 };
-    try testing.expectEqual(@as(?usize, null), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: single non-zero byte at start" {
-    const buf = [_]u8{ 0xab, 0, 0, 0 };
-    try testing.expectEqual(@as(?usize, 0), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: single byte, non-zero" {
-    const buf = [_]u8{0xab};
-    try testing.expectEqual(@as(?usize, 0), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: single byte, zero" {
-    const buf = [_]u8{0};
-    try testing.expectEqual(@as(?usize, null), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: non-zero in scalar tail" {
-    // 3 bytes — below any chunk_len, exercises the scalar fallback
-    const buf = [_]u8{ 0, 0xab, 0 };
-    try testing.expectEqual(@as(?usize, 1), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: exactly chunk_len bytes, non-zero at start" {
-    var buf: [vector_chunk_len]u8 = @splat(0);
-    buf[0] = 0xab;
-    try testing.expectEqual(@as(?usize, 0), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: exactly chunk_len bytes, all zeros" {
-    var buf: [vector_chunk_len]u8 = @splat(0);
-    try testing.expectEqual(@as(?usize, null), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: large buffer, non-zero in first chunk" {
-    var buf: [vector_chunk_len * 4]u8 = @splat(0);
-    buf[1] = 0xab; // in the first chunk, not last byte
-    try testing.expectEqual(@as(?usize, 1), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: large buffer, non-zero in middle chunk" {
-    var buf: [vector_chunk_len * 4]u8 = @splat(0);
-    buf[vector_chunk_len + 3] = 0xab;
-    try testing.expectEqual(@as(?usize, vector_chunk_len + 3), lastIndexOfNonZero(&buf));
-}
-
-test "lastIndexOfNonZero: large buffer, all zeros" {
-    var buf: [vector_chunk_len * 4]u8 = @splat(0);
-    try testing.expectEqual(@as(?usize, null), lastIndexOfNonZero(&buf));
+test "toBytes writes big-endian" {
+    try testing.expectEqualSlices(u8, &.{ 0x01, 0x02 }, &toBytes(u16, 0x0102));
 }

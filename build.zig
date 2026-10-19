@@ -39,12 +39,21 @@ pub fn build(b: *Build) void {
     const build_options = b.addOptions();
     build_options.addOption(bool, "crypto_fips", crypto_fips);
 
+    // Fixed-capacity containers and memory scans. A production dependency:
+    // the library imports it, so it is resolved before the consumer early
+    // return.
+    const stdx_dep = b.dependency("stdx", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const mod = b.addModule("ztls", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     mod.addOptions("build_options", build_options);
+    mod.addImport("stdx", stdx_dep.module("stdx"));
     mod.link_libc = true;
     mod.linkSystemLibrary("crypto", .{});
 
@@ -115,6 +124,7 @@ pub fn build(b: *Build) void {
     test_mod.link_libc = true;
     test_mod.linkSystemLibrary("crypto", .{});
     test_mod.addImport("openssl_c", c_modules.openssl_c);
+    test_mod.addImport("stdx", stdx_dep.module("stdx"));
 
     // testingx: plain-text test runner, benchmark harness, and comptime
     // fixtures. Lazy — only fetched when a development step is built, not
@@ -175,6 +185,7 @@ pub fn build(b: *Build) void {
         .openssl_c = c_modules.openssl_c,
         .build_options = build_options,
         .fixtures_mod = fixtures_mod,
+        .stdx_mod = stdx_dep.module("stdx"),
     });
 
     examples_mod.addSteps(b, .{

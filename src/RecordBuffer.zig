@@ -20,7 +20,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
 
-const ArrayBuffer = @import("array_buffer.zig").ArrayBuffer;
+const stdx = @import("stdx");
+const buffer = stdx.buffer;
 const frame = @import("frame.zig");
 /// Smallest storage that guarantees any one record fits: a full-size wire
 /// record (header + maximum ciphertext).
@@ -32,8 +33,8 @@ const RecordBuffer = @This();
 /// that straddles a record boundary still makes progress without thrashing.
 pub const recommended_storage = 2 * min_storage;
 
-pub const MinStorage = ArrayBuffer(u8, min_storage);
-pub const Storage = ArrayBuffer(u8, recommended_storage);
+pub const MinStorage = buffer.Array(u8, min_storage);
+pub const Storage = buffer.Array(u8, recommended_storage);
 
 storage: []u8,
 /// Start of unconsumed data (records before this are handed out and done).

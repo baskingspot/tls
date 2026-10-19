@@ -22,7 +22,8 @@
 
 const alert = @import("alert.zig");
 const handshake = @import("handshake.zig");
-const ArrayBuffer = @import("array_buffer.zig").ArrayBuffer;
+const stdx = @import("stdx");
+const buffer = stdx.buffer;
 const PendingWrite = @import("pending_write.zig").PendingWrite;
 const RecordLayer = @import("RecordLayer.zig");
 const Suite = @import("suite_state.zig").Suite;
@@ -34,7 +35,7 @@ const Suite = @import("suite_state.zig").Suite;
 // ServerHandshake and ClientHandshake.
 const EstablishedSession = @This();
 
-const KeyUpdateFragmentBuffer = ArrayBuffer(u8, handshake.key_update_total_len);
+const KeyUpdateFragmentBuffer = buffer.Array(u8, handshake.key_update_total_len);
 
 /// Connected-state event shapes shared with the handshake engines.
 pub const Event = handshake.Event;

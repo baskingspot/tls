@@ -4,6 +4,7 @@
 //! crypto/sha2.zig (#138), with TLS 1.3-specific label expansion per
 //! RFC 8446 §7.1 and §7.3.
 const std = @import("std");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 const crypto = std.crypto;
 const testing = std.testing;
@@ -33,10 +34,10 @@ fn Hkdf(comptime Hash: type, comptime ComptimeHash: type) type {
     return struct {
         /// Length of the pseudorandom key and all derived secrets.
         pub const prk_len = Hash.digest_length;
-        pub const Prk = memx.Array(prk_len);
-        pub const TranscriptHash = memx.Array(prk_len);
-        pub const TrafficSecret = memx.Array(prk_len);
-        pub const FinishedKey = memx.Array(prk_len);
+        pub const Prk = stdx.mem.Array(prk_len);
+        pub const TranscriptHash = stdx.mem.Array(prk_len);
+        pub const TrafficSecret = stdx.mem.Array(prk_len);
+        pub const FinishedKey = stdx.mem.Array(prk_len);
         const prk_zero = &Prk.zero.data;
 
         /// HMAC keyed by one secret. Every derivation below that takes a

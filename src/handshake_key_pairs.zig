@@ -3,11 +3,11 @@
 //! TLS 1.3 ClientHello may carry multiple KeyShareEntry values, so this is a
 //! small product type rather than a tagged union.
 const std = @import("std");
+const stdx = @import("stdx");
 const mem = std.mem;
 const testing = std.testing;
 
 const NamedGroup = @import("kex.zig").NamedGroup;
-const memx = @import("memx.zig");
 const p256 = @import("p256.zig");
 const p384 = @import("p384.zig");
 const x25519 = @import("x25519.zig");
@@ -172,9 +172,9 @@ test "deriveFor derives the selected group's key and no other" {
         .{ .group = .secp384r1, .derived = .initEmpty() },
         .{ .group = .secp384r1_mlkem1024, .derived = .initEmpty() },
     };
-    const x25519_seed = memx.hex(32, "77076d0a7318a57d3c16c17251b26645" ++
+    const x25519_seed = stdx.fmt.comptimeHex("77076d0a7318a57d3c16c17251b26645" ++
         "df4c2f87ebc0992ab177fba51db92c2a");
-    const x25519_public = memx.hex(32, "8520f0098930a754748b7ddcb43ef75a" ++
+    const x25519_public = stdx.fmt.comptimeHex("8520f0098930a754748b7ddcb43ef75a" ++
         "0dbf3a0d26381af4eba4a98eaa9b4e6a");
     const p256_seed: p256.SecretKey = .init(@splat(0x42));
     const p256_public = (try p256.KeyPair.fromSecret(p256_seed)).public_key.data;

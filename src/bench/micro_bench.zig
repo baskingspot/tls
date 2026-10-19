@@ -1,4 +1,5 @@
 const std = @import("std");
+const stdx = @import("stdx");
 const mem = std.mem;
 const doNotOptimizeAway = mem.doNotOptimizeAway;
 
@@ -15,7 +16,7 @@ pub fn benchmarkLastIndexNonZeroNoPadding16(b: *testingx.B) !void {
     buf[15] = 23;
     while (try b.loop()) {
         buf[0] = @truncate(b.n);
-        b.keepAlive(memx.lastIndexOfNonZero(&buf));
+        b.keepAlive(stdx.mem.lastIndexOfNonZero(&buf));
     }
 }
 
@@ -24,7 +25,7 @@ pub fn benchmarkLastIndexNonZeroPadding1To16(b: *testingx.B) !void {
     buf[14] = 23;
     while (try b.loop()) {
         buf[0] = @truncate(b.n);
-        b.keepAlive(memx.lastIndexOfNonZero(&buf));
+        b.keepAlive(stdx.mem.lastIndexOfNonZero(&buf));
     }
 }
 
@@ -33,7 +34,7 @@ pub fn benchmarkLastIndexNonZeroPadding16To128(b: *testingx.B) !void {
     buf[111] = 23;
     while (try b.loop()) {
         buf[0] = @truncate(b.n);
-        b.keepAlive(memx.lastIndexOfNonZero(&buf));
+        b.keepAlive(stdx.mem.lastIndexOfNonZero(&buf));
     }
 }
 
@@ -42,7 +43,7 @@ pub fn benchmarkLastIndexNonZeroPadding128To1350(b: *testingx.B) !void {
     buf[1221] = 23;
     while (try b.loop()) {
         buf[0] = @truncate(b.n);
-        b.keepAlive(memx.lastIndexOfNonZero(&buf));
+        b.keepAlive(stdx.mem.lastIndexOfNonZero(&buf));
     }
 }
 
@@ -51,7 +52,7 @@ pub fn benchmarkLastIndexNonZeroAllZero1350(b: *testingx.B) !void {
     while (try b.loop()) {
         buf[0] = @truncate(b.n);
         buf[0] = 0;
-        b.keepAlive(memx.lastIndexOfNonZero(&buf));
+        b.keepAlive(stdx.mem.lastIndexOfNonZero(&buf));
     }
 }
 
@@ -250,7 +251,7 @@ export fn ztlsBenchNonceConstruct() void {
 export fn ztlsBenchLastIndexNonZero() void {
     var buf: [128]u8 = @splat(0);
     buf[111] = 23;
-    doNotOptimizeAway(memx.lastIndexOfNonZero(&buf));
+    doNotOptimizeAway(stdx.mem.lastIndexOfNonZero(&buf));
 }
 
 export fn ztlsBenchParseHeader() void {

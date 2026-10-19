@@ -40,8 +40,8 @@ const CipherSuite = root.CipherSuite;
 const Random = root.Random;
 const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 const wire = @import("wire.zig");
-const array_buffer = @import("array_buffer.zig");
-const ArrayBuffer = array_buffer.ArrayBuffer;
+const stdx = @import("stdx");
+const buffer = stdx.buffer;
 const x25519 = @import("x25519.zig");
 
 /// RFC 8446 §4.1.2 — legacy_version is frozen at TLS 1.2.
@@ -995,7 +995,7 @@ pub const Parsed = struct {
     public_key_p256: ?p256.PublicKey = null,
     public_key_p384: ?p384.PublicKey = null,
     /// RFC 10024 hybrid key_share values borrowed from the ClientHello.
-    hybrid_key_shares: ArrayBuffer(ParsedKemKeyShare, 3) = .empty,
+    hybrid_key_shares: buffer.Array(ParsedKemKeyShare, 3) = .empty,
     /// Offered ClientHello extensions tracked for validating server responses.
     offered_extensions: OfferedExtensions = .initEmpty(),
     /// pre_shared_key extension (RFC 8446 §4.2.11), if present. `psk_ext`
@@ -1648,7 +1648,7 @@ const ParsedKeyShares = struct {
     x25519: ?x25519.PublicKey = null,
     p256: ?p256.PublicKey = null,
     p384: ?p384.PublicKey = null,
-    hybrid: ArrayBuffer(ParsedKemKeyShare, 3) = .empty,
+    hybrid: buffer.Array(ParsedKemKeyShare, 3) = .empty,
 };
 
 /// RFC 10024 hybrid key_share stored in both ParsedKeyShares and Parsed.
@@ -1949,7 +1949,7 @@ test "encodeWithP256P384: size matches encodedLenWithP256P384" {
 // RFC 8446 §4.2.8 — ClientHello parse accepts secp384r1 key share with the
 // correct 97-byte uncompressed point.
 test "parse: accepts secp384r1 key share" {
-    const seed = memx.hex(48, "000102030405060708090a0b0c0d0e0f" ++
+    const seed = stdx.fmt.comptimeHex("000102030405060708090a0b0c0d0e0f" ++
         "101112131415161718191a1b1c1d1e1f" ++
         "202122232425262728292a2b2c2d2e2f");
     const p384_keypair = try p384.KeyPair.generateDeterministic(.init(seed));
@@ -2214,7 +2214,7 @@ test "parse: tracks offered record_size_limit extension presence" {
 // RFC 8446 §4.1.2 — legacy_session_id is bounded to 0..32 bytes.
 // RFC 8446 §4.2.7, §4.2.8 — server-side parser accepts P-256-only peers.
 test "parse: accepts secp256r1 supported group and key share" {
-    const seed = memx.hex(32, "000102030405060708090a0b0c0d0e0f" ++
+    const seed = stdx.fmt.comptimeHex("000102030405060708090a0b0c0d0e0f" ++
         "101112131415161718191a1b1c1d1e1f");
     const p256_keypair = try p256.KeyPair.generateDeterministic(.init(seed));
     var buf: [768]u8 = undefined;
@@ -2258,7 +2258,7 @@ test "parse: rejects malformed X25519 key share" {
 
 // RFC 8446 §4.2.8 — key_share groups must be advertised in supported_groups.
 test "parse: rejects key share outside supported_groups" {
-    const seed = memx.hex(32, "000102030405060708090a0b0c0d0e0f" ++
+    const seed = stdx.fmt.comptimeHex("000102030405060708090a0b0c0d0e0f" ++
         "101112131415161718191a1b1c1d1e1f");
     const p256_keypair = try p256.KeyPair.generateDeterministic(.init(seed));
     var buf: [768]u8 = undefined;
@@ -2878,7 +2878,7 @@ test "encodeWithHybridGroups: rejects unknown share group without panic" {
 // X25519MLKEM768) round-trips through encode → parse without corruption.
 // This test is pure-Zig (no OpenSSL) and isolates the ClientHello wire path
 // from the backend. It runs on all architectures to catch any struct-return /
-// ArrayBuffer issues with large KEM key shares. See issue #65.
+// buffer.Array issues with large KEM key shares. See issue #65.
 test "KEM key_share round-trip: ClientHello encode → parse preserves 1216-byte public key" {
     var original: [1216]u8 = undefined;
     for (&original, 0..) |*b, i| b.* = @intCast(i % 256);

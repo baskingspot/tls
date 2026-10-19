@@ -12,6 +12,7 @@ pub const Options = struct {
     openssl_c: *Build.Module,
     build_options: *Build.Step.Options,
     fixtures_mod: *Build.Module,
+    stdx_mod: *Build.Module,
 };
 
 /// `root` is the build.zig struct of this package. `b.lazyImport` needs it to
@@ -59,6 +60,7 @@ fn addZtlsBenchmarks(
         .target = opts.target,
         .imports = &.{
             .{ .name = "ztls", .module = opts.ztls_mod },
+            .{ .name = "stdx", .module = opts.stdx_mod },
             .{ .name = "fixtures", .module = opts.fixtures_mod },
             .{ .name = "openssl_c", .module = opts.openssl_c },
             .{ .name = "build_options", .module = opts.build_options.createModule() },
@@ -109,6 +111,7 @@ fn addEvpBenchmarks(
         .target = opts.target,
         .imports = &.{
             .{ .name = "ztls", .module = opts.ztls_mod },
+            .{ .name = "stdx", .module = opts.stdx_mod },
             .{ .name = "c", .module = opts.c_mod },
         },
     });
@@ -135,6 +138,7 @@ fn addLibsslBenchmarks(
         .target = opts.target,
         .imports = &.{
             .{ .name = "ztls", .module = opts.ztls_mod },
+            .{ .name = "stdx", .module = opts.stdx_mod },
             .{ .name = "c", .module = opts.c_mod },
             .{ .name = "c_ssl", .module = opts.c_ssl_mod },
         },

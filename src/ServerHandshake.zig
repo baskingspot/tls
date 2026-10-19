@@ -14,9 +14,8 @@ const testing = std.testing;
 const aead = @import("aead.zig");
 const alert = @import("alert.zig");
 const wiremod = @import("wire.zig");
-const array_buffer = @import("array_buffer.zig");
-const ArrayBuffer = array_buffer.ArrayBuffer;
-const SliceBuffer = array_buffer.SliceBuffer;
+const stdx = @import("stdx");
+const buffer = stdx.buffer;
 const certificate = @import("certificate.zig");
 const Certificate = @import("certificate_parser.zig");
 const CertificateChain = @import("certificate_chain.zig").CertificateChain;
@@ -89,7 +88,7 @@ pub const PskLookup = struct {
 /// then erase it with `secureZero`. Only one ticket may be prepared at a time.
 pub const TicketPsk = struct {
     /// HKDF-Expand-Label output. Capacity covers SHA-384.
-    psk: ArrayBuffer(u8, 48) = .empty,
+    psk: buffer.Array(u8, 48) = .empty,
     /// Cipher suite whose hash derived this PSK. Preserve it in `PskEntry`.
     cipher_suite: CipherSuite,
     /// Engine-assigned per-connection nonce. Pass this object unchanged to
@@ -126,19 +125,19 @@ const transcript_util = @import("transcript.zig");
 const x25519 = @import("x25519.zig");
 const hybrid_kex = @import("hybrid_kex.zig");
 
-const HandshakeBuffer = SliceBuffer(u8);
+const HandshakeBuffer = buffer.Slice(u8);
 // Bounds a reassembled client-flight plaintext (Certificate [+ CertificateVerify]
 // + Finished) during wait_client_finished. The no-client-auth flight is just
 // Finished (52 bytes), but with client auth the flight carries the client
 // certificate chain and CertificateVerify too, so size for a full record
 // plaintext. RFC 8446 §5.2.
-const FinishedFragmentBuffer = ArrayBuffer(u8, frame.max_plaintext_len);
-const KeyUpdateFragmentBuffer = ArrayBuffer(u8, handshake.key_update_total_len);
+const FinishedFragmentBuffer = buffer.Array(u8, frame.max_plaintext_len);
+const KeyUpdateFragmentBuffer = buffer.Array(u8, handshake.key_update_total_len);
 
 /// Upper bound on a client leaf public key we retain for CertificateVerify
 /// verification. Covers RSA-4096 (~525-byte DER) with margin.
 const max_client_leaf_pub_key = 1024;
-const ClientLeafPubKeyBuffer = ArrayBuffer(u8, max_client_leaf_pub_key);
+const ClientLeafPubKeyBuffer = buffer.Array(u8, max_client_leaf_pub_key);
 const ServerHandshake = @This();
 
 pub const State = enum {
@@ -244,7 +243,7 @@ const RetryPskCapture = union(enum) {
     none,
     /// Per-identity fingerprints in offer order. ClientHello2's identities
     /// must match these in order, minus `may_remove` entries.
-    identities: ArrayBuffer(RetryPskIdentity, max_retry_psk_identities),
+    identities: buffer.Array(RetryPskIdentity, max_retry_psk_identities),
 };
 
 const RetryTranscript = union(enum) {
@@ -279,7 +278,7 @@ pub const ch_reassembly_buffer_size = handshake_header_len + ch_reassembly_body_
 /// Caller-owned backing for ClientHello reassembly, sized to the documented
 /// minimum. Declare one as `.empty` and hand `&storage.buffer` to
 /// useHandshakeBuffer().
-pub const Storage = ArrayBuffer(u8, ch_reassembly_buffer_size);
+pub const Storage = buffer.Array(u8, ch_reassembly_buffer_size);
 
 /// Configuration for a server handshake. Required fields have no defaults.
 /// Borrowed suite and ALPN slices are read during ClientHello processing;
@@ -1071,8 +1070,8 @@ fn preferredHybridShare(
 fn encapsulateHybrid(
     self: *ServerHandshake,
     share: *const client_hello.ParsedKemKeyShare,
-    server_share: *ArrayBuffer(u8, hybrid_kex.max_server_share_len),
-    shared_secret: *ArrayBuffer(u8, hybrid_kex.max_shared_secret_len),
+    server_share: *buffer.Array(u8, hybrid_kex.max_server_share_len),
+    shared_secret: *buffer.Array(u8, hybrid_kex.max_shared_secret_len),
 ) hybrid_kex.Error!void {
     assert(server_share.len == 0);
     assert(shared_secret.len == 0);
@@ -1092,8 +1091,8 @@ fn encapsulateHybrid(
 fn selectHybridShare(
     self: *ServerHandshake,
     share: *const client_hello.ParsedKemKeyShare,
-    server_share: *ArrayBuffer(u8, hybrid_kex.max_server_share_len),
-    shared_secret: *ArrayBuffer(u8, hybrid_kex.max_shared_secret_len),
+    server_share: *buffer.Array(u8, hybrid_kex.max_server_share_len),
+    shared_secret: *buffer.Array(u8, hybrid_kex.max_shared_secret_len),
 ) hybrid_kex.Error!ClientKeyShare {
     // Once a configured hybrid share is selected, malformed key material or
     // provider failure aborts. There is no classical fallback after selection.
@@ -1215,8 +1214,8 @@ fn processClientHelloMessage(
 
     // RFC 10024 hybrid outputs remain in fixed-capacity stack storage. The
     // secret is zeroed after the key schedule consumes it.
-    var hybrid_server_share: ArrayBuffer(u8, hybrid_kex.max_server_share_len) = .empty;
-    var hybrid_secret: ArrayBuffer(u8, hybrid_kex.max_shared_secret_len) = .empty;
+    var hybrid_server_share: buffer.Array(u8, hybrid_kex.max_server_share_len) = .empty;
+    var hybrid_secret: buffer.Array(u8, hybrid_kex.max_shared_secret_len) = .empty;
     defer hybrid_secret.secureZero();
 
     const client_key_share: ClientKeyShare = if (self.retry_selected_group) |selected_group|
@@ -1524,7 +1523,7 @@ fn captureRetryPskIdentities(
     hrr_suite: CipherSuite,
 ) RetryPskCaptureError!RetryPskCapture {
     const ext = psk_ext orelse return .none;
-    var identities: ArrayBuffer(RetryPskIdentity, max_retry_psk_identities) = .empty;
+    var identities: buffer.Array(RetryPskIdentity, max_retry_psk_identities) = .empty;
     var iter = try client_hello.PskOfferIter.init(ext);
     while (try iter.next()) |offer| {
         const entry: RetryPskIdentity = .{
@@ -1644,7 +1643,7 @@ fn installHandshakeKeys(
     ch_msg: []const u8,
     sh_msg: []const u8,
     client_key_share: *const ClientKeyShare,
-    hybrid_secret: *const ArrayBuffer(u8, hybrid_kex.max_shared_secret_len),
+    hybrid_secret: *const buffer.Array(u8, hybrid_kex.max_shared_secret_len),
 ) (error{ IdentityElement, LibcryptoFailed } || aead.Error)!void {
     var dhe: [80]u8 = undefined;
     const dhe_len: usize = switch (client_key_share.*) {
@@ -2766,14 +2765,14 @@ fn firstSupportedHrrTriggerGroup() ?NamedGroup {
     }
     return null;
 }
-const test_p256_seed_a = memx.hex(32, "000102030405060708090a0b0c0d0e0f" ++
+const test_p256_seed_a = stdx.fmt.comptimeHex("000102030405060708090a0b0c0d0e0f" ++
     "101112131415161718191a1b1c1d1e1f");
-const test_p256_seed_b = memx.hex(32, "202122232425262728292a2b2c2d2e2f" ++
+const test_p256_seed_b = stdx.fmt.comptimeHex("202122232425262728292a2b2c2d2e2f" ++
     "303132333435363738393a3b3c3d3e3f");
-const test_p384_seed_a = memx.hex(48, "000102030405060708090a0b0c0d0e0f" ++
+const test_p384_seed_a = stdx.fmt.comptimeHex("000102030405060708090a0b0c0d0e0f" ++
     "101112131415161718191a1b1c1d1e1f" ++
     "202122232425262728292a2b2c2d2e2f");
-const test_p384_seed_b = memx.hex(48, "303132333435363738393a3b3c3d3e3f" ++
+const test_p384_seed_b = stdx.fmt.comptimeHex("303132333435363738393a3b3c3d3e3f" ++
     "404142434445464748494a4b4c4d4e4f" ++
     "505152535455565758595a5b5c5d5e5f");
 
@@ -3237,9 +3236,9 @@ const ClientShareForTest = enum { x25519, secp256r1 };
 
 // RFC 7748 §6.1 — Alice's scalar and public key: a deferred X25519 key must
 // derive to exactly this.
-const test_x25519_seed = memx.hex(32, "77076d0a7318a57d3c16c17251b26645" ++
+const test_x25519_seed = stdx.fmt.comptimeHex("77076d0a7318a57d3c16c17251b26645" ++
     "df4c2f87ebc0992ab177fba51db92c2a");
-const test_x25519_public = memx.hex(32, "8520f0098930a754748b7ddcb43ef75a" ++
+const test_x25519_public = stdx.fmt.comptimeHex("8520f0098930a754748b7ddcb43ef75a" ++
     "0dbf3a0d26381af4eba4a98eaa9b4e6a");
 
 fn deferredServerHello(

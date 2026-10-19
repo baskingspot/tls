@@ -16,8 +16,8 @@ const p256 = @import("p256.zig");
 const p384 = @import("p384.zig");
 const ProtocolVersion = @import("protocol_version.zig").ProtocolVersion;
 const wire = @import("wire.zig");
-const array_buffer = @import("array_buffer.zig");
-const ArrayBuffer = array_buffer.ArrayBuffer;
+const stdx = @import("stdx");
+const buffer = stdx.buffer;
 const x25519 = @import("x25519.zig");
 
 const ext_header_len = 2 + 2;
@@ -276,7 +276,7 @@ pub const KeyShare = union(enum) {
     /// RFC 10024 §4.2 hybrid server share. Component order is group-specific.
     kem: struct {
         group: NamedGroup,
-        data: ArrayBuffer(u8, max_kem_share_len),
+        data: buffer.Array(u8, max_kem_share_len),
     },
 
     pub fn group(self: *const KeyShare) NamedGroup {
@@ -552,7 +552,7 @@ pub fn parseWithSessionIdEcho(
                         {
                             return error.MalformedKeyShare;
                         }
-                        var kem_data: ArrayBuffer(u8, max_kem_share_len) = .empty;
+                        var kem_data: buffer.Array(u8, max_kem_share_len) = .empty;
                         kem_data.appendSliceAssumeCapacity(key);
                         key_share = .{ .kem = .{
                             .group = group,
@@ -1226,14 +1226,14 @@ test "parseHelloRetryRequest: rejects record_size_limit" {
 // RFC 10024 §4.2 — KEM ciphertext (1120 bytes for
 // X25519MLKEM768) round-trips through encode → parse without corruption.
 // This test is pure-Zig (no OpenSSL) and isolates the wire path from the
-// backend. It runs on all architectures to catch any struct-return / ArrayBuffer
+// backend. It runs on all architectures to catch any struct-return / buffer.Array
 // issues with large KEM key shares. See issue #65.
 test "KEM key_share round-trip: ServerHello encode → parse preserves 1120-byte ciphertext" {
     // Fill with a recognizable pattern so any byte corruption is visible.
     var original: [1120]u8 = undefined;
     for (&original, 0..) |*b, i| b.* = @intCast(i % 256);
 
-    var kem_data: ArrayBuffer(u8, max_kem_share_len) = .empty;
+    var kem_data: buffer.Array(u8, max_kem_share_len) = .empty;
     kem_data.appendSliceAssumeCapacity(&original);
     const ks: KeyShare = .{ .kem = .{ .group = .x25519_mlkem768, .data = kem_data } };
 

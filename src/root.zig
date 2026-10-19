@@ -1,3 +1,5 @@
+const stdx = @import("stdx");
+
 pub const aead = @import("aead.zig");
 pub const alert = @import("alert.zig");
 pub const AlpnError = @import("alpn.zig").Error;
@@ -23,8 +25,7 @@ pub const hkdf = @import("hkdf.zig");
 pub const io = @import("io.zig");
 pub const kex = @import("kex.zig");
 pub const ktls = @import("ktls.zig");
-const memx = @import("memx.zig");
-pub const Array = memx.Array;
+pub const Array = stdx.mem.Array;
 pub const mlkem = @import("mlkem.zig");
 pub const Outbox = @import("Outbox.zig");
 pub const p256 = @import("p256.zig");

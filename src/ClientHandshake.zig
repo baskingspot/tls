@@ -14,9 +14,8 @@ const mem = std.mem;
 
 const aead = @import("aead.zig");
 const alert = @import("alert.zig");
-const array_buffer = @import("array_buffer.zig");
-const ArrayBuffer = array_buffer.ArrayBuffer;
-const SliceBuffer = array_buffer.SliceBuffer;
+const stdx = @import("stdx");
+const buffer = stdx.buffer;
 const certificate = @import("certificate.zig");
 const certificate_request = @import("certificate_request.zig");
 const client_hello = @import("client_hello.zig");
@@ -74,11 +73,11 @@ const NamedGroup = @import("kex.zig").NamedGroup;
 pub const SessionTicket = struct {
     /// Opaque ticket identity bytes (copied from the NewSessionTicket). The
     /// caller owns this storage; ztls copies into the fixed-capacity buffer.
-    identity: ArrayBuffer(u8, 256) = .empty,
+    identity: buffer.Array(u8, 256) = .empty,
     /// PSK derived from the resumption_master_secret and the ticket nonce
     /// (HKDF-Expand-Label(resumption_master_secret, "resumption", nonce,
     /// Hash.length)). RFC 8446 §4.6.1, §7.4/§7.5. Capacity covers SHA-384.
-    psk: ArrayBuffer(u8, 48) = .empty,
+    psk: buffer.Array(u8, 48) = .empty,
     /// RFC 8446 §4.6.1 — ticket_age_add added to the client's view of ticket
     /// age to obfuscate it in the pre_shared_key extension.
     ticket_age_add: u32 = 0,
@@ -118,19 +117,19 @@ const ClientHandshake = @This();
 /// Upper bound on a leaf public key we retain across records. Covers RSA-4096
 /// (~525-byte DER) with margin; ECDSA P-256/P-384 are far smaller.
 const max_leaf_pub_key = 1024;
-const LeafPublicKeyBuffer = ArrayBuffer(u8, max_leaf_pub_key);
-const LegacySessionIdBuffer = ArrayBuffer(u8, 32);
-const OfferedSuitesBuffer = ArrayBuffer(CipherSuite, 8);
+const LeafPublicKeyBuffer = buffer.Array(u8, max_leaf_pub_key);
+const LegacySessionIdBuffer = buffer.Array(u8, 32);
+const OfferedSuitesBuffer = buffer.Array(CipherSuite, 8);
 // Upper bound on the number of signature schemes a peer may offer in a
 // CertificateRequest / ClientHello. OpenSSL s_server offers ~16+ schemes in
 // its CertificateRequest, so size generously above the backend's own
 // certificate_verify_schemes set. RFC 8446 §4.2.3 has no hard cap; this is a
 // defensive bound that maps overflow to HandshakeBufferTooShort rather than
 // silent truncation (which would make a valid scheme look unoffered).
-const OfferedSignatureSchemesBuffer = ArrayBuffer(SignatureScheme, 64);
-const SelectedAlpnBuffer = ArrayBuffer(u8, 255);
-const CertificateRequestContextBuffer = ArrayBuffer(u8, 255);
-const HandshakeBuffer = SliceBuffer(u8);
+const OfferedSignatureSchemesBuffer = buffer.Array(SignatureScheme, 64);
+const SelectedAlpnBuffer = buffer.Array(u8, 255);
+const CertificateRequestContextBuffer = buffer.Array(u8, 255);
+const HandshakeBuffer = buffer.Slice(u8);
 
 /// Caller-owned client certificate chain and signer for client auth.
 /// Mirrors ServerHandshake.ServerCredentials. RFC 8446 §4.4.2, §4.4.3.
@@ -148,7 +147,7 @@ pub const recommended_handshake_storage = 4 * frame.max_plaintext_len;
 /// Caller-owned backing for handshake-message reassembly. Declare one as
 /// `.empty` and hand `&storage.buffer` to useHandshakeBuffer() (or pass it
 /// via `Config.reassembly`).
-pub const Storage = ArrayBuffer(u8, recommended_handshake_storage);
+pub const Storage = buffer.Array(u8, recommended_handshake_storage);
 
 /// This type owns the client keypairs.
 pub const KeyPairs = handshake_key_pairs.KeyPairs;
@@ -570,7 +569,7 @@ handshake_buf: HandshakeBuffer = .empty,
 /// Empty disables peer-chain introspection.
 peer_certificate: HandshakeBuffer = .empty,
 /// DER views into `peer_certificate`, leaf first.
-peer_chain: ArrayBuffer([]const u8, 8) = .empty,
+peer_chain: buffer.Array([]const u8, 8) = .empty,
 /// Consecutive KeyUpdates seen with no intervening application data.
 post_handshake_key_update_count: u8 = 0,
 /// Consecutive NewSessionTickets seen with no intervening application data.

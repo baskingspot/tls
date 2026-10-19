@@ -2,20 +2,19 @@
 //!
 //! RFC 8446 §4.2.8.2; RFC 8422 §5.1.1
 const std = @import("std");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
 pub const Error = backend.p384.Error;
 const entropy = @import("entropy.zig");
-const memx = @import("memx.zig");
-const hex = memx.hex;
 
 pub const public_length = 97;
 pub const secret_length = 48;
 
-pub const PublicKey = memx.Array(public_length);
-pub const SecretKey = memx.Array(secret_length);
+pub const PublicKey = stdx.mem.Array(public_length);
+pub const SecretKey = stdx.mem.Array(secret_length);
 
 /// Draws `generate` may take: an out-of-range draw is ~2^-194 here, but an
 /// unbounded retry is a promise no code can keep (#88).
@@ -105,10 +104,10 @@ pub fn sharedSecret(
     try backend.p384.sharedSecretDerive(ours, peer, out);
 }
 
-const test_seed_a = hex(48, "000102030405060708090a0b0c0d0e0f" ++
+const test_seed_a = stdx.fmt.comptimeHex("000102030405060708090a0b0c0d0e0f" ++
     "101112131415161718191a1b1c1d1e1f" ++
     "202122232425262728292a2b2c2d2e2f");
-const test_seed_b = hex(48, "303132333435363738393a3b3c3d3e3f" ++
+const test_seed_b = stdx.fmt.comptimeHex("303132333435363738393a3b3c3d3e3f" ++
     "404142434445464748494a4b4c4d4e4f" ++
     "505152535455565758595a5b5c5d5e5f");
 
@@ -190,7 +189,7 @@ test "generateRetry: retries a bad draw and succeeds" {
 // the backend range-checks it against the group order before point math (#88).
 test "KeyPair.generateDeterministic enforces the scalar range [1, n-1]" {
     // n, the P-384 base-point order (SEC 2, "secp384r1").
-    const order = hex(48, "ffffffffffffffffffffffffffffffff" ++
+    const order = stdx.fmt.comptimeHex("ffffffffffffffffffffffffffffffff" ++
         "ffffffffffffffff" ++
         "c7634d81f4372ddf581a0db248b0a77aecec196accc52973");
     // zero: below the range.
