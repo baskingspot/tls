@@ -84,6 +84,11 @@ rec {
     export TLS_AWS_LC_LIB_DIR=${pkgs.aws-lc}/lib
     export TLS_BORINGSSL_PKG_CONFIG_PATH=${boringsslPc}
     export TLS_BORINGSSL_LIB_DIR=${pkgs.boringssl}/lib
+    # uv's managed Python does not read the NixOS CA bundle by default, so the
+    # pinned tlsfuzzer driver download in
+    # conformance/tests/test_tls13_mlkem.py fails certificate verification.
+    # Python's ssl module reads SSL_CERT_FILE.
+    export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
     # Some devShell packages propagate the nixpkgs default-line openssl into
     # PATH ahead of the pinned one. Prepend so the CLI interop peer rides the
     # pinned 3.6 line, not whatever the default propagates.
