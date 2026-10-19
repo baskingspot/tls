@@ -1,0 +1,23 @@
+# The tls site, at baskingspot.dev/tls/. Built with `just doc`, on the
+# baskingspot theme (baskingspot/nix, docs/README.md).
+base_url = "https://baskingspot.dev/tls"
+theme = "baskingspot"
+title = "tls"
+description = "Sans-I/O TLS 1.3 in Zig: no sockets, no engine allocations, caller-owned buffers."
+
+generate_feeds = false
+build_search_index = false
+
+[markdown]
+insert_anchor_links = "heading"
+
+[markdown.highlighting]
+# An unknown fence language is a build error, not an unhighlighted block.
+error_on_missing_language = true
+light_theme = "github-light"
+dark_theme = "github-dark"
+
+[extra]
+repo = "baskingspot/tls"
+api = true
+third_party = false

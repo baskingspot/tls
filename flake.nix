@@ -29,6 +29,7 @@
       # version: pick that once, in the import.
       imports = with inputs.baskingspot.flakeModules; [
         base
+        docs
         shell
         terraform
         zig."0.16"
@@ -114,36 +115,15 @@
               ];
             };
 
-            # Docs site tooling: Zig autodoc build plus mdBook and wrangler
-            # for building and publishing the Cloudflare site. Built on the
-            # OpenSSL backend shell. The org's `docs` module is Zola, so this
-            # stays repo-local until the site moves in a later phase.
-            docs = backendShell {
-              name = "tls-docs";
-              inputsFrom = tooling;
-              inherit (opensslBackend) pkgConfigPath;
-              packages = opensslBackend.packages ++ [
-                pkgs.mdbook
-                pkgs.nodejs
-                shared.wrangler
+            # The default shell plus the org's docs tooling: Zola, the
+            # baskingspot theme, baskingspot-docs, and wrangler.
+            default = pkgs.mkShell {
+              name = "tls";
+              inputsFrom = [
+                openssl
+                config.devShells.docs
               ];
             };
-
-            # Brand asset tooling (wordmark/logo generation). Kept out of the
-            # common dev shell so tls devs don't carry font/Python deps.
-            brand = pkgs.mkShell {
-              name = "tls-brand";
-              inputsFrom = [ config.devShells.base ];
-              packages = [
-                (pkgs.python3.withPackages (ps: [ ps.fonttools ]))
-                pkgs.jetbrains-mono
-              ];
-              shellHook = ''
-                export TLS_BRAND_FONT_DIR=${pkgs.jetbrains-mono}/share/fonts
-              '';
-            };
-
-            default = openssl;
           };
         };
     };

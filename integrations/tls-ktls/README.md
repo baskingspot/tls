@@ -23,7 +23,7 @@ const tls_ktls = tls_dep.module("tls_ktls");
 ```
 
 The module requires Zig 0.16 and Linux. See
-[`docs/USAGE.md`](../../docs/USAGE.md#fresh-project-setup) for the complete
+[`docs/content/_index.md`](../../docs/content/_index.md#fresh-project-setup) for the complete
 consumer wiring.
 
 ## Handoff contract

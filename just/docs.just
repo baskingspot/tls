@@ -1,23 +1,19 @@
-# Docs site: Zig autodoc + mdBook, published to Cloudflare via wrangler.
-# Run these from inside `nix develop .#docs` (zig + mdbook + wrangler).
+# The docs site: the Zig API reference and the guide, on the baskingspot
+# theme (baskingspot/nix, docs/README.md), deployed as an assets-only Worker.
 
-[doc("Build the docs site (Zig autodoc + mdBook) into book/")]
+[doc("Build the site into zig-out/site/tls/: the API reference and the guide")]
 [group("docs")]
-docs:
-    zig build docs -p docs/site
-    mdbook build
+doc:
+    zig build docs
+    baskingspot-docs build tls
 
-[doc("Build and serve the docs site locally")]
+[doc("Build and serve the site locally with live reload")]
 [group("docs")]
-docs-serve: docs
-    mdbook serve
+guide:
+    zig build docs
+    baskingspot-docs serve tls
 
-[doc("Publish the docs site to Cloudflare (wrangler runs the build)")]
+[doc("Deploy the rendered site to Cloudflare as an assets-only Worker. Needs CLOUDFLARE_API_TOKEN in the environment, plus CLOUDFLARE_ACCOUNT_ID if the token can see more than one account")]
 [group("docs")]
-docs-publish:
+doc-deploy: doc
     wrangler deploy
-
-[doc("Remove generated docs site output (book/, docs/site/zig-docs/)")]
-[group("docs")]
-docs-clean:
-    rm -rf book docs/site/zig-docs .wrangler

@@ -66,7 +66,7 @@ revision, not automatically to later commits.
 | 3. Performance | `PROVEN` | n=10 captures on x86_64 (c7i.2xlarge), aarch64 (c7g.2xlarge), and macOS (Apple M1 Max) with formal CIs (p=0.000): tls beats libssl on every comparable app-data row on all three platforms and rustls on all AES-GCM rows; regression gate committed. |
 | 4. Providers | `PROVEN` | OpenSSL, AWS-LC, and BoringSSL pass all six terminal TLS-Anvil profiles at `8814f1e`. Malformed ML-KEM keys produce `illegal_parameter`, while provider faults remain `internal_error`. Captures remain revision-bound. |
 | 5. Marketing | `PROVEN` | README leads with the proven performance story (n=10, both architectures, honest ChaCha20 loss) and the adversarial security posture; the why-tls narrative and headline benchmarks are on the front door, backed by PERFORMANCE.md. |
-| 6. User docs | `PROVEN` | One fetched package exposes core plus the Zig 0.16 integration modules (#79). Isolated consumer gates and `docs/USAGE.md` cover dependency wiring, hybrid capability checks, borrowed lifetimes, cleanup, drive loops, and integrations (#105). |
+| 6. User docs | `PROVEN` | One fetched package exposes core plus the Zig 0.16 integration modules (#79). Isolated consumer gates and `docs/content/_index.md` cover dependency wiring, hybrid capability checks, borrowed lifetimes, cleanup, drive loops, and integrations (#105). |
 
 ---
 
@@ -1055,13 +1055,13 @@ Sans-I/O API is pleasant across every I/O model tls claims to support.
   (asserted, along with userspace TX, no pending ticket, and no early-data
   layer); both record directions must be userspace — TX ownership is
   asserted, RX ownership is untracked and documented as a caller contract on
-  the seam and in `docs/USAGE.md`. Extraction wipes the record-layer bytes
+  the seam and in `docs/content/_index.md`. Extraction wipes the record-layer bytes
   left behind in the consumed engine immediately (`RecordLayer.
   secureZeroMovedFrom`: no context release, so the moved copies stay live) —
   on AWS-LC and BoringSSL those bytes are the live inline traffic keys, and
   on OpenSSL the key/IV duplicates plus stale context pointers. Tickets must
   be issued before extraction — documented on the seam and in
-  `docs/USAGE.md`. Evidence: twelve new RFC-cited tests in
+  `docs/content/_index.md`. Evidence: twelve new RFC-cited tests in
   `ServerHandshake.zig`, including a deterministic differential test that
   drives a kept-connected control engine and an extracted session with the
   same record sequence and requires identical events and byte-identical
@@ -1797,7 +1797,7 @@ each passing the same correctness and interop gates.
   attached, and on stderr either way) and reads process stdin (measured
   pre-fix on OpenSSL 3.6.4 and AWS-LC 5.5.0). Encrypted private keys are not
   part of the loader API and no
-  caller-owned password API exists yet; `docs/USAGE.md` states the same. The
+  caller-owned password API exists yet; `docs/content/_index.md` states the same. The
   evidence is a source-embedded encrypted pair of fixtures (same RSA key as
   `rsa_pss_key_pem`, both containers), an error-contract test per API, a
   lane-independent error-queue residue test (red under errq-guard removal,
@@ -2151,7 +2151,7 @@ wiring pointer. The root fetched package exposes `tls` and the
 Zig 0.16-only (#79). `tls_xev` gates its libxev dependency behind an explicit
 opt-in. The distribution consumer compiles from an isolated package cache,
 checks the xev opt-in diagnostic, and rejects eager benchmark, test-runner,
-fixture-decoder, or libxev fetches on core and standard-wrapper paths. `docs/USAGE.md` documents the
+fixture-decoder, or libxev fetches on core and standard-wrapper paths. `docs/content/_index.md` documents the
 caller-owned-buffer model, `RecordBuffer`, `Outbox`, the `pending_write` /
 `completeWrite()` interlock,
 server credential flow (`setCredentials` plus `sendServerFlightBuffered`), ALPN

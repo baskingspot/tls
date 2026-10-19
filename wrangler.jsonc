@@ -1,15 +1,19 @@
 {
-  "$schema": "https://unpkg.com/wrangler@4.141.0/config-schema.json",
-  "name": "tls-withmatt-com",
-  "compatibility_date": "2025-12-10",
-  "observability": {
-    "enabled": false
-  },
+  // Schema lives on unpkg because this repo has no node_modules.
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "baskingspot-dev-tls",
+  // Set to the date of the last deploy-relevant config change.
+  "compatibility_date": "2026-10-19",
+  // Pure static site: no worker script, so no `main` and no `binding`.
   "assets": {
-    "directory": "book",
-    "not_found_handling": "404-page"
+    // The site under /tls/ (see justfile `doc`). The router in
+    // baskingspot/site forwards /tls/... without stripping the prefix, so
+    // the Worker sees the paths as built.
+    "directory": "./zig-out/site",
+    // Plain 404 for unknown paths (not an SPA, no 404.html).
+    "not_found_handling": "none",
+    "html_handling": "auto-trailing-slash",
   },
-  "build": {
-    "command": "zig build docs -p docs/site && mdbook build"
-  }
+  "workers_dev": false,
+  "preview_urls": false,
 }

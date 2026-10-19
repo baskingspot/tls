@@ -16,17 +16,10 @@ infra/iam/terraform.tfstate.backup
 .DS_Store
 
 # Generated docs site output
-book/
-docs/site/zig-docs/
+docs/static/api/
+docs/themes/
 .wrangler/
 .dev.vars*
-
-# Raster logo/wordmark concept renders. The committed assets are the SVGs in
-# images/logo/; the multi-MB image-model concepts stay local.
-images/prompt-a/
-images/prompt-b/
-images/prompt-c/
-images/wordmark/
 
 # Local macOS probe scratch (binaries, per-run captures)
 .macprobe/

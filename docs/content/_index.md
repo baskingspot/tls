@@ -1,4 +1,113 @@
-# tls — Sans-I/O
++++
+title = "tls"
++++
+
+A TLS 1.3 implementation that does no I/O. You feed it the bytes you read off
+the wire; it hands you back the bytes to write. Your socket, your event loop,
+your buffers. tls does the protocol.
+
+It is pre-alpha. The API will change.
+
+- [Why tls](#why-tls): when to reach for it, and when to use something mature instead.
+- [Guide](#guide): buffer ownership, the drive loop, and working client and server code.
+- [API reference](api/): every public declaration.
+- [Security](#security): status and how to report a vulnerability.
+
+# Why tls
+
+The README tells you what tls is. This is the longer answer to why it exists and
+when you'd reach for it over the library you already have.
+
+Short version: tls is a TLS 1.3 state machine that does no I/O and allocates
+nothing of its own, aimed at people who want to own their event loop and their
+memory. If that's not you, one of the mature libraries is the right call, and
+this page will tell you so.
+
+## The problem with a TLS library that owns its sockets
+
+Most TLS libraries come welded to an I/O model. OpenSSL wants its BIOs. A typical
+language-native library wants a blocking stream, or its async runtime, or a
+callback shape it defines. The moment you pull it in, its assumptions about how
+bytes move become your assumptions.
+
+That's fine until it isn't. If you're writing an io_uring server, or running on a
+custom event loop, or building something where every allocation is accounted for,
+a library that owns its sockets fights you the whole way. You end up wrapping,
+shimming, and working around a design that assumed it was in charge.
+
+Sans-I/O flips that. The protocol is a pure function of bytes: you give it what
+came off the wire, it tells you what to send back and hands you decrypted
+application data. It never touches a socket. It never blocks. It has no thread of
+its own. Where the bytes come from and where they go is entirely yours.
+
+rustls proved this model works in production. tls takes it further on memory: no
+allocator in the engine at all.
+
+## What tls is for
+
+Reach for tls when:
+
+- You own your I/O and want to keep owning it. epoll, io_uring, a green-thread
+  scheduler, an in-memory test harness — tls slots into any of them because it
+  has no opinion about how you run.
+- You care about allocation. The engine holds no heap state and never calls an
+  allocator. You give it buffers; it uses exactly those. That makes memory
+  behavior something you can reason about instead of profile after the fact.
+- You're on Zig and don't want to drag a C library's I/O assumptions into your
+  build, even though the primitive crypto underneath is still battle-tested
+  libcrypto.
+- You want TLS 1.3 and nothing else. No 1.2 downgrade paths, no DTLS, no
+  Windows portability layer diluting the code you're trusting with your traffic.
+
+## What tls is not for, yet
+
+Being honest about this is the whole brand, so here it is straight:
+
+- **Anything in production.** It's pre-alpha and unaudited.
+  [`SECURITY.md`](https://github.com/baskingspot/tls/blob/main/SECURITY.md)
+  says this plainly.
+- **A drop-in OpenSSL replacement.** tls does the TLS state machine. It does
+  not manage sockets, load OS trust stores, or hand you a `connect()`. You write
+  the drive loop. The examples show how, but it's your code.
+- **The full TLS feature set.** tls intentionally supports a bounded TLS 1.3
+  surface rather than every legacy or optional feature. See
+  [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) for the canonical
+  supported surface and remaining gaps.
+- **A guaranteed-stable API.** Signatures move. Pin a commit if you build on it.
+
+If you need a mature, audited, drop-everything-in TLS stack right now, use
+rustls or OpenSSL. That's not a dodge — it's the correct answer for most people
+today, and tls will tell you when that changes.
+
+## The performance argument
+
+Performance is the reason tls is being built rather than the reason to adopt it
+today. The claim is narrow and evidence-backed: on in-memory application-data
+benchmarks, tls does less work per record than libssl across the board, and less
+than rustls on AES-GCM. It loses to rustls on small ChaCha20-Poly1305 records,
+and that row is published with the disassembly that explains why.
+
+The honest caveats are in the
+[README](https://github.com/baskingspot/tls/blob/main/README.md) and in
+[`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md): two
+x86_64 EC2 shapes so far, no repetition or threshold policy yet, and a
+measurement-shape difference between the harnesses. So the current numbers are
+measurements, not a marketing headline. When the methodology is hardened enough
+to make a headline claim, we'll make it, and it'll point at reproducible numbers.
+
+Until then the argument for tls is architectural: the Sans-I/O, zero-allocation
+design is what makes the performance ceiling high. The numbers are catching up to
+the design, in the open, with the losses shown.
+
+## Where to go next
+
+- [`README.md`](https://github.com/baskingspot/tls/blob/main/README.md) — what it is and how to start.
+- [`docs/USAGE.md`](https://github.com/baskingspot/tls/blob/main/docs/USAGE.md) — the API guide and drive-loop patterns.
+- [`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md) — benchmark methodology and the raw captures.
+- [`docs/research/THREAT_MODEL.md`](https://github.com/baskingspot/tls/blob/main/docs/research/THREAT_MODEL.md) — the attacker model and the caller/engine line.
+- [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) — what's proven, what isn't, and how we know.
+
+# Guide
 
 tls is a pure TLS 1.3 state machine. The caller supplies bytes, buffers, transport I/O, and the drive loop. tls protocol code allocates no memory. Production crypto backends can allocate memory inside provider operations.
 
@@ -342,7 +451,7 @@ record drain. The writer must not call back into tls.
 
 After the handshake is connected, `txKtlsInfo()` and `rxKtlsInfo()` return copied Linux kTLS key material for the current traffic-key epoch. `tx` is the local write direction; `rx` is the peer write direction. The core still does no socket I/O and does not call `setsockopt`.
 
-The Zig 0.16/Linux [`integrations/tls-ktls`](../integrations/tls-ktls/README.md) package owns the safe activation and data-plane lifecycle. It requires an empty `RecordBuffer`, no pending engine write, no unanswered KeyUpdate request, and an application-level barrier preventing the peer from racing a new record into the socket during activation; keeps key snapshots internal to immediate `setsockopt` calls; receives control-record metadata with `recvmsg`; processes kernel-decrypted records through `receiveKtlsRecord`; ratchets external TX records through `ratchetKtlsTx`; and sends `close_notify` explicitly. Use that package instead of open-coding the sequence from the raw getters.
+The Zig 0.16/Linux [`integrations/tls-ktls`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/README.md) package owns the safe activation and data-plane lifecycle. It requires an empty `RecordBuffer`, no pending engine write, no unanswered KeyUpdate request, and an application-level barrier preventing the peer from racing a new record into the socket during activation; keeps key snapshots internal to immediate `setsockopt` calls; receives control-record metadata with `recvmsg`; processes kernel-decrypted records through `receiveKtlsRecord`; ratchets external TX records through `ratchetKtlsTx`; and sends `close_notify` explicitly. Use that package instead of open-coding the sequence from the raw getters.
 
 The raw exports remain available for specialized integrations. They are immediate-use snapshots: retaining one across any record operation, or reinstalling stale sequence/key material, can cause epoch desynchronization or nonce reuse.
 
@@ -814,3 +923,15 @@ for the examples above:
 - A general io_uring or arbitrary-runtime wrapper. In-tree integration packages
   cover `std.Io`, libxev, and Linux kTLS without moving transport I/O into the
   core engine.
+
+# Security
+
+tls is pre-alpha, and no external security audit has happened. Do not put it in
+front of real traffic or real secrets yet. Three findings from an internal
+adversarial review are fixed, each with a regression test.
+
+To report a vulnerability, use
+[GitHub's private advisory form](https://github.com/baskingspot/tls/security/advisories/new).
+The full policy, including scope and what counts, is
+[SECURITY.md](https://github.com/baskingspot/tls/blob/main/SECURITY.md) in the
+repository.

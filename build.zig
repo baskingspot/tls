@@ -195,19 +195,19 @@ pub fn build(b: *Build) void {
         .fixtures_mod = fixtures_mod,
     });
 
-    // Zig autodoc for the public API. `zig build docs -p docs/site` installs the
-    // generated HTML into the mdBook source tree at docs/site/zig-docs, where
-    // `mdbook build` sweeps it into the published site at /zig-docs/.
+    // Zig autodoc for the public API. `zig build docs` installs the generated
+    // HTML into the guide's static tree at docs/static/api, so the site serves
+    // it at /tls/api/.
     const docs_obj = b.addObject(.{
         .name = "tls-docs",
         .root_module = mod,
     });
     const docs_install = b.addInstallDirectory(.{
         .source_dir = docs_obj.getEmittedDocs(),
-        .install_dir = .prefix,
-        .install_subdir = "zig-docs",
+        .install_dir = .{ .custom = "../docs/static/api" },
+        .install_subdir = "",
     });
-    const docs_step = b.step("docs", "Generate Zig API docs");
+    const docs_step = b.step("docs", "Generate API docs into docs/static/api");
     docs_step.dependOn(&docs_install.step);
 
     // C ABI library (-Dcapi)

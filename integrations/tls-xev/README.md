@@ -22,7 +22,7 @@ const tls_xev = tls_dep.module("tls_xev");
 
 The option keeps libxev out of core-only and `tls_std` consumers. This module
 requires Zig 0.16. See
-[`docs/USAGE.md`](../../docs/USAGE.md#fresh-project-setup) for the complete
+[`docs/content/_index.md`](../../docs/content/_index.md#fresh-project-setup) for the complete
 consumer wiring.
 
 ## Why this is a package and `tls-zio` isn't
@@ -133,7 +133,7 @@ Both configurations borrow their slices. The caller must retain those slices unt
 
 RFC 10024 hybrid key exchange is opt-in through `ClientConfig.Options.hybrid` and `ServerConfig.Options.hybrid_groups`. Both constructors validate these options. Invalid policy fails before trust-store work or connection key generation.
 
-[`docs/USAGE.md`](../../docs/USAGE.md#rfc-10024-hybrid-key-exchange) lists capability queries, policy errors, and FIPS behavior.
+[`docs/content/_index.md`](../../docs/content/_index.md#rfc-10024-hybrid-key-exchange) lists capability queries, policy errors, and FIPS behavior.
 
 ```zig
 const server_config: tls.ServerConfig = try .init(.{
