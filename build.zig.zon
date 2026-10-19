@@ -7,8 +7,8 @@
         // Production: fixed-capacity containers and memory scans shared with
         // the rest of the baskingspot tree. Not lazy — the library imports it.
         .stdx = .{
-            .url = "git+https://github.com/baskingspot/stdx#c14102f0d0c10c2034ad182b04f8424d908f3594",
-            .hash = "stdx-0.0.0-CcWeguTuCQBKaG3uhpv2BxP4-3kuxv1V_eY-5BgSd1yL",
+            .url = "git+https://github.com/baskingspot/stdx#ae67e2661d2693ab9594bd2c3a106ff52341c4d2",
+            .hash = "stdx-0.0.0-CcWeguTuCQB0dEjKhSX1xY6PI463qmas_DaJ8hzH2sSx",
         },
         // Development-only: the test runner, benchmarks, and comptime txtar
         // fixtures. Lazy so consumers of the library never fetch it.
