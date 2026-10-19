@@ -46,19 +46,23 @@ engine never calls an allocator.
 - You want TLS 1.3 and nothing else. No 1.2 downgrade path, no DTLS, no Windows
   portability layer.
 
-## What it is not for
+## Limits
 
 - **A drop-in OpenSSL replacement.** The engine is the TLS state machine. It does not open sockets, load OS trust stores, or give you a `connect()`. You write the drive loop.
 - **The full TLS feature set.** It supports a bounded TLS 1.3 surface. [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) is the authority on what is proven and what is not.
 - **A stable API.** Signatures move. Pin a commit if you build on it.
 
-## The performance argument
+## Why trust it
 
-Performance is why the library exists. The claim is narrow: on in-memory application-data benchmarks it does less work per record than libssl across the board, and less than rustls on AES-GCM. It loses to rustls on small ChaCha20-Poly1305 records, and that row ships with the disassembly that explains why.
+It runs in production. The test suite is 886 tests, and the parser and record-decrypt surfaces are fuzzed with `zig build test --fuzz`. The protocol is checked against RFC 8448 vectors, Wycheproof boundary vectors, OpenSSL interop in both directions, and the TLS-Anvil and tlsfuzzer conformance suites. A merge runs three crypto backends (OpenSSL, AWS-LC, BoringSSL), four transport examples, the C ABI example, a distribution smoke test, and valgrind.
 
-The caveats are in the [README](https://github.com/baskingspot/tls/blob/main/README.md) and in [`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md): three n=10 captures (x86_64, aarch64, macOS), a measurement-shape difference between harnesses, and a 15% regression gate that runs by hand on EC2 rather than in CI. The captures are committed, so every number here can be re-derived.
+The one thing it does not have is a third-party audit. That is the only gap the evidence in this repo cannot close, and [`SECURITY.md`](https://github.com/baskingspot/tls/blob/main/SECURITY.md) is the one place it is stated.
 
-Until then the argument is architectural: Sans-I/O and no engine allocations are what make the performance ceiling high.
+## Performance
+
+Performance is why the library exists. On in-memory application-data benchmarks it does less work per record than libssl across the board, and less than rustls on AES-GCM. It loses to rustls on small ChaCha20-Poly1305 records, and that row ships with the disassembly that explains why.
+
+The evidence is three n=10 captures (x86_64, aarch64, macOS), committed under `docs/research/perf/`. The caveats are in the [README](https://github.com/baskingspot/tls/blob/main/README.md) and in [`docs/research/PERFORMANCE.md`](https://github.com/baskingspot/tls/blob/main/docs/research/PERFORMANCE.md): a measurement-shape difference between harnesses, and a 15% regression gate that runs by hand on EC2. Every number here can be re-derived from the captures.
 
 ## Where to go next
 

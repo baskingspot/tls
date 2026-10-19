@@ -11,7 +11,9 @@ The library is a TLS 1.3 state machine. You feed it the bytes you read off the
 wire and it hands back the bytes to write. The socket, the event loop, and the
 buffers stay yours.
 
-It is in production use. The API is not frozen, so pin a commit.
+It is in production use. The test suite is 886 tests with fuzzing on the parser
+and record-decrypt surfaces, three crypto backends, and conformance runs against
+TLS-Anvil and tlsfuzzer. The API is not frozen, so pin a commit.
 
 ## Performance
 
