@@ -5,50 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+permissions: {}
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  ci:
     permissions:
       contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: DeterminateSystems/determinate-nix-action@d0c908e6cbe9f89f36ed8205a3ab6f092636916a # v3.23.1
-      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
-      - name: Run checks
-        run: nix develop --command just ci
-
-  test-boringssl:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: DeterminateSystems/determinate-nix-action@d0c908e6cbe9f89f36ed8205a3ab6f092636916a # v3.23.1
-      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
-      - name: Run BoringSSL backend checks
-        run: nix develop .#boringssl --command just check-backend-boringssl
-
-  # kqueue coverage. Five defects in integrations/ztls-xev have been invisible
-  # under io_uring and every one was found because a human ran a Mac by hand;
-  # the 21/21 that closed #76 was stale within a day. Scoped to the
-  # integrations rather than the whole lane — conformance needs a Python/TLS-Anvil
-  # stack that has never been exercised on macOS.
-  test-macos-integrations:
-    runs-on: macos-15
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: DeterminateSystems/determinate-nix-action@d0c908e6cbe9f89f36ed8205a3ab6f092636916a # v3.23.1
-      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
-      - name: Run the integration and distribution gates on kqueue
-        run: nix develop --command just integrations-ci distribution-ci
+    uses: baskingspot/gh-actions/.github/workflows/ci.yml@258dbbb560643394f1d54f59ac3db68df3742aca # v0.8.0
+    secrets:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}

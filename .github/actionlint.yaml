@@ -1,0 +1,5 @@
+# actionlint does not know the ubuntu-26.04 hosted label yet. List it here so
+# the lint passes. Remove this file once the actionlint in nixpkgs knows it.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

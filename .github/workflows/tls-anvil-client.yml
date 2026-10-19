@@ -23,14 +23,14 @@ concurrency:
   group: tls-anvil-client-${{ github.ref }}-${{ github.event.inputs.crypto_backend || 'openssl' }}
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
-permissions:
-  contents: read
-  id-token: write
+permissions: {}
 
 jobs:
   anvil-client:
+    permissions:
+      contents: read
     name: anvil-client (${{ matrix.crypto_backend }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -45,8 +45,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: DeterminateSystems/determinate-nix-action@d0c908e6cbe9f89f36ed8205a3ab6f092636916a # v3.23.1
-      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.35.3/install
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: baskingspot
+          extraPullNames: mattrobenolt
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
       - name: Build harness and TLS-Anvil tools
         run: |
