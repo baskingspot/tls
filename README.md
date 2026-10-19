@@ -158,66 +158,31 @@ FIPS-provider activation. A BoGo conformance runner is deferred.
 
 ## Install
 
-Use Zig 0.16. The library links a libcrypto-family provider through
-`pkg-config`; the devshell supplies OpenSSL by default.
-
 ```sh
 zig fetch --save git+https://github.com/baskingspot/tls
 ```
 
-That writes a `.tls` entry into `build.zig.zon`. Keep the fingerprint `zig init`
-generated:
+Add the module to your build:
 
 ```zig
-.dependencies = .{
-    .tls = .{
-        .url = "git+https://github.com/baskingspot/tls#<commit>",
-        .hash = "...", // filled in by `zig fetch --save`
-    },
-},
+const tls = b.dependency("tls", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("tls", tls.module("tls"));
 ```
 
-If you have checked out the repo alongside your project, point at it directly
-instead. The path is relative to your project root:
+Then import it:
 
 ```zig
-.tls = .{ .path = "../tls" },
+const tls = @import("tls");
 ```
-
-Wire the module into your executable in `build.zig`:
-
-```zig
-const tls_dep = b.dependency("tls", .{
-    .target = target,
-    .optimize = optimize,
-});
-
-const exe_mod = b.createModule(.{
-    .root_source_file = b.path("src/main.zig"),
-    .target = target,
-    .optimize = optimize,
-    .imports = &.{.{ .name = "tls", .module = tls_dep.module("tls") }},
-});
-const exe = b.addExecutable(.{ .name = "hello-tls", .root_module = exe_mod });
-```
-
-Now `@import("tls")` works from `src/main.zig`. The same dependency exposes the
-integration modules:
-
-| Module | Purpose | Extra requirement |
-|---|---|---|
-| `tls_std` | Blocking `std.Io.net` stream wrapper | Zig 0.16 |
-| `tls_xev` | Non-blocking libxev adapter | Zig 0.16 and `.xev = true` in the `b.dependency` options |
-| `tls_ktls` | Linux kernel TLS data plane | Zig 0.16 and Linux |
 
 `std.crypto.tls` exists, so a file that imports both should bind this module as
-`tlsx`:
+`tlsx`.
 
-```zig
-const tlsx = @import("tls");
-```
+The same dependency exposes `tls_std`, `tls_xev` (opt-in with `.xev = true`),
+and `tls_ktls` (Linux). The [guide](https://baskingspot.dev/tls/#fresh-project-setup)
+has the full setup.
 
-`tls_xev` is opt-in, so a core or `tls_std` consumer does not fetch libxev.
+tls builds with Zig 0.16 only.
 
 ## C ABI
 
