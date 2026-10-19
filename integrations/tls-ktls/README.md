@@ -1,10 +1,10 @@
 # tls-ktls
 
-Linux kTLS data-plane integration for tls, built with Zig 0.16.
+Linux kTLS data-plane integration for `tls`, built with Zig 0.16.
 
 The core library performs the TLS 1.3 handshake in userspace. `tls-ktls` then installs the
 negotiated TX and RX traffic epochs on the connected TCP socket. Application
-records are encrypted and decrypted by the kernel; tls remains alive as the
+records are encrypted and decrypted by the kernel; the engine remains alive as the
 key-schedule owner for later KeyUpdate messages.
 
 The package allocates no memory and supports AES-128-GCM, AES-256-GCM, and
@@ -12,7 +12,7 @@ ChaCha20-Poly1305.
 
 ## Install
 
-Fetch the root tls package, then import its Linux-only `tls_ktls` module:
+Fetch the root `tls` package, then import its Linux-only `tls_ktls` module:
 
 ```zig
 const tls_dep = b.dependency("tls", .{
@@ -82,7 +82,7 @@ handshake's record-layer methods directly after ownership crosses to the kernel:
   response. A bare FIN is `error.Truncated`.
 - `write(bytes)` returns the exact application-byte count consumed by the
   kernel. Handle short writes normally.
-- `update(request)` sends KeyUpdate under the old TX epoch, ratchets tls, and
+- `update(request)` sends KeyUpdate under the old TX epoch, ratchets the traffic keys, and
   immediately installs the new epoch before any later application write.
 - `closeWrite()` sends an explicit `close_notify` alert with
   `TLS_SET_RECORD_TYPE`, then shuts down the TCP write half. Closing a kTLS
@@ -123,7 +123,7 @@ Do not gate on `uname`; use `rekeySupport()`.
   `error.FragmentedKeyUpdate`. Linux pauses RX after seeing byte `0x18` at the
   start of that record and cannot expose the continuation without a risky
   same-key reinstall. The package sends `unexpected_message` and closes rather
-  than guessing. Complete coalesced post-handshake messages are parsed by tls.
+  than guessing. Complete coalesced post-handshake messages are parsed by the engine.
 - One `read()` consumes at most 64 post-handshake control records before
   returning application data. A larger control-only burst fails closed with
   `error.ControlRecordFlood`.

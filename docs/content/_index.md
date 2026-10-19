@@ -343,7 +343,7 @@ record must stay alive and unchanged until `outbox.writeBlocked()` is false. The
 writer contract is small: `write(bytes)` returns the number of
 bytes accepted, and `0` means no progress / would-block. While an outbox owns a
 record, do not call `completeWrite()` manually; the outbox does that after a full
-record drain. The writer must not call back into tls.
+record drain. The writer must not call back into the engine.
 
 ## Event union
 
@@ -423,9 +423,9 @@ server.completeWrite();
 
 `deriveTicketPsk()` assigns a unique per-connection nonce and permits only one
 prepared ticket at a time. RFC 8446 §4.6.1 puts `ticket_age_add` freshness on
-the server; tls owns no CSPRNG, so the caller must provide a fresh
+the server; the engine owns no CSPRNG, so the caller must provide a fresh
 cryptographically random value for every call. Ticket identities are non-empty
-and at most 256 bytes so tls clients can cache them. The server emits one ticket per
+and at most 256 bytes so clients can cache them. The server emits one ticket per
 record, caps issuance at 32 tickets per connection, and does not advertise
 0-RTT from this API.
 

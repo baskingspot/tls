@@ -15,6 +15,12 @@ API.
 
 Target platforms: Linux and macOS. No Windows support, no portability tax.
 
+**Writing about it.** The package name is `tls`, which is also the protocol. So
+lowercase `tls` in prose is never bare: it is either in code font, or the
+sentence says "the engine", "the library", or "the core" instead. Plain-text
+TLS is the protocol and stays uppercase. Never use `tls` as an adjective, as in
+"tls clients"; those are clients, or the engine's client role.
+
 ---
 
 ## Non-Negotiable Principles

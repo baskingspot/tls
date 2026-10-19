@@ -138,3 +138,4 @@ Accumulated memory. Update it when you find a rule or a recurring drift class th
 - Performance claims come from three n=10 captures under `docs/research/perf/`. Recompute before changing a number; the smallest-win figures are per platform and per comparator, and mixing them was a real bug.
 - `docs/research/` is dated evidence. It keeps the old `ztls` name and old paths on purpose. Do not rename or relink it.
 - The C ABI is partial and keeps the `ztls_*` prefix on purpose; see issue #149.
+- The package is named `tls`, which is also the protocol. Lowercase `tls` is never bare in prose: code font for the package, "the engine" or "the library" as the subject, uppercase TLS for the protocol, and never `tls` as an adjective. A bare lowercase `tls` is a drift finding.

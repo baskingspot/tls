@@ -9,7 +9,7 @@ not here. The implementation landed under
 
 ## Install
 
-Fetch the root tls package and opt into libxev when resolving the dependency:
+Fetch the root `tls` package and opt into libxev when resolving the dependency:
 
 ```zig
 const tls_dep = b.dependency("tls", .{

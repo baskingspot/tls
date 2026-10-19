@@ -23,9 +23,9 @@ Headline row: AES-128-GCM ping-pong at 1350-byte records, near the common MTU
 boundary, from the x86_64 capture
 ([`docs/research/perf/20260712-102422-ec2-c7i-2xlarge/`](docs/research/perf/20260712-102422-ec2-c7i-2xlarge/)):
 
-| impl | ns/op | vs tls |
+| impl | ns/op | vs `tls` |
 |---|---:|---:|
-| tls | 790.7 | |
+| `tls` | 790.7 | |
 | rustls | 1447.5 | 1.83x slower |
 | OpenSSL libssl | 1820.5 | 2.30x slower |
 
@@ -182,7 +182,7 @@ The same dependency exposes `tls_std`, `tls_xev` (opt-in with `.xev = true`),
 and `tls_ktls` (Linux). The [guide](https://baskingspot.dev/tls/#fresh-project-setup)
 has the full setup.
 
-tls builds with Zig 0.16 only.
+The library builds with Zig 0.16 only.
 
 ## C ABI
 

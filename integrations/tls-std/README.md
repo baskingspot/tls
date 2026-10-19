@@ -14,7 +14,7 @@ implementation landed under [#77](https://github.com/baskingspot/tls/issues/77).
 
 ## Install
 
-Fetch the root tls package, then import its `tls_std` module. One dependency
+Fetch the root `tls` package, then import its `tls_std` module. One dependency
 contains core and all integration sources; this module requires Zig 0.16.
 
 ```zig
@@ -60,7 +60,7 @@ consumer wiring.
    no caller gets an unverified connection by omission. `.system_bundle` carries
    the allocator it needs, `.bundle` pins your own store, and `.insecure` is an
    explicit, greppable opt-out.
-6. **Comptime-sized buffers.** tls core uses caller-owned buffers. `Config`
+6. **Comptime-sized buffers.** The core uses caller-owned buffers. `Config`
    exposes each size. The defaults accept the largest supported records and
    handshakes. A caller with thousands of connections can reduce
    look-ahead and reassembly capacity. Nothing is hidden or mandatory.
@@ -313,7 +313,7 @@ whose scheme the server's CertificateRequest cannot carry, and a client chain
 too large for one record, are `InvalidOptions` (caller configuration), while a
 verified client leaf that does not fit `client_identity_storage` is
 `HandshakeBufferTooShort` (sizing). Handshake failure alerts go through the
-canonical per-error tls table, so a peer logging the failure sees
+canonical alert table, so a peer logging the failure sees
 `unknown_ca` / `certificate_expired` / `decrypt_error` rather than a generic
 `bad_certificate`.
 
@@ -588,12 +588,12 @@ seam, and it is the reason the zero-copy read path had to go.
   mechanism and belongs to whoever owns the runtime. `abort()` provides manual
   wakeup for blocked halves. `examples/zio_client.zig` races the exchange
   against an `Io.Select` deadline. `readError()` then returns `error.Canceled`.
-- **0.15 support** — all of tls is 0.16-only now (#144).
+- **0.15 support** — the whole package is 0.16-only now (#144).
 - **Distribution as an independently `zig fetch`-able package** — tracked by #79.
 
 ## Build
 
-In-tree, depends on the tls core via a path dep (`../..`), the same pattern
+In-tree, depends on the core package via a path dep (`../..`), the same pattern
 `conformance/` uses. Devshell: the root default (`nix develop ../..`), or
 just `cd` into this directory — direnv loads it via `.envrc`.
 
