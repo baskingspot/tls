@@ -1,0 +1,18 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version without the leading v, such as 0.1.0
+        required: true
+
+permissions: {}
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: baskingspot/gh-actions/.github/workflows/release-library.yml@c6b2ec4eed9d02454728e78d4f04655e4e623cda # v0.9.0
+    with:
+      version: ${{ inputs.version }}
