@@ -6,62 +6,48 @@ A TLS 1.3 implementation that does no I/O. You feed it the bytes you read off
 the wire; it hands you back the bytes to write. Your socket, your event loop,
 your buffers. The engine does the protocol.
 
-It is pre-alpha. The API will change.
+It is in production use. The API can still change, so pin a commit.
 
-- [Why tls](#why-tls): when to reach for it, and when to use something mature instead.
+- [Why this exists](#why-this-exists): when to reach for it, and when to use something mature instead.
 - [Guide](#guide): buffer ownership, the drive loop, and working client and server code.
 - [API reference](api/): every public declaration.
 - [Security](#security): status and how to report a vulnerability.
 
-# Why tls
+# Why this exists
 
-The README tells you what tls is. This is the longer answer to why it exists and
-when you'd reach for it over the library you already have.
+A TLS library that owns its sockets owns your I/O model too. OpenSSL wants its
+BIOs. A language-native library wants a blocking stream, or its own async
+runtime, or a callback shape it defines. Pull one in and its assumptions about
+how bytes move become your assumptions.
 
-Short version: tls is a TLS 1.3 state machine that does no I/O and allocates
-nothing of its own, aimed at people who want to own their event loop and their
-memory. If that's not you, one of the mature libraries is the right call, and
-this page will tell you so.
+That works until you are writing an io_uring server, or running a custom event
+loop, or accounting for every allocation. Then a library that owns its sockets
+fights you, and you spend the time wrapping and shimming a design that assumed
+it was in charge.
 
-## The problem with a TLS library that owns its sockets
+Sans-I/O separates the protocol from the transport. You give the engine the
+bytes that came off the wire. It tells you what to send back and hands you the
+decrypted application data. It never touches a socket, never blocks, and has no
+thread of its own.
 
-Most TLS libraries come welded to an I/O model. OpenSSL wants its BIOs. A typical
-language-native library wants a blocking stream, or its async runtime, or a
-callback shape it defines. The moment you pull it in, its assumptions about how
-bytes move become your assumptions.
+rustls showed this model works in production. The difference here is memory: the
+engine never calls an allocator.
 
-That's fine until it isn't. If you're writing an io_uring server, or running on a
-custom event loop, or building something where every allocation is accounted for,
-a library that owns its sockets fights you the whole way. You end up wrapping,
-shimming, and working around a design that assumed it was in charge.
+## When to use it
 
-Sans-I/O flips that. The protocol is a pure function of bytes: you give it what
-came off the wire, it tells you what to send back and hands you decrypted
-application data. It never touches a socket. It never blocks. It has no thread of
-its own. Where the bytes come from and where they go is entirely yours.
-
-rustls proved this model works in production. `tls` takes it further on memory: no
-allocator in the engine at all.
-
-## What tls is for
-
-Reach for tls when:
-
-- You own your I/O and want to keep owning it. epoll, io_uring, a green-thread
-  scheduler, an in-memory test harness — tls slots into any of them because it
-  has no opinion about how you run.
-- You care about allocation. The engine holds no heap state and never calls an
-  allocator. You give it buffers; it uses exactly those. That makes memory
-  behavior something you can reason about instead of profile after the fact.
-- You're on Zig and don't want to drag a C library's I/O assumptions into your
-  build, even though the primitive crypto underneath is still battle-tested
-  libcrypto.
-- You want TLS 1.3 and nothing else. No 1.2 downgrade paths, no DTLS, no
-  Windows portability layer diluting the code you're trusting with your traffic.
+- You own your I/O and want to keep owning it: epoll, io_uring, a green-thread
+  scheduler, an in-memory test harness. The engine has no opinion about how you
+  run.
+- You care where memory comes from. The engine holds no heap state. You give it
+  buffers and it uses those, so memory behavior is something to reason about
+  rather than profile after the fact.
+- You are on Zig and do not want a C library's I/O assumptions in your build,
+  even though the primitive crypto underneath is still libcrypto.
+- You want TLS 1.3 and nothing else. No 1.2 downgrade path, no DTLS, no Windows
+  portability layer.
 
 ## What it is not for
 
-- **Production.** Pre-alpha and unaudited. [`SECURITY.md`](https://github.com/baskingspot/tls/blob/main/SECURITY.md) has the details.
 - **A drop-in OpenSSL replacement.** The engine is the TLS state machine. It does not open sockets, load OS trust stores, or give you a `connect()`. You write the drive loop.
 - **The full TLS feature set.** It supports a bounded TLS 1.3 surface. [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) is the authority on what is proven and what is not.
 - **A stable API.** Signatures move. Pin a commit if you build on it.
@@ -111,7 +97,7 @@ The engine owns the TLS protocol: framing, encryption, transcript hashing, alert
 
 ## Walkthrough: start with these examples
 
-The rest of this page is the reference. To start from running code, these examples are built and run in CI:
+To start from running code, these examples are built and run in CI:
 
 - [`examples/in_memory_handshake.zig`](https://github.com/baskingspot/tls/blob/main/examples/in_memory_handshake.zig): both engines in one process, no sockets. Read this first: it shows the full 1-RTT handshake and application data in both directions.
 - [`examples/tcp_loopback.zig`](https://github.com/baskingspot/tls/blob/main/examples/tcp_loopback.zig): client and server over `std.net.Stream` on loopback.
@@ -693,7 +679,7 @@ Use the public buffer types unless the application needs custom storage. Smaller
 
 ## API reference
 
-This is a consumer index for the public symbols used by the guide and examples. The walkthrough sections above are the canonical explanation of the drive loop.
+Public symbols used by the guide and examples. The walkthrough above is the canonical explanation of the drive loop.
 
 ### `ClientHandshake`
 
@@ -903,9 +889,8 @@ for the examples above:
 
 # Security
 
-The library is pre-alpha, and no external security audit has happened. Do not put it in
-front of real traffic or real secrets yet. Three findings from an internal
-adversarial review are fixed, each with a regression test.
+The library is in production use. No external security audit has happened. Three
+findings from an internal adversarial review are fixed, each with a regression test.
 
 To report a vulnerability, use
 [GitHub's private advisory form](https://github.com/baskingspot/tls/security/advisories/new).

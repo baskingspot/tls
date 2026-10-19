@@ -58,7 +58,7 @@ You do not hunt. You do not validate findings. You build the harness that makes 
 
 - Create `src/fuzz/` (or `fuzz/`) for targets, corpus, and a `build.zig` fuzz step. Match the existing module layout; do not invent a new top-level home if the taxonomy already defines one — raise it instead.
 - Edit `build.zig` to add fuzz build steps; edit `justfile` / `just/*.just` to add `just fuzz*` recipes; edit `flake.nix` if a fuzzer tool is needed and not present (do not assume global install).
-- Do not edit `src/` production code to make a target compile. If the engine's API forces an awkward target, surface it — the API is pre-alpha and may need to change, but that is the parent's call, not a silent target-side workaround.
+- Do not edit `src/` production code to make a target compile. If the engine's API forces an awkward target, surface it — the API is not frozen and may need to change, but that is the parent's call, not a silent target-side workaround.
 - Update `PRODUCTION_READINESS.md` only when fuzz evidence changes a correctness-pillar claim, and in the same change as the claim.
 - Do not commit, push, close issues, or post GitHub comments unless explicitly instructed.
 

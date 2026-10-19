@@ -3,7 +3,7 @@
 All notable changes to tls are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-tls is pre-alpha and has never been released. There are no version tags yet,
+tls has never been tagged for release. There are no version tags yet,
 and there is deliberately no stable API. The only artifact is `main`. See the
 "Roadmap to v0.1.0" section of the [README](README.md) for the gates that stand
 between here and a first tagged release.

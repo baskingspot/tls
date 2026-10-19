@@ -305,7 +305,7 @@ harnesses; AWS-LC must remain a first-class design target, with BoringSSL
 possible later behind its own backend if the API surface is worth it.
 
 Do not add or preserve a `std.crypto` backend as a parallel product path. This
-is pre-alpha software; there is no compatibility reason to keep transitional
+has no public API contract; there is no compatibility reason to keep transitional
 backend scaffolding once the production direction is chosen.
 
 The strict no-allocation invariant applies to tls-owned framing, state machine,
@@ -340,7 +340,7 @@ Key sections for implementation:
 
 ## API Stability
 
-We have no public API contract yet. This is pre-alpha implementation work.
+We have no public API contract yet.
 Do not hesitate to change function signatures, rename types, restructure
 modules, or rethink abstractions. The cost of changing things now is zero.
 The cost of not changing them later is high. Move fast and don't apologize

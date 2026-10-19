@@ -11,7 +11,7 @@ The library is a TLS 1.3 state machine. You feed it the bytes you read off the
 wire and it hands back the bytes to write. The socket, the event loop, and the
 buffers stay yours.
 
-It is pre-alpha. The API will change.
+It is in production use. The API can still change, so pin a commit.
 
 ## Performance
 

@@ -3,13 +3,10 @@
 This is the security policy for `tls`, a TLS 1.3 library. Security is the whole job. Read it before you rely
 on it for anything.
 
-## Status: pre-alpha, internally adversarially reviewed
+## Status: in production, internally adversarially reviewed
 
-The library has not had an external security audit. The API is not stable. It has not
-been deployed anywhere that matters. Do not put it in front of real traffic or
-real secrets yet.
-
-That is not false modesty.
+The library has not had an external security audit. The API is not frozen. It is in
+production use. The review described here is internal, not a third-party audit.
 [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md)
 tracks exactly what is proven and what isn't, with the evidence behind each
 claim. If you're weighing
@@ -66,7 +63,7 @@ Out of scope:
 
 ## Expectations
 
-This is pre-alpha software maintained in the open. There is no response-time SLA.
+This is software maintained in the open. There is no response-time SLA.
 Reports are read and taken seriously, but fixes land on a best-effort basis until
 the project reaches a stage where it can promise more. When tls is ready to make
 security commitments it can keep, this file will say so.
