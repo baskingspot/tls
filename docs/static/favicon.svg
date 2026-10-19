@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+<!--! 16-unit grid. A 16 square tile, the cold world. A disc of r 5 rests in its lower left corner, touching the floor and the wall, and its top sits 10 units up. At 16 px the tile edges sit on pixels. Dark tab bars get a slate tile.-->
+  <style>
+    .c{fill:#16191d}@media (prefers-color-scheme:dark){.c{fill:#58616c}}
+  </style>
+  <path d="M0 0h16v16H0z" class="c"/>
+  <circle cx="5" cy="11" r="5" fill="#d4412b"/>
+</svg>
