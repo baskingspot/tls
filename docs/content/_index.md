@@ -6,7 +6,9 @@ A TLS 1.3 implementation that does no I/O. You feed it the bytes you read off
 the wire; it hands you back the bytes to write. Your socket, your event loop,
 your buffers. The engine does the protocol.
 
-It is in production use. The API can still change, so pin a commit.
+Production readiness is tracked per commit in
+[`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md);
+there is no tagged release, so pin a commit.
 
 - [Why this exists](#why-this-exists): when to reach for it, and when to use something mature instead.
 - [Guide](#guide): buffer ownership, the drive loop, and working client and server code.
@@ -54,9 +56,17 @@ engine never calls an allocator.
 
 ## Why trust it
 
-It runs in production. The test suite is 886 tests, and the parser and record-decrypt surfaces are fuzzed with `zig build test --fuzz`. The protocol is checked against RFC 8448 vectors, Wycheproof boundary vectors, OpenSSL interop in both directions, and the TLS-Anvil and tlsfuzzer conformance suites. A merge runs three crypto backends (OpenSSL, AWS-LC, BoringSSL), four transport examples, the C ABI example, a distribution smoke test, and valgrind.
+The evidence sits in
+[`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md)
+and is recorded per commit. The protocol is checked against RFC 8448 vectors,
+Wycheproof boundary vectors, OpenSSL interop in both directions, and the
+TLS-Anvil and tlsfuzzer conformance suites. The parser and record-decrypt
+surfaces are fuzzed with `zig build test --fuzz`. A merge runs three crypto
+backends (OpenSSL, AWS-LC, BoringSSL), four transport examples, the C ABI
+example, a distribution smoke test, and valgrind.
 
-The one thing it does not have is a third-party audit. That is the only gap the evidence in this repo cannot close, and [`SECURITY.md`](https://github.com/baskingspot/tls/blob/main/SECURITY.md) is the one place it is stated.
+Third-party audit status is stated in
+[`SECURITY.md`](https://github.com/baskingspot/tls/blob/main/SECURITY.md).
 
 ## Performance
 
