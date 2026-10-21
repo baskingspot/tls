@@ -17,7 +17,7 @@ infra/iam/terraform.tfstate.backup
 .DS_Store
 
 # Generated docs site output
-docs/static/api/
+docs/data/
 docs/themes/
 .wrangler/
 .dev.vars*
