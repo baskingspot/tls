@@ -1,16 +1,18 @@
-# The docs site: the Zig API reference and the guide, on the baskingspot
+# The docs site: the docgen API reference and the guide, on the baskingspot
 # theme (baskingspot/nix, docs/README.md), deployed as an assets-only Worker.
 
-[doc("Build the site into zig-out/site/tls/: the API reference and the guide")]
+[private]
+api:
+    docgen --root src/root.zig --title tls --repo-url https://github.com/baskingspot/tls --rev main --format json --out docs/data
+
+[doc("Build the site into zig-out/site/tls/: docgen JSON rendered by the theme's api.html, and the guide")]
 [group("docs")]
-doc:
-    zig build docs
+doc: api
     baskingspot-docs build tls
 
 [doc("Build and serve the site locally with live reload")]
 [group("docs")]
-guide:
-    zig build docs
+guide: api
     baskingspot-docs serve tls
 
 [doc("Deploy the rendered site to Cloudflare as an assets-only Worker. Needs CLOUDFLARE_API_TOKEN in the environment, plus CLOUDFLARE_ACCOUNT_ID if the token can see more than one account")]
