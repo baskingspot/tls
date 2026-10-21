@@ -22,7 +22,7 @@ const tls_xev = tls_dep.module("tls_xev");
 
 The option keeps libxev out of core-only and `tls_std` consumers. This module
 requires Zig 0.16. See
-[`docs/content/_index.md`](../../docs/content/_index.md#fresh-project-setup) for the complete
+[`docs/content/_index.md`](../../docs/content/_index.md#install) for the complete
 consumer wiring.
 
 ## Why this is a package and `tls-zio` isn't

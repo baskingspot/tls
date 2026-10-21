@@ -25,7 +25,7 @@ const tls_dep = b.dependency("tls", .{
 const tls_std = tls_dep.module("tls_std");
 ```
 
-See [`docs/content/_index.md`](../../docs/content/_index.md#fresh-project-setup) for the complete
+See [`docs/content/_index.md`](../../docs/content/_index.md#install) for the complete
 consumer wiring.
 
 ## Design principles
