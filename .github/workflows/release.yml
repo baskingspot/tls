@@ -13,6 +13,6 @@ jobs:
   release:
     permissions:
       contents: write
-    uses: baskingspot/gh-actions/.github/workflows/release-library.yml@bf313f8558e63403ef5e1e148b488f84757e0e70 # v0.11.0
+    uses: baskingspot/gh-actions/.github/workflows/release-library.yml@4ccb53b # v0.12.0
     with:
       version: ${{ inputs.version }}
