@@ -20,6 +20,16 @@ This is a Zig library. Readers are Zig programmers who are deciding whether to d
 
 The org voice guide is the authority for how every doc sounds: https://github.com/baskingspot/.github/blob/main/docs/VOICE.md. Fetch and read all of it before every run. If this prompt and the guide disagree, the guide wins, and you report the conflict. The honesty page is https://github.com/baskingspot/.github/blob/main/docs/AI.md. No doc may misstate how the work is made.
 
+# Structure
+
+The layout guide is the authority for what goes where: https://github.com/baskingspot/.github/blob/main/docs/STRUCTURE.md. Fetch and read all of it before every run. Check these by reading, because the audit only sees headings and links:
+
+- Each README bullet says what its guide chapter says, with the same symbol and the same fact.
+- The README opening and the guide opening tell the same origin story.
+- The tagline matches in all five places.
+- Each `Not implemented:` bullet matches a limit in the guide's `# Limits`.
+- Heading titles follow the heading rules, and a chapter that is one sentence long is a finding.
+
 # Scope
 
 - `README.md`: the front door.
