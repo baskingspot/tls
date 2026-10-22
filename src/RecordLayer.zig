@@ -206,6 +206,18 @@ pub fn decrypt(self: *RecordLayer, buf: []u8) DecryptError!DecryptedRecord {
     }
 
     const ct_len = payload_len - tag_len;
+    // RFC 8446 §5.2 — the TLSCiphertext length cap covers AEAD expansion, but
+    // the decrypted TLSInnerPlaintext (content || type || padding) MUST NOT
+    // exceed 2^14 + 1 octets. The length is public, so reject before the AEAD
+    // call: a connected peer otherwise delivers oversized application data.
+    if (ct_len > frame.max_plaintext_len + 1) {
+        @branchHint(.cold);
+        return error.RecordTooLarge;
+    }
+    // RFC 8446 §5.2 — the TLSCiphertext length cap covers AEAD expansion, but
+    // the decrypted TLSInnerPlaintext (content || type || padding) MUST NOT
+    // exceed 2^14 + 1 octets. The length is public, so reject before the AEAD
+    // call: a connected peer otherwise delivers oversized application data.
     const payload = buf[frame.header_len..][0..payload_len];
     const inner = payload[0..ct_len];
     const tag: Tag = .init(payload[ct_len..][0..tag_len].*);
@@ -614,6 +626,36 @@ test "encrypt/decrypt: maximum plaintext fragment length" {
     try testing.expectEqual(@as(usize, buf.len), record.len);
     try testing.expectEqual(.application_data, dec.content_type);
     try testing.expectEqualSlices(u8, &plaintext, dec.content);
+}
+
+// RFC 8446 §5.2 — a TLSInnerPlaintext longer than 2^14 + 1 is record_overflow.
+test "decrypt: rejects inner plaintext above 2^14 + 1" {
+    var tx: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = .zero }, .zero);
+    defer tx.deinit();
+    var rx: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = .zero }, .zero);
+    defer rx.deinit();
+
+    const inner_len = frame.max_plaintext_len + 2;
+    var buf: [frame.header_len + inner_len + tag_len]u8 = undefined;
+    const header: Header = .init(.application_data, inner_len + tag_len);
+    buf[0..frame.header_len].* = mem.toBytes(header);
+    @memset(buf[frame.header_len..][0 .. inner_len - 1], 0xaa);
+    buf[frame.header_len + inner_len - 1] = @intFromEnum(ContentType.application_data);
+
+    var tag: Tag = undefined;
+    const npub = construct(&tx.iv, tx.seq);
+    try tx.aead.encrypt(
+        &tx.ctx,
+        buf[frame.header_len..][0..inner_len],
+        &tag,
+        buf[frame.header_len..][0..inner_len],
+        buf[0..frame.header_len],
+        &npub,
+    );
+    buf[frame.header_len + inner_len ..][0..tag_len].* = tag.data;
+
+    try testing.expectError(error.RecordTooLarge, rx.decrypt(&buf));
+    try testing.expectEqual(@as(u64, 0), rx.seq);
 }
 
 // RFC 8446 §5.2 — encrypted records carry outer content type application_data.
