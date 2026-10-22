@@ -43,8 +43,12 @@ pub fn rejectDuplicateExtensions(extensions: []const u8) DuplicateExtensionError
             if (memx.readInt(u16, extensions[inner..][0..2]) == ext_type)
                 return error.DuplicateExtension;
             const inner_len = memx.readInt(u16, extensions[inner + 2 ..][0..2]);
-            inner += 4 + inner_len;
-            if (inner > extensions.len) return error.InvalidExtensionLength;
+            // Widen before adding: `4 + inner_len` evaluates in u16 when
+            // inner_len is a peer-controlled length near 0xffff, which panics
+            // in safety-checked builds before the bounds check can reject it.
+            const inner_next = inner + 4 + @as(usize, inner_len);
+            if (inner_next > extensions.len) return error.InvalidExtensionLength;
+            inner = inner_next;
         }
 
         outer = next;
@@ -137,5 +141,19 @@ test "rejectDuplicateExtensions: rejects malformed block" {
     try testing.expectError(
         error.InvalidExtensionLength,
         rejectDuplicateExtensions(&.{ 0x00, 0x15, 0x00, 0x02, 0x00 }),
+    );
+}
+
+// RFC 8446 §4.2 — an inner extension length is a u16 from the peer. The
+// offset arithmetic must widen before the add so a length near 0xffff is
+// rejected instead of overflowing.
+test "rejectDuplicateExtensions: oversized inner length field is an error, not an overflow" {
+    try testing.expectError(
+        error.InvalidExtensionLength,
+        rejectDuplicateExtensions(&.{ 0x00, 0x2b, 0x00, 0x00, 0x00, 0x0a, 0xff, 0xfc }),
+    );
+    try testing.expectError(
+        error.InvalidExtensionLength,
+        rejectDuplicateExtensions(&.{ 0x00, 0x2b, 0x00, 0x00, 0x00, 0x0a, 0xff, 0xff }),
     );
 }
