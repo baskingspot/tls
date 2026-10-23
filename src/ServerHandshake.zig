@@ -74,9 +74,19 @@ pub const PskEntry = struct {
     psk: []const u8,
     cipher_suite: CipherSuite,
     /// max_early_data_size from the ticket's early_data extension, or null if
-    /// the ticket does not permit 0-RTT. The server rejects early data
-    /// exceeding this limit. RFC 8446 §4.2.10, §4.6.1.
+    /// the ticket does not permit 0-RTT. Setting it opts this entry into
+    /// 0-RTT acceptance; the engine then enforces RFC 8446 §4.2.10: the
+    /// identity must be the first offered, `cipher_suite` must equal the
+    /// negotiated suite exactly, and `alpn` must equal the selected ALPN.
+    /// The server rejects early data exceeding this limit. Ticket-age and
+    /// anti-replay policy remain the embedder's obligation. RFC 8446
+    /// §4.2.10, §4.6.1.
     max_early_data_size: ?u32 = null,
+    /// ALPN protocol selected on the connection that issued the ticket, or
+    /// null if none was negotiated. Compared against the new connection's
+    /// selected ALPN before 0-RTT is accepted (RFC 8446 §4.2.10): both
+    /// absent counts as equal, exactly one absent does not.
+    alpn: ?[]const u8 = null,
 };
 pub const PskLookup = struct {
     context: *anyopaque,
@@ -639,6 +649,15 @@ fn selectPskWithTranscript(
     return null;
 }
 
+/// RFC 8446 §4.2.10 — 0-RTT requires the ticket's ALPN to equal the new
+/// connection's selected ALPN. Both absent counts as equal; exactly one
+/// absent does not.
+fn alpnMatches(ticket_alpn: ?[]const u8, selected: ?[]const u8) bool {
+    if (ticket_alpn == null and selected == null) return true;
+    if (ticket_alpn == null or selected == null) return false;
+    return mem.eql(u8, ticket_alpn.?, selected.?);
+}
+
 fn verifyBinderSha(
     comptime H: type,
     comptime Hash: type,
@@ -1004,9 +1023,24 @@ pub fn acceptClientHello(
     return self.processClientHelloMessage(record[frame.header_len..][0..hdr.length()], out);
 }
 
-/// Parse and process a complete ClientHello handshake message (4-byte header +
-/// body). Called by acceptClientHello (fast path from a single record) and by
-/// handleClientHelloRecord (after fragment reassembly).
+/// Clear every per-ClientHello negotiation field so a ClientHello that
+/// fails after PSK selection leaves nothing for the next attempt: no stale
+/// credential, no live 0-RTT key, no stale ALPN/SNI/ticket policy. The
+/// engine stays in .wait_ch so the embedder may retry with a fresh
+/// ClientHello; that retry must negotiate purely from its own contents.
+fn resetNegotiationState(self: *ServerHandshake) void {
+    if (self.early_rx) |*early_rx| early_rx.deinit();
+    self.early_rx = null;
+    self.early_data_limit = null;
+    self.early_data_received = 0;
+    self.end_of_early_data_received = false;
+    self.selected_psk = null;
+    self.selected_psk_index = 0;
+    self.selected_alpn = null;
+    self.client_server_name = null;
+    self.ticket_compatibility = .unavailable;
+}
+
 /// Clear 0-RTT/PSK selection state installed while inspecting a ClientHello
 /// and arm the §4.2.10 HRR early-data skip window when that ClientHello
 /// offered early_data. RFC 8446 §4.1.2/§4.2.10 — 0-RTT does not survive
@@ -1100,6 +1134,9 @@ fn selectHybridShare(
     return .{ .kem = share.* };
 }
 
+/// Parse and process a complete ClientHello handshake message (4-byte header +
+/// body). Called by acceptClientHello (fast path from a single record) and by
+/// handleClientHelloRecord (after fragment reassembly).
 fn processClientHelloMessage(
     self: *ServerHandshake,
     ch_msg: []const u8,
@@ -1107,6 +1144,9 @@ fn processClientHelloMessage(
 ) AcceptError![]const u8 {
     assert(self.state == .wait_ch);
     assert((self.retry_transcript == null) == (self.retry_ch1_digest == null));
+    // Transactional: a ClientHello that fails after PSK selection must not
+    // leave its selection or 0-RTT key state for the next ClientHello (#160).
+    errdefer self.resetNegotiationState();
     // RFC 8446 §4.2.10 — ClientHello2 closes the HRR early-data skip window.
     // The window is armed only by the HelloRetryRequest response to
     // ClientHello1, so any ClientHello processed while it is open is
@@ -1176,13 +1216,22 @@ fn processClientHelloMessage(
                 if (selection) |sel| {
                     self.selected_psk = sel.entry;
                     self.selected_psk_index = @intCast(sel.identity_index);
-                    // 0-RTT (RFC 8446 §4.2.10): if the client offered early_data,
-                    // install the early traffic RX key for decrypting 0-RTT records.
+                    // 0-RTT (RFC 8446 §4.2.10): accept early data only when
+                    // the selected identity is the first offered, the ticket's
+                    // cipher suite equals the negotiated suite exactly, and
+                    // the ticket's ALPN equals the selected ALPN. On any
+                    // mismatch early_rx stays null and the trial-decrypt skip
+                    // path below declines the in-flight 0-RTT records; the
+                    // PSK itself is still accepted for resumption.
                     // The early traffic secret uses Hash(ClientHello) as the
                     // transcript hash (the full CH, including the binder).
-                    if (ch.offered_early_data and sel.entry.max_early_data_size != null) {
+                    if (ch.offered_early_data and sel.entry.max_early_data_size != null and
+                        sel.identity_index == 0 and
+                        sel.entry.cipher_suite == suite and
+                        alpnMatches(sel.entry.alpn, self.selected_alpn))
+                    {
                         self.early_data_limit = sel.entry.max_early_data_size;
-                        switch (sel.entry.cipher_suite) {
+                        switch (suite) {
                             .aes_128_gcm_sha256, .chacha20_poly1305_sha256 => {
                                 const H = hkdf.HkdfSha256;
                                 const early = H.pskEarlySecret(sel.entry.psk);
@@ -1190,7 +1239,7 @@ fn processClientHelloMessage(
                                 Sha256.hash(ch_msg, &th.data, .{});
                                 const early_traffic = H.clientEarlyTrafficSecret(early, &th);
                                 self.early_rx = try H.makeRecordLayer(
-                                    sel.entry.cipher_suite,
+                                    suite,
                                     early_traffic,
                                 );
                             },
@@ -1201,7 +1250,7 @@ fn processClientHelloMessage(
                                 Sha384.hash(ch_msg, &th.data, .{});
                                 const early_traffic = H.clientEarlyTrafficSecret(early, &th);
                                 self.early_rx = try H.makeRecordLayer(
-                                    sel.entry.cipher_suite,
+                                    suite,
                                     early_traffic,
                                 );
                             },
@@ -1436,14 +1485,17 @@ fn encodeHelloRetryRequest(
     );
     const header: frame.Header = .init(.handshake, @intCast(hrr.len));
     header.write(out[0..frame.header_len]);
-    self.retry_transcript = makeRetryTranscript(suite, ch_msg, hrr);
-    self.retry_ch1_digest = retryClientHelloDigest(ch);
-    self.retry_psk = try captureRetryPskIdentities(ch.psk_ext, self.psk_lookup, suite);
-    self.retry_selected_group = selected_group;
+    // Compute every fallible piece before committing any retry_* field, so a
+    // failure cannot leave a half-armed HelloRetryRequest state (#160).
+    const retry_psk = try captureRetryPskIdentities(ch.psk_ext, self.psk_lookup, suite);
     var out_len = frame.header_len + hrr.len;
     if (legacy_session_id.len != 0) {
         out_len += try appendCompatibilityChangeCipherSpec(out[out_len..]);
     }
+    self.retry_transcript = makeRetryTranscript(suite, ch_msg, hrr);
+    self.retry_ch1_digest = retryClientHelloDigest(ch);
+    self.retry_psk = retry_psk;
+    self.retry_selected_group = selected_group;
     return out[0..out_len];
 }
 
@@ -2625,8 +2677,12 @@ pub fn sendAlert(
 /// Serialize and encrypt one prepared NewSessionTicket under the current
 /// application traffic keys. The caller must write the returned record and call
 /// `completeWrite()` before sending another record or transferring TX to kTLS.
-/// Tickets emitted here never advertise 0-RTT: the current acceptance API cannot
-/// validate all RFC 8446 §4.2.10 age, exact-suite, and ALPN obligations.
+/// Tickets emitted here never advertise 0-RTT. An embedder that opts its own
+/// PskLookup entries into 0-RTT (PskEntry.max_early_data_size) gets
+/// engine-enforced RFC 8446 §4.2.10 first-identity, exact cipher-suite, and
+/// ALPN equality, but must supply the issuing connection's ALPN in
+/// PskEntry.alpn and enforce the §4.2.10 ticket-age and anti-replay
+/// obligations itself.
 ///
 /// The caller owns the opaque identity and all storage, expiration, rotation,
 /// replay, random `ticket_age_add`, resumption-chain, and client-auth continuity
@@ -3456,8 +3512,11 @@ test "acceptClientHello: rejects ClientHello2 with changed SNI or ALPN after HRR
             error.IllegalParameter,
             server.acceptClientHello(ch2_record[0 .. frame.header_len + ch2.len], &out),
         );
-        try testing.expectEqualStrings("one.example", server.clientServerName().?);
-        try testing.expectEqualStrings("h2", server.selectedAlpnProtocol().?);
+        // Transactional reset (#160): the rejected ClientHello2 clears the
+        // negotiation state ClientHello1 installed; a retry negotiates
+        // purely from its own contents.
+        try testing.expect(server.clientServerName() == null);
+        try testing.expect(server.selectedAlpnProtocol() == null);
     }
 }
 
@@ -6536,12 +6595,13 @@ fn expectSameEstablishedEvent(expected: Event, actual: Event) !void {
 // stack-local to one derivation and never land in them. Ceilings are the
 // sizes measured at the #138 change on aarch64-linux: OpenSSL 3.6.4,
 // AWS-LC 5.9.0, BoringSSL 0.20260803.0. A deliberate growth updates them.
+// #161 added 16 bytes to ServerHandshake (PskEntry.alpn).
 test "per-connection structs stay within their measured sizes" {
     const Ceiling = struct { server: usize, established: usize, suite: usize };
     const ceiling: Ceiling = switch (backend.active) {
-        .openssl, .@"openssl-fips" => .{ .server = 19360, .established = 712, .suite = 520 },
-        .@"aws-lc", .@"aws-lc-fips" => .{ .server = 21064, .established = 1848, .suite = 520 },
-        .boringssl => .{ .server = 21024, .established = 1824, .suite = 512 },
+        .openssl, .@"openssl-fips" => .{ .server = 19376, .established = 712, .suite = 520 },
+        .@"aws-lc", .@"aws-lc-fips" => .{ .server = 21080, .established = 1848, .suite = 520 },
+        .boringssl => .{ .server = 21040, .established = 1824, .suite = 512 },
     };
     try testing.expect(@sizeOf(ServerHandshake) <= ceiling.server);
     try testing.expect(@sizeOf(EstablishedSession) <= ceiling.established);
@@ -8460,6 +8520,504 @@ test "0-RTT: no PSK selected means early data is skipped and 1-RTT completes" {
     try testing.expect(server.isConnected());
     // Skip mode ended for good at the first successful deprotection.
     try testing.expect(server.early_data_skip == .off);
+}
+
+// RFC 8446 §4.2.10 — a ClientHello that fails after PSK selection must not
+// leave its credential or 0-RTT key behind (#160): processClientHelloMessage
+// is transactional, so a following plain ClientHello negotiates purely from
+// its own contents.
+test "0-RTT: failed ClientHello after PSK selection resets negotiation state" {
+    const resumption_master: hkdf.HkdfSha256.Prk = .init(.{
+        0x7d, 0xf2, 0x35, 0xf2, 0x03, 0x1d, 0x2a, 0x05,
+        0x12, 0x87, 0xd0, 0x2b, 0x02, 0x41, 0xb0, 0xbf,
+        0xda, 0xf8, 0x6c, 0xc8, 0x56, 0x23, 0x1f, 0x2d,
+        0x5a, 0xba, 0x46, 0xc4, 0x34, 0xec, 0x19, 0x6c,
+    });
+    const psk = hkdf.HkdfSha256.resumptionPsk(resumption_master, &.{ 0x00, 0x00 });
+    const identity = [_]u8{ 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59 };
+
+    var client1: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client1.deinit();
+    var ticket: ClientHandshake.SessionTicket = .{
+        .ticket_age_add = 0x262a6494,
+        .cipher_suite = .aes_128_gcm_sha256,
+        .max_early_data_size = 16384,
+    };
+    ticket.identity.appendSliceAssumeCapacity(&identity);
+    ticket.psk.appendSliceAssumeCapacity(&psk.data);
+
+    // All-zero X25519 key share: the binder verifies and the 0-RTT key is
+    // installed, then the shared-secret computation fails late on the
+    // identity element.
+    client1.keypairs.x25519.public_key = .zero;
+    var client1_out: [4096]u8 = undefined;
+    const ch1_record = try client1.startWithPsk(&ticket, &client1_out, true);
+    client1.completeWrite();
+
+    // 0-RTT record keyed under the failed attempt's early traffic key.
+    var early_buf: [256]u8 = undefined;
+    const early_record = try client1.sendEarlyData("hello 0-rtt", &early_buf);
+    client1.completeWrite();
+
+    const Lookup = struct {
+        const Self = @This();
+        psk: []const u8,
+        identity: []const u8,
+        fn l(ctx: *anyopaque, id: []const u8) ?PskEntry {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (std.mem.eql(u8, id, self.identity))
+                return .{
+                    .psk = self.psk,
+                    .cipher_suite = .aes_128_gcm_sha256,
+                    .max_early_data_size = 16384,
+                };
+            return null;
+        }
+    };
+    var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
+
+    var server: ServerHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .random = .zero,
+        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+    });
+    defer server.deinit();
+    var server_out: [4096]u8 = undefined;
+
+    // CH1 fails late, after PSK selection and 0-RTT key installation.
+    try testing.expectError(
+        error.IdentityElement,
+        server.acceptClientHello(ch1_record, &server_out),
+    );
+    // Transactional reset: no stale PSK, no live 0-RTT key, no stale limit.
+    try testing.expect(server.selected_psk == null);
+    try testing.expect(server.early_rx == null);
+    try testing.expectEqual(@as(?u32, null), server.early_data_limit);
+    try testing.expectEqual(.wait_ch, server.state);
+
+    // A plain ClientHello2 without pre_shared_key negotiates from its own
+    // contents: the ServerHello carries no pre_shared_key extension.
+    var client2: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client2.deinit();
+    client2.policy.insecure_no_chain_anchor = true;
+    var client2_out: [4096]u8 = undefined;
+    const ch2_record = try client2.start(&client2_out);
+    client2.completeWrite();
+
+    const sh_record = try server.acceptClientHello(ch2_record, &server_out);
+    try testing.expect(server.selected_psk == null);
+    try testing.expect(server.early_rx == null);
+    const sh_header = try frame.parseHeader(sh_record);
+    const sh = try server_hello.parse(sh_record[frame.header_len..][0..sh_header.length()]);
+    try testing.expectEqual(@as(?u16, null), sh.selected_identity);
+    // A fresh client accepts the ServerHello: no unsolicited pre_shared_key.
+    _ = try client2.handleRecord(server_out[0..sh_record.len], &client2_out);
+
+    // The 0-RTT record keyed under the failed CH1 attempt is rejected, not
+    // surfaced as application_data.
+    var early_rx_buf: [256]u8 = undefined;
+    @memcpy(early_rx_buf[0..early_record.len], early_record);
+    try testing.expectError(
+        error.AuthenticationFailed,
+        server.handleRecord(early_rx_buf[0..early_record.len], &server_out),
+    );
+}
+
+// RFC 8446 §4.2.10 — the server MUST NOT accept early data when the ticket's
+// cipher suite differs from the negotiated suite, even within the same hash
+// family (#161). The PSK is still accepted for resumption; the in-flight
+// 0-RTT record is skipped by trial-deprotection.
+test "0-RTT: ticket suite mismatch declines early data" {
+    const resumption_master: hkdf.HkdfSha256.Prk = .init(.{
+        0x7d, 0xf2, 0x35, 0xf2, 0x03, 0x1d, 0x2a, 0x05,
+        0x12, 0x87, 0xd0, 0x2b, 0x02, 0x41, 0xb0, 0xbf,
+        0xda, 0xf8, 0x6c, 0xc8, 0x56, 0x23, 0x1f, 0x2d,
+        0x5a, 0xba, 0x46, 0xc4, 0x34, 0xec, 0x19, 0x6c,
+    });
+    const psk = hkdf.HkdfSha256.resumptionPsk(resumption_master, &.{ 0x00, 0x00 });
+    const identity = [_]u8{ 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59 };
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client.deinit();
+    var ticket: ClientHandshake.SessionTicket = .{
+        .ticket_age_add = 0x262a6494,
+        .cipher_suite = .aes_128_gcm_sha256,
+        .max_early_data_size = 16384,
+    };
+    ticket.identity.appendSliceAssumeCapacity(&identity);
+    ticket.psk.appendSliceAssumeCapacity(&psk.data);
+
+    var client_out: [4096]u8 = undefined;
+    const ch_record = try client.startWithPsk(&ticket, &client_out, true);
+    client.completeWrite();
+    var early_buf: [256]u8 = undefined;
+    const early_record = try client.sendEarlyData("hello 0-rtt", &early_buf);
+    client.completeWrite();
+
+    const Lookup = struct {
+        const Self = @This();
+        psk: []const u8,
+        identity: []const u8,
+        fn l(ctx: *anyopaque, id: []const u8) ?PskEntry {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (std.mem.eql(u8, id, self.identity))
+                return .{
+                    .psk = self.psk,
+                    .cipher_suite = .aes_128_gcm_sha256,
+                    .max_early_data_size = 16384,
+                };
+            return null;
+        }
+    };
+    var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
+
+    // The server no longer enables the ticket's suite: same hash family, so
+    // the binder verifies and the PSK is selected, but the exact-suite
+    // precondition of §4.2.10 fails.
+    var server: ServerHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .random = .zero,
+        .supported_suites = &.{.chacha20_poly1305_sha256},
+        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+    });
+    defer server.deinit();
+    var server_out: [4096]u8 = undefined;
+    _ = try server.acceptClientHello(ch_record, &server_out);
+    try testing.expectEqual(.chacha20_poly1305_sha256, server.suite);
+    try testing.expect(server.selected_psk != null);
+    try testing.expect(server.early_rx == null);
+    try testing.expectEqual(@as(?u32, null), server.early_data_limit);
+    try testing.expect(server.early_data_skip == .trial_decrypt);
+
+    var early_rx_buf: [256]u8 = undefined;
+    @memcpy(early_rx_buf[0..early_record.len], early_record);
+    try testing.expectEqual(
+        ServerHandshake.Event.none,
+        try server.handleRecord(early_rx_buf[0..early_record.len], &server_out),
+    );
+}
+
+// RFC 8446 §4.2.10 — the server MUST NOT accept early data when the ticket's
+// ALPN differs from the selected ALPN (#161). The PSK is still accepted for
+// resumption; the in-flight 0-RTT record is skipped.
+test "0-RTT: ticket ALPN mismatch declines early data" {
+    const resumption_master: hkdf.HkdfSha256.Prk = .init(.{
+        0x7d, 0xf2, 0x35, 0xf2, 0x03, 0x1d, 0x2a, 0x05,
+        0x12, 0x87, 0xd0, 0x2b, 0x02, 0x41, 0xb0, 0xbf,
+        0xda, 0xf8, 0x6c, 0xc8, 0x56, 0x23, 0x1f, 0x2d,
+        0x5a, 0xba, 0x46, 0xc4, 0x34, 0xec, 0x19, 0x6c,
+    });
+    const psk = hkdf.HkdfSha256.resumptionPsk(resumption_master, &.{ 0x00, 0x00 });
+    const identity = [_]u8{ 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59 };
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .alpn_protocols = &.{ "proto-a", "proto-b" },
+    });
+    defer client.deinit();
+    var ticket: ClientHandshake.SessionTicket = .{
+        .ticket_age_add = 0x262a6494,
+        .cipher_suite = .aes_128_gcm_sha256,
+        .max_early_data_size = 16384,
+    };
+    ticket.identity.appendSliceAssumeCapacity(&identity);
+    ticket.psk.appendSliceAssumeCapacity(&psk.data);
+
+    var client_out: [4096]u8 = undefined;
+    const ch_record = try client.startWithPsk(&ticket, &client_out, true);
+    client.completeWrite();
+    var early_buf: [256]u8 = undefined;
+    const early_record = try client.sendEarlyData("hello 0-rtt", &early_buf);
+    client.completeWrite();
+
+    const Lookup = struct {
+        const Self = @This();
+        psk: []const u8,
+        identity: []const u8,
+        fn l(ctx: *anyopaque, id: []const u8) ?PskEntry {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (std.mem.eql(u8, id, self.identity))
+                return .{
+                    .psk = self.psk,
+                    .cipher_suite = .aes_128_gcm_sha256,
+                    .max_early_data_size = 16384,
+                    // The ticket was issued on a proto-a connection.
+                    .alpn = "proto-a",
+                };
+            return null;
+        }
+    };
+    var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
+
+    // Server preference selects proto-b; the ticket's proto-a does not match.
+    var server: ServerHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .random = .zero,
+        .alpn_protocols = &.{"proto-b"},
+        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+    });
+    defer server.deinit();
+    var server_out: [4096]u8 = undefined;
+    _ = try server.acceptClientHello(ch_record, &server_out);
+    try testing.expectEqualStrings("proto-b", server.selected_alpn.?);
+    try testing.expect(server.selected_psk != null);
+    try testing.expect(server.early_rx == null);
+    try testing.expect(server.early_data_skip == .trial_decrypt);
+
+    var early_rx_buf: [256]u8 = undefined;
+    @memcpy(early_rx_buf[0..early_record.len], early_record);
+    try testing.expectEqual(
+        ServerHandshake.Event.none,
+        try server.handleRecord(early_rx_buf[0..early_record.len], &server_out),
+    );
+}
+
+// RFC 8446 §4.2.10 — matching suite, matching ALPN, and first identity
+// accept early data; the 0-RTT record decrypts (#161).
+test "0-RTT: matching suite, ALPN, and first identity accept early data" {
+    const resumption_master: hkdf.HkdfSha256.Prk = .init(.{
+        0x7d, 0xf2, 0x35, 0xf2, 0x03, 0x1d, 0x2a, 0x05,
+        0x12, 0x87, 0xd0, 0x2b, 0x02, 0x41, 0xb0, 0xbf,
+        0xda, 0xf8, 0x6c, 0xc8, 0x56, 0x23, 0x1f, 0x2d,
+        0x5a, 0xba, 0x46, 0xc4, 0x34, 0xec, 0x19, 0x6c,
+    });
+    const psk = hkdf.HkdfSha256.resumptionPsk(resumption_master, &.{ 0x00, 0x00 });
+    const identity = [_]u8{ 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59 };
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .alpn_protocols = &.{"proto-a"},
+    });
+    defer client.deinit();
+    var ticket: ClientHandshake.SessionTicket = .{
+        .ticket_age_add = 0x262a6494,
+        .cipher_suite = .aes_128_gcm_sha256,
+        .max_early_data_size = 16384,
+    };
+    ticket.identity.appendSliceAssumeCapacity(&identity);
+    ticket.psk.appendSliceAssumeCapacity(&psk.data);
+
+    var client_out: [4096]u8 = undefined;
+    const ch_record = try client.startWithPsk(&ticket, &client_out, true);
+    client.completeWrite();
+    var early_buf: [256]u8 = undefined;
+    const early_record = try client.sendEarlyData("hello 0-rtt", &early_buf);
+    client.completeWrite();
+
+    const Lookup = struct {
+        const Self = @This();
+        psk: []const u8,
+        identity: []const u8,
+        fn l(ctx: *anyopaque, id: []const u8) ?PskEntry {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (std.mem.eql(u8, id, self.identity))
+                return .{
+                    .psk = self.psk,
+                    .cipher_suite = .aes_128_gcm_sha256,
+                    .max_early_data_size = 16384,
+                    .alpn = "proto-a",
+                };
+            return null;
+        }
+    };
+    var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
+
+    var server: ServerHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .random = .zero,
+        .alpn_protocols = &.{"proto-a"},
+        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+    });
+    defer server.deinit();
+    var server_out: [4096]u8 = undefined;
+    _ = try server.acceptClientHello(ch_record, &server_out);
+    try testing.expect(server.selected_psk != null);
+    try testing.expectEqual(@as(u16, 0), server.selected_psk_index);
+    try testing.expect(server.early_rx != null);
+
+    var early_rx_buf: [256]u8 = undefined;
+    @memcpy(early_rx_buf[0..early_record.len], early_record);
+    const early_ev = try server.handleRecord(early_rx_buf[0..early_record.len], &server_out);
+    try testing.expectEqualStrings("hello 0-rtt", early_ev.application_data);
+}
+
+/// Rebuild a single-identity ClientHello produced by
+/// ClientHandshake.startWithPsk with `dummy_identity` prepended to the
+/// identities vector, recomputing the real identity's binder over the
+/// modified transcript (RFC 8446 §4.2.11.2). The dummy's binder is zeroes:
+/// the lookup resolves no entry for it, so it is skipped unverified.
+fn chWithPrependedPskIdentity(
+    out: []u8,
+    ch_msg: []const u8,
+    dummy_identity: []const u8,
+    psk: []const u8,
+) ![]const u8 {
+    const parsed = try client_hello.parse(ch_msg);
+    const psk_ext = parsed.psk_ext.?;
+    var iter = try client_hello.PskOfferIter.init(psk_ext);
+    const real = (try iter.next()).?;
+    // The iterator skips ticket ages; zero is fine because the binder below
+    // is recomputed over the modified message either way.
+
+    // pre_shared_key is the last extension: the message ends with it, and
+    // its 4-byte extension header precedes ext_data.
+    const ext_start = (@intFromPtr(psk_ext.ptr) - @intFromPtr(ch_msg.ptr)) - 4;
+    const identities_len = (2 + dummy_identity.len + 4) + (2 + real.identity.len + 4);
+    const binders_len = (1 + 32) + (1 + 32);
+    const ext_data_len = 2 + identities_len + 2 + binders_len;
+    const new_len = ext_start + 4 + ext_data_len;
+    if (out.len < new_len) return error.BufferTooShort;
+
+    @memcpy(out[0..ext_start], ch_msg[0..ext_start]);
+    var w: wiremod.Writer = .init(out[ext_start..new_len]);
+    w.appendAssumeCapacity(u16, 0x0029); // ExtensionType.pre_shared_key
+    w.appendAssumeCapacity(u16, @intCast(ext_data_len));
+    w.appendAssumeCapacity(u16, @intCast(identities_len));
+    w.appendAssumeCapacity(u16, @intCast(dummy_identity.len));
+    w.appendSliceAssumeCapacity(dummy_identity);
+    w.appendAssumeCapacity(u32, 0);
+    w.appendAssumeCapacity(u16, @intCast(real.identity.len));
+    w.appendSliceAssumeCapacity(real.identity);
+    w.appendAssumeCapacity(u32, 0);
+    w.appendAssumeCapacity(u16, @intCast(binders_len));
+    w.appendAssumeCapacity(u8, 32);
+    w.appendSliceAssumeCapacity(&@as([32]u8, @splat(0)));
+    w.appendAssumeCapacity(u8, 32);
+    const real_binder_pos = ext_start + w.end;
+    w.appendSliceAssumeCapacity(&@as([32]u8, @splat(0)));
+
+    // Patch the enclosing vector lengths: handshake body (u24) and the
+    // extensions vector (u16), located by walking the fixed CH prefix.
+    memx.writeInt(u24, out[1..][0..3], @intCast(new_len - 4));
+    var pos: usize = 4 + 2 + 32;
+    pos += 1 + out[pos]; // legacy_session_id
+    pos += 2 + memx.readInt(u16, out[pos..][0..2]); // cipher_suites
+    pos += 1 + out[pos]; // compression_methods
+    const old_ext_list_len = memx.readInt(u16, out[pos..][0..2]);
+    memx.writeInt(u16, out[pos..][0..2], @intCast(old_ext_list_len + new_len - ch_msg.len));
+
+    // Recompute the real binder over the modified truncated ClientHello.
+    const rebuilt = try client_hello.parse(out[0..new_len]);
+    const H = hkdf.HkdfSha256;
+    const early = H.pskEarlySecret(psk);
+    const binder_key = H.resumptionBinderKey(early);
+    const fin_key = H.finishedKey(.{ .data = binder_key.data });
+    var transcript: Sha256 = .init(.{});
+    transcript.update(out[0..rebuilt.binders_offset]);
+    const digest = transcript.peek();
+    var th: H.TranscriptHash = undefined;
+    @memcpy(th.data[0..], digest[0..]);
+    const binder = H.binder(fin_key, &th);
+    @memcpy(out[real_binder_pos..][0..32], &binder);
+    return out[0..new_len];
+}
+
+// RFC 8446 §4.2.10 — the server MUST NOT accept early data unless it selected
+// the first offered PSK identity (#161). The first identity resolves to no
+// lookup entry, so the second is selected; the offer is declined and the
+// in-flight 0-RTT record is skipped.
+test "0-RTT: selected identity index above zero declines early data" {
+    const resumption_master: hkdf.HkdfSha256.Prk = .init(.{
+        0x7d, 0xf2, 0x35, 0xf2, 0x03, 0x1d, 0x2a, 0x05,
+        0x12, 0x87, 0xd0, 0x2b, 0x02, 0x41, 0xb0, 0xbf,
+        0xda, 0xf8, 0x6c, 0xc8, 0x56, 0x23, 0x1f, 0x2d,
+        0x5a, 0xba, 0x46, 0xc4, 0x34, 0xec, 0x19, 0x6c,
+    });
+    const psk = hkdf.HkdfSha256.resumptionPsk(resumption_master, &.{ 0x00, 0x00 });
+    const identity = [_]u8{ 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59 };
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client.deinit();
+    var ticket: ClientHandshake.SessionTicket = .{
+        .ticket_age_add = 0x262a6494,
+        .cipher_suite = .aes_128_gcm_sha256,
+        .max_early_data_size = 16384,
+    };
+    ticket.identity.appendSliceAssumeCapacity(&identity);
+    ticket.psk.appendSliceAssumeCapacity(&psk.data);
+
+    var client_out: [4096]u8 = undefined;
+    const ch_record = try client.startWithPsk(&ticket, &client_out, true);
+    client.completeWrite();
+    var early_buf: [256]u8 = undefined;
+    const early_record = try client.sendEarlyData("hello 0-rtt", &early_buf);
+    client.completeWrite();
+
+    // Prepend an unknown identity so the real one is selected at index 1.
+    var ch_buf: [4096]u8 = undefined;
+    const ch_msg = try chWithPrependedPskIdentity(
+        &ch_buf,
+        ch_record[frame.header_len..],
+        "unknown-ticket",
+        &psk.data,
+    );
+    var ch2_record: [4096]u8 = undefined;
+    const ch2_header: frame.Header = .init(.handshake, @intCast(ch_msg.len));
+    ch2_header.write(ch2_record[0..frame.header_len]);
+    @memcpy(ch2_record[frame.header_len..][0..ch_msg.len], ch_msg);
+
+    const Lookup = struct {
+        const Self = @This();
+        psk: []const u8,
+        identity: []const u8,
+        fn l(ctx: *anyopaque, id: []const u8) ?PskEntry {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (std.mem.eql(u8, id, self.identity))
+                return .{
+                    .psk = self.psk,
+                    .cipher_suite = .aes_128_gcm_sha256,
+                    .max_early_data_size = 16384,
+                };
+            return null;
+        }
+    };
+    var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
+
+    var server: ServerHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .random = .zero,
+        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+    });
+    defer server.deinit();
+    var server_out: [4096]u8 = undefined;
+    _ = try server.acceptClientHello(ch2_record[0 .. frame.header_len + ch_msg.len], &server_out);
+    try testing.expect(server.selected_psk != null);
+    try testing.expectEqual(@as(u16, 1), server.selected_psk_index);
+    try testing.expect(server.early_rx == null);
+    try testing.expect(server.early_data_skip == .trial_decrypt);
+
+    var early_rx_buf: [256]u8 = undefined;
+    @memcpy(early_rx_buf[0..early_record.len], early_record);
+    try testing.expectEqual(
+        ServerHandshake.Event.none,
+        try server.handleRecord(early_rx_buf[0..early_record.len], &server_out),
+    );
 }
 
 // RFC 8446 §4.2.10 — ordinary policy decline: the PSK is selected but its

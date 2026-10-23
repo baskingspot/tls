@@ -30,7 +30,7 @@ commit because the branch moved.
 | KeyUpdate | Proven | Both directions and both roles, with a flood bound |
 | HelloRetryRequest | Proven | Both roles in memory and in TLS-Anvil; forced-HRR OpenSSL interop is not gated |
 | Session resumption | Partial | The engine side is proven; persistence, expiry, rotation, replay, and SNI partitioning are yours |
-| 0-RTT early data | Partial | Offer, accept, and reject are proven; anti-replay is yours, and the engine default is off |
+| 0-RTT early data | Partial | Offer, accept, and reject are proven; accept is gated on the RFC 8446 §4.2.10 exact-suite, ALPN, and first-identity checks; ticket-age and anti-replay policy are yours, and the engine default is off |
 | kTLS | Proven | Linux only; key export and the kernel data plane |
 | C ABI | Partial | Client lifecycle only; see `include/ztls.h` |
 | TLS 1.2, DTLS, Windows | Out of scope | Not coming |

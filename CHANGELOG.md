@@ -5,8 +5,21 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `ServerHandshake.PskEntry.alpn`: optional ALPN of the connection that
+  issued the ticket, required for 0-RTT acceptance (#161).
+
 ### Fixed
 
+- `ServerHandshake` ClientHello processing is now transactional: a
+  ClientHello that fails after PSK selection no longer leaves its PSK, 0-RTT
+  key, or other negotiation state for the next ClientHello, and a failed
+  HelloRetryRequest no longer leaves half-armed retry state (#160).
+- `ServerHandshake` now accepts early data only when the RFC 8446 §4.2.10
+  preconditions hold: first offered identity, exact ticket/negotiated cipher
+  suite equality, and ticket/selected ALPN equality; otherwise the offer is
+  declined and in-flight 0-RTT records are skipped (#161).
 - The CertificateVerify RSA key loader (`rsaPublicKeyFromDer`) now rejects
   degenerate peer keys — trailing bytes after the RSAPublicKey, an even or
   1-valued or wider-than-32-bit public exponent, and an even or out-of-range

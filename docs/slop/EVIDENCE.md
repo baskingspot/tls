@@ -401,6 +401,19 @@ full HRR → skipped early records → ClientHello2 → completed retry handshak
 plus budget exhaustion, malformed/zero-length abuse, skip-window closure,
 post-window record corruption, and the default budget covering a full
 max-size early record (#111).
+0-RTT acceptance is bound to the RFC 8446 §4.2.10 preconditions (#161):
+first offered identity, exact ticket/negotiated cipher-suite equality, and
+ticket/selected ALPN equality (PskEntry.alpn, both-absent counts as equal);
+a failure leaves early_rx null so the trial-decrypt skip path declines the
+in-flight records while the PSK may still resume. Regression tests cover
+suite mismatch, ALPN mismatch, identity index > 0 (via a two-identity
+spliced ClientHello with a recomputed binder), and the matching accept path,
+each mutation-checked against the removed gate. Server-side ClientHello
+processing is transactional (#160): any error after PSK selection deinits
+early_rx and clears the per-ClientHello negotiation state, and
+encodeHelloRetryRequest commits its retry_* fields only after every fallible
+step succeeds; the regression test fails on the stale-selection assertion
+with the errdefer removed.
 0-RTT is disabled by default (offer_early_data=false) and the caller is
 responsible for replay-safe policy — 0-RTT data is not forward-secret and can
 be replayed by a network attacker; no anti-replay cache exists in tls (the

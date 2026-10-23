@@ -212,7 +212,10 @@ fn abortEarlyServer() CheckError!void {
     defer server.deinit();
     var server_wire: [4096]u8 = undefined;
     _ = server.acceptClientHello(hello, &server_wire) catch |err| {
-        if (err != error.IdentityElement or server.state != .wait_ch or server.early_rx == null)
+        // Transactional reset (#160): the failed ClientHello deinits the
+        // early key it installed, so early_rx is null and the allocation
+        // balance is checked by the baseline comparison, not by deinit.
+        if (err != error.IdentityElement or server.state != .wait_ch or server.early_rx != null)
             return error.UnexpectedBackendResult;
         return;
     };
