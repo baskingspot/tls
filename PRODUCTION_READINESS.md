@@ -94,6 +94,11 @@ The row is reported on its own.
 
 - **No external audit.** The security work here is an internal adversarial pass,
   not a third-party audit. Say so if you are evaluating it for a decision.
+- **The qualified candidate predates the October 2026 audit.** PlanetScale's
+  audit run `tls-95c3d57` found twelve issues in #153–#163. Each fix landed with
+  a regression test after candidate `8814f1e`, but no gate run has re-qualified
+  a commit that contains them. The candidate's qualification is evidence for
+  that commit only.
 - **Caller obligations.** Ticket storage, expiry, rotation, replay rejection,
   SNI partitioning, 0-RTT anti-replay, trust anchors, and the drive loop belong
   to you. The engine documents the seam; it does not enforce your policy.
