@@ -15,7 +15,7 @@ It is faster than OpenSSL's libssl on every comparable application-data row
 measured, on x86_64, aarch64, and macOS Apple Silicon. Against rustls it wins on
 AES-GCM on all three, and loses on small ChaCha20 records.
 
-It is in production use. The test suite is 886 tests with fuzzing on the parser
+It is in production use. The test suite is 910 tests with fuzzing on the parser
 and record-decrypt surfaces, three crypto backends, and conformance runs against
 TLS-Anvil and tlsfuzzer. The API is not frozen, so pin a commit.
 

@@ -171,7 +171,7 @@ is not coming.
 | Server certificate auth                  | Supported    | Hostname verification, chain validation, leaf policy                                                                |
 | Client certificate auth                  | Supported    | Both roles, EKU and KU enforcement, OpenSSL interop                                                                 |
 | Session resumption (PSK)                 | Partial      | Ticket persistence, expiry, rotation, replay rejection, and SNI partitioning are caller obligations                 |
-| 0-RTT early data                         | Partial      | Offer, accept, reject are proven; anti-replay is the caller's, and the engine default is disabled                   |
+| 0-RTT early data                         | Partial      | Offer, accept, reject are proven; accept is gated on the ticket's exact cipher suite, ALPN, and first identity; anti-replay is the caller's, and the engine default is disabled |
 | HelloRetryRequest                        | Supported    | Both roles; forced-HRR OpenSSL interop is not gated                                                                 |
 | KeyUpdate                                | Supported    | Both directions, both roles                                                                                         |
 | Application data, alerts, `close_notify` | Supported    |                                                                                                                     |
