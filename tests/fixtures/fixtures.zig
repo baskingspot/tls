@@ -55,6 +55,34 @@ pub const nc_intermediate_der = decodeSection("nc_intermediate_der");
 pub const nc_leaf_allowed_der = decodeSection("nc_leaf_allowed_der");
 pub const nc_leaf_excluded_der = decodeSection("nc_leaf_excluded_der");
 pub const nc_leaf_outside_der = decodeSection("nc_leaf_outside_der");
+// --- issuer ExtendedKeyUsage family (#155) ----------------------------------
+// Chain shape and per-case OpenSSL 3.6.5 ground truth are documented in
+// tests/fixtures/eku/README.md. The anchor lives there as a loose PEM; every
+// presented-chain certificate is a DER section here.
+
+/// CA, EKU=emailProtection only, issued by tests/fixtures/eku/root.crt.
+pub const eku_inter_email_der = decodeSection("eku_inter_email_der");
+/// serverAuth leaf for victim.test, issued by eku_inter_email_der.
+pub const eku_leaf_server_der = decodeSection("eku_leaf_server_der");
+/// CA, EKU=anyExtendedKeyUsage, issued by tests/fixtures/eku/root.crt.
+pub const eku_inter_any_der = decodeSection("eku_inter_any_der");
+/// serverAuth leaf for victim.test, issued by eku_inter_any_der.
+pub const eku_leaf_any_der = decodeSection("eku_leaf_any_der");
+/// CA, EKU=serverAuth only, issued by tests/fixtures/eku/root.crt.
+pub const eku_inter_serverauth_der = decodeSection("eku_inter_serverauth_der");
+/// clientAuth leaf, issued by eku_inter_serverauth_der.
+pub const eku_leaf_client_der = decodeSection("eku_leaf_client_der");
+/// CA, no EKU, issued by tests/fixtures/eku/root.crt.
+pub const eku_inter_plain_der = decodeSection("eku_inter_plain_der");
+/// serverAuth leaf for victim.test, issued by eku_inter_plain_der.
+pub const eku_leaf_plain_der = decodeSection("eku_leaf_plain_der");
+/// clientAuth leaf, issued by eku_inter_plain_der (client-chain control).
+pub const eku_leaf_client_plain_der = decodeSection("eku_leaf_client_plain_der");
+/// CA, no EKU, issued by tests/fixtures/eku/root_email_only.crt.
+pub const eku_anchor_email_inter_der = decodeSection("eku_anchor_email_inter_der");
+/// serverAuth leaf for victim.test, issued by eku_anchor_email_inter_der.
+pub const eku_anchor_email_leaf_der = decodeSection("eku_anchor_email_leaf_der");
+
 pub const crosssigned_leaf_der = decodeSection("crosssigned_leaf_der");
 pub const crosssigned_intermediate_der = decodeSection("crosssigned_intermediate_der");
 pub const crosssigned_root_cross_der = decodeSection("crosssigned_root_cross_der");

@@ -58,6 +58,16 @@ pub const Policy = struct {
 const eku_server_auth_oid = [_]u8{ 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01 };
 // RFC 5280 §4.2.1.12 — id-kp-clientAuth (1.3.6.1.5.5.7.3.2).
 const eku_client_auth_oid = [_]u8{ 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02 };
+// RFC 5280 §4.2.1.12 — id-kp-anyExtendedKeyUsage (2.5.29.37.0).
+const eku_any_oid = [_]u8{ 0x55, 0x1d, 0x25, 0x00 };
+
+fn roleEkuOid(role: LeafUsage) ?[]const u8 {
+    return switch (role) {
+        .none => null,
+        .server_auth => &eku_server_auth_oid,
+        .client_auth => &eku_client_auth_oid,
+    };
+}
 const key_usage_digital_signature: u4 = 0;
 const key_usage_key_cert_sign: u4 = 5;
 
@@ -140,12 +150,22 @@ pub fn verifyCertificateSignatureAlgorithm(
 
 pub const VerifyIssuerUsageError = PolicyError || Certificate.ParseError;
 
-// RFC 5280 §4.2.1.9 and §4.2.1.3 — every certificate used to issue another
-// certificate must assert cA and permit keyCertSign when KeyUsage is present.
-pub fn verifyIssuerUsage(issuer: Certificate.Parsed) VerifyIssuerUsageError!void {
+// RFC 5280 §4.2.1.9, §4.2.1.3 and §4.2.1.12 — every certificate used to
+// issue another certificate must assert cA, permit keyCertSign when KeyUsage
+// is present, and, when it carries an EKU extension, be authorized for the
+// leaf's role: the EKU must contain the role OID or id-kp-anyExtendedKeyUsage
+// (#155, nested EKU as Go crypto/x509 and webpki enforce; OpenSSL
+// X509_PURPOSE_SSL_* is stricter and rejects an anyEKU-only issuer, verified
+// with openssl 3.6.5 `verify -purpose sslserver`, so tls deliberately
+// diverges from OpenSSL on the anyEKU control).
+pub fn verifyIssuerUsage(issuer: Certificate.Parsed, role: LeafUsage) VerifyIssuerUsageError!void {
     if (!issuer.is_ca) return error.CertificateIssuerNotCa;
     if (!try issuer.allowsKeyUsage(key_usage_key_cert_sign))
         return error.CertificateIssuerNotCa;
+    if (roleEkuOid(role)) |oid| {
+        if (!try issuer.allowsExtKeyUsage(oid) and !try issuer.allowsExtKeyUsage(&eku_any_oid))
+            return error.CertificateExtendedKeyUsageRejected;
+    }
     // pathLenConstraint is enforced over the whole anchored path in
     // certificate.zig (RFC 5280 §6.1, #118); this per-issuer check has no
     // path context.
@@ -156,16 +176,23 @@ pub const VerifyAgainstBundleError = PolicyError ||
     Certificate.Parsed.VerifyError ||
     error{CertificateIssuerNotFound};
 
+// The trust anchor is NOT exempt from the issuer EKU check: RFC 5280 §6.1
+// treats the anchor as an input, but OpenSSL 3.6.5 applies its purpose check
+// to the anchor too — `openssl verify -purpose sslserver` rejects a chain
+// whose emailProtection-only root anchors a serverAuth leaf with error 26
+// "unsuitable certificate purpose" at the anchor's depth (verified locally,
+// tests/fixtures/eku/README.md), and tls matches.
 pub fn findVerifiedIssuerInBundle(
     bundle: *const Certificate.Bundle,
     subject: Certificate.Parsed,
     now_sec: i64,
+    role: LeafUsage,
 ) VerifyAgainstBundleError!Certificate.Parsed {
     const issuer_index = bundle.find(subject.issuer()) orelse
         return error.CertificateIssuerNotFound;
     const issuer_cert: Certificate = .{ .buffer = bundle.bytes.items, .index = issuer_index };
     const issuer = try issuer_cert.parse();
-    try verifyIssuerUsage(issuer);
+    try verifyIssuerUsage(issuer, role);
     try subject.verify(issuer, now_sec);
     return issuer;
 }
@@ -174,6 +201,7 @@ pub fn verifyAgainstBundle(
     bundle: *const Certificate.Bundle,
     subject: Certificate.Parsed,
     now_sec: i64,
+    role: LeafUsage,
 ) VerifyAgainstBundleError!void {
-    _ = try findVerifiedIssuerInBundle(bundle, subject, now_sec);
+    _ = try findVerifiedIssuerInBundle(bundle, subject, now_sec, role);
 }

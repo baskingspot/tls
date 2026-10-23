@@ -678,6 +678,57 @@ const cases = [_]Case{
             "BVPGK+a9tAl4ipE2PTAKBggqhkjOPQQDAgNIADBFAiEAgt6PNr5xrNHLJkc7aJzrXbzklXZj" ++
             "SnToOSSapQ2nINACIH+e/CszE/KgbJiZC9reC4WrYGDo1v52tUVerqiRHzEQ",
     },
+    .{
+        // RFC 5280 §4.2.1.10 — zero-length excluded dNSName matches every DNS
+        // name, so the leaf is rejected (#154). OpenSSL 3.6.5: error 48
+        // "excluded subtree violation" on this exact pair. The intermediate
+        // was hand-patched to a zero-length dNSName and re-signed by the
+        // root because the openssl CLI refuses to emit an empty DNS: value.
+        .name = "dns_any__dns_emptyexcl",
+        .openssl_ok = false,
+        .tls_ok = false,
+        .inter_b64 = "MIIBqTCCAU+gAwIBAgIUHk2PU2ZvokxL7YCd9TuHHra6NAQwCgYIKoZIzj0EAwIwEzERMA8G" ++
+            "A1UEAwwIZWt1LXJvb3QwHhcNMjYxMDIyMjM0NzIwWhcNMzExMDIxMjM0NzIwWjAdMRswGQYD" ++
+            "VQQDDBJuYy1pbnRlci13aWxkY2FyZDIwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARWwYBZ" ++
+            "1nI9NQRrQrRy8j3Xay2eT05kEFjiDeq8jJMJ4l7XZbY3WMFlDI6ls/gGH/saHWLtEqN8zkBJ" ++
+            "aF/Xu2jOo3cwdTAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjASBgNVHR4BAf8E" ++
+            "CDAGoQQwAoIAMB0GA1UdDgQWBBQyipqxpqef666moyxwzV1QQ22RATAfBgNVHSMEGDAWgBSZ" ++
+            "rrhOds8CVwsfppCpiMT1fPidkzAKBggqhkjOPQQDAgNIADBFAiBBiMa0CNzWLNlelZCREM7e" ++
+            "6vt8NzS+IV83w7ybqvBEKwIhAIY/UE6pgBgtLUAxODPNSbUYCqP3PbKBtiTaeHHkvRhF",
+        .leaf_b64 = "MIIBtDCCAVmgAwIBAgIUegSo5lbbXUBoZpCvArbYPBhpm4YwCgYIKoZIzj0EAwIwHTEbMBkG" ++
+            "A1UEAwwSbmMtaW50ZXItd2lsZGNhcmQyMB4XDTI2MTAyMjIzNDcyMFoXDTI5MDEyNDIzNDcy" ++
+            "MFowGTEXMBUGA1UEAwwOdmljdGltLmV4YW1wbGUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC" ++
+            "AAQZgJtI/zCha4TqVKmMkyvMggB+uN+iM0yvBaefxUDIqBkCyv3BZNIilsD8d+kYpZft1cVD" ++
+            "UoZsV6UxBbfrctjAo3sweTAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIHgDAZBgNVHREE" ++
+            "EjAQgg52aWN0aW0uZXhhbXBsZTAdBgNVHQ4EFgQUpiGz3c9nVJB9oi0bJyc/EVhbWXowHwYD" ++
+            "VR0jBBgwFoAUMoqasaann+uupqMscM1dUENtkQEwCgYIKoZIzj0EAwIDSQAwRgIhAOyxfuaP" ++
+            "wDJ5yZXe8OYun9vB7jnAH9m4ueExPJiXoOU/AiEA2b7LOICSyVckM3BcnHTSQLX8yd8U3EhO" ++
+            "myiG8kGR+NE=",
+    },
+    .{
+        // RFC 5280 §4.2.1.10 — zero-length permitted dNSName admits every
+        // DNS name (#154). OpenSSL 3.6.5: `openssl verify` accepts this pair.
+        .name = "dns_any__dns_emptyperm",
+        .openssl_ok = true,
+        .tls_ok = true,
+        .inter_b64 = "MIIBqjCCAVCgAwIBAgIUHk2PU2ZvokxL7YCd9TuHHra6NAMwCgYIKoZIzj0EAwIwEzERMA8G" ++
+            "A1UEAwwIZWt1LXJvb3QwHhcNMjYxMDIyMjM0NzAzWhcNMzExMDIxMjM0NzAzWjAeMRwwGgYD" ++
+            "VQQDDBNuYy1pbnRlci1lbXB0eS1wZXJtMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEhGXN" ++
+            "v4DAJM5XxDPYhPtNhtfxpWT9UPW8v2EJWMVz7NAUILzQX1ocuEP3e8asscMd5lN1TImedxmt" ++
+            "+Sf/phDflKN3MHUwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwEgYDVR0eAQH/" ++
+            "BAgwBqAEMAKCADAdBgNVHQ4EFgQUiZoTGN0w4RxPPzP92rKF8cpwfpcwHwYDVR0jBBgwFoAU" ++
+            "ma64TnbPAlcLH6aQqYjE9Xz4nZMwCgYIKoZIzj0EAwIDSAAwRQIgd2+2k4wNEItSaU+n8A+F" ++
+            "uS/+ckDtvrY5x0wjtDcSg9ICIQDiyJH9exj779TkRXcsSNKinl7d4VR37ILniEZ7lvGoHA==",
+        .leaf_b64 = "MIIBszCCAVqgAwIBAgIUGQOt9IUyGtUNnjzbQGDlXaMKxgowCgYIKoZIzj0EAwIwHjEcMBoG" ++
+            "A1UEAwwTbmMtaW50ZXItZW1wdHktcGVybTAeFw0yNjEwMjIyMzQ3MjBaFw0yOTAxMjQyMzQ3" ++
+            "MjBaMBkxFzAVBgNVBAMMDnZpY3RpbS5leGFtcGxlMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcD" ++
+            "QgAEGYCbSP8woWuE6lSpjJMrzIIAfrjfojNMrwWnn8VAyKgZAsr9wWTSIpbA/HfpGKWX7dXF" ++
+            "Q1KGbFelMQW363LYwKN7MHkwDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwGQYDVR0R" ++
+            "BBIwEIIOdmljdGltLmV4YW1wbGUwHQYDVR0OBBYEFKYhs93PZ1SQfaItGycnPxFYW1l6MB8G" ++
+            "A1UdIwQYMBaAFImaExjdMOEcTz8z/dqyhfHKcH6XMAoGCCqGSM49BAMCA0cAMEQCIDDDqzwj" ++
+            "Od1RAGGPY7aGCK6NyUyXeKAE7zSsZ08mvvjIAiB8dkENVUFt5vA8r/HSg6pMVEL/W2avn2e5" ++
+            "bsPyQ/Fk8Q==",
+    },
 };
 
 // All rfc822Name/URI host-constraint divergences resolved (#75): bare-host

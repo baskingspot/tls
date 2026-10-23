@@ -393,7 +393,10 @@ pub const Parsed = struct {
                 } else if (state.permitted == .none_seen) {
                     state.permitted = .seen_unmatched;
                 },
-                .excluded => if (matches) return error.CertificateNameConstraintViolation,
+                .excluded => if (matches or
+                    (name.tag == .dNSName and
+                        wildcardIntersectsExcluded(name.value, constraint.value)))
+                    return error.CertificateNameConstraintViolation,
             }
         }
     }
@@ -446,16 +449,48 @@ pub const Parsed = struct {
         };
     }
 
+    // RFC 5280 §4.2.1.10 — rfc822Name constraints are defined only as
+    // mailbox, host, or leading-dot domain forms, and URI constraints as
+    // fully qualified host/domain forms; neither admits a zero-length
+    // match-all, so only dnsNameInSubtree treats an empty constraint as
+    // matching every name (OpenSSL nc_email/nc_uri agree: no empty check).
     fn dnsNameInSubtree(name_raw: []const u8, subtree_raw: []const u8) bool {
         const name = trimTrailingDot(name_raw);
         const subtree = trimTrailingDot(subtree_raw);
-        if (name.len == 0 or subtree.len == 0) return false;
+        // RFC 5280 §4.2.1.10: any DNS name constructible by adding zero or
+        // more labels to the left of the constraint satisfies it, so a
+        // zero-length dNSName constraint matches every DNS name (#154;
+        // OpenSSL nc_dns: "Empty matches everything").
+        if (subtree.len == 0) return true;
+        if (name.len == 0) return false;
 
         if (subtree[0] == '.') return asciiEndsWithIgnoreCase(name, subtree);
         if (std.ascii.eqlIgnoreCase(name, subtree)) return true;
         return name.len > subtree.len and
             name[name.len - subtree.len - 1] == '.' and
             asciiEndsWithIgnoreCase(name, subtree);
+    }
+
+    /// A wildcard dNSName SAN covers every single-label name under its
+    /// suffix, so an excluded subtree intersects it when the constraint is
+    /// the suffix, an ancestor of the suffix, or exactly one label below it
+    /// (#156; the Go CVE-2025-61727 class — OpenSSL 3.6.5 compares the '*'
+    /// label literally and still accepts such a chain, verified locally with
+    /// `openssl verify` on an excluded secret.example.com vs SAN
+    /// *.example.com chain, so tls deliberately diverges here).
+    fn wildcardIntersectsExcluded(name_raw: []const u8, subtree_raw: []const u8) bool {
+        const name = trimTrailingDot(name_raw);
+        if (name.len <= 2 or !mem.startsWith(u8, name, "*.")) return false;
+        const suffix = name[2..];
+        var sub = trimTrailingDot(subtree_raw);
+        if (sub.len == 0) return true;
+        if (sub[0] == '.') sub = sub[1..];
+        // The constraint is the wildcard suffix or one of its ancestors.
+        if (dnsNameInSubtree(suffix, sub)) return true;
+        // The constraint is exactly one label below the suffix: a host the
+        // wildcard covers.
+        const dot = mem.indexOfScalar(u8, sub, '.') orelse return false;
+        return std.ascii.eqlIgnoreCase(sub[dot + 1 ..], suffix);
     }
 
     fn emailNameInSubtree(name: []const u8, subtree: []const u8) bool {
@@ -1074,6 +1109,237 @@ test "Parsed.verifyNameConstraints: DNS excluded subtree" {
         false,
     );
     try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+}
+
+// RFC 5280 §4.2.1.10 — a zero-length dNSName constraint matches every DNS
+// name ("adding zero or more labels"), so an excluded empty dNSName rejects
+// any leaf DNS SAN (#154; OpenSSL nc_dns: "Empty matches everything").
+test "Parsed.verifyNameConstraints: zero-length excluded dNSName rejects any DNS SAN" {
+    const constraints = "\x30\x06\xA1\x04\x30\x02\x82\x00";
+    const san = "\x30\x10\x82\x0Evictim.example";
+    const ca = parsedForNameConstraintsTest(
+        constraints,
+        .{ .start = 0, .end = constraints.len },
+        .empty,
+        .empty,
+        true,
+    );
+    const leaf = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+}
+
+// RFC 5280 §4.2.1.10 — the zero-length exclusion also binds the Common Name
+// used by the SAN-absent hostname fallback (#154).
+test "Parsed.verifyNameConstraints: zero-length excluded dNSName rejects CN fallback" {
+    const constraints = "\x30\x06\xA1\x04\x30\x02\x82\x00";
+    const common_name = "victim.example";
+    const ca = parsedForNameConstraintsTest(
+        constraints,
+        .{ .start = 0, .end = constraints.len },
+        .empty,
+        .empty,
+        true,
+    );
+    const leaf = parsedForNameConstraintsTest(
+        common_name,
+        .empty,
+        .empty,
+        .{ .start = 0, .end = common_name.len },
+        false,
+    );
+    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+}
+
+// RFC 5280 §4.2.1.10 — unlike dNSName, zero-length rfc822Name and URI
+// constraints match NOTHING: the RFC defines rfc822Name constraints only as
+// mailbox/host/leading-dot-domain forms and URI constraints as fully
+// qualified host/domain forms, and OpenSSL 3.6.5 accepts a leaf under an
+// empty excluded rfc822Name or URI constraint (verified locally with
+// hand-patched, root-re-signed intermediates; nc_email/nc_uri have no empty
+// check). tls matches OpenSSL; do not "fix" these to match dNSName (#154).
+test "Parsed.verifyNameConstraints: zero-length excluded rfc822Name and URI match nothing" {
+    for ([_][]const u8{
+        "\x30\x06\xA1\x04\x30\x02\x81\x00", // excluded rfc822Name ""
+        "\x30\x06\xA1\x04\x30\x02\x86\x00", // excluded URI ""
+    }) |constraints| {
+        const ca = parsedForNameConstraintsTest(
+            constraints,
+            .{ .start = 0, .end = @intCast(constraints.len) },
+            .empty,
+            .empty,
+            true,
+        );
+        const email_san = "\x30\x12\x81\x10user@example.com";
+        const email_leaf = parsedForNameConstraintsTest(
+            email_san,
+            .empty,
+            .{ .start = 0, .end = email_san.len },
+            .empty,
+            false,
+        );
+        try ca.verifyNameConstraints(email_leaf);
+        const uri_san = "\x30\x17\x86\x15https://example.com/x";
+        const uri_leaf = parsedForNameConstraintsTest(
+            uri_san,
+            .empty,
+            .{ .start = 0, .end = uri_san.len },
+            .empty,
+            false,
+        );
+        try ca.verifyNameConstraints(uri_leaf);
+    }
+}
+
+// RFC 5280 §4.2.1.10 — a permitted zero-length dNSName admits every DNS name
+// (#154; OpenSSL accepts the same chain with `openssl verify`).
+test "Parsed.verifyNameConstraints: zero-length permitted dNSName accepts any DNS SAN" {
+    const constraints = "\x30\x06\xA0\x04\x30\x02\x82\x00";
+    const san = "\x30\x10\x82\x0Evictim.example";
+    const ca = parsedForNameConstraintsTest(
+        constraints,
+        .{ .start = 0, .end = constraints.len },
+        .empty,
+        .empty,
+        true,
+    );
+    const leaf = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+    try ca.verifyNameConstraints(leaf);
+}
+
+// RFC 5280 §4.2.1.10 — a wildcard SAN covers every single-label name under
+// its suffix, so an exclusion exactly one label below the suffix intersects
+// the wildcard's expansion set and must reject it (#156).
+test "Parsed.verifyNameConstraints: wildcard SAN one label under excluded dNSName" {
+    const constraints = "\x30\x18\xA1\x16\x30\x14\x82\x12secret.example.com";
+    const san = "\x30\x0F\x82\x0D*.example.com";
+    const ca = parsedForNameConstraintsTest(
+        constraints,
+        .{ .start = 0, .end = constraints.len },
+        .empty,
+        .empty,
+        true,
+    );
+    const leaf = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+}
+
+// RFC 5280 §4.2.1.10 — an exclusion of the wildcard suffix itself, or of a
+// leading-dot ancestor, also rejects the wildcard SAN (#156).
+test "Parsed.verifyNameConstraints: wildcard SAN under excluded ancestors" {
+    const san = "\x30\x0F\x82\x0D*.example.com";
+    for ([_][]const u8{
+        "\x30\x11\xA1\x0F\x30\x0D\x82\x0Bexample.com", // excluded example.com
+        "\x30\x12\xA1\x10\x30\x0E\x82\x0C.example.com", // excluded .example.com
+    }) |constraints| {
+        const ca = parsedForNameConstraintsTest(
+            constraints,
+            .{ .start = 0, .end = @intCast(constraints.len) },
+            .empty,
+            .empty,
+            true,
+        );
+        const leaf = parsedForNameConstraintsTest(
+            san,
+            .empty,
+            .{ .start = 0, .end = san.len },
+            .empty,
+            false,
+        );
+        try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    }
+}
+
+// RFC 5280 §4.2.1.10 — a wildcard whose suffix is unrelated to the exclusion
+// is not rejected: no single-label expansion falls inside the excluded
+// subtree (#156).
+test "Parsed.verifyNameConstraints: wildcard SAN unrelated to excluded dNSName passes" {
+    const constraints = "\x30\x17\xA1\x15\x30\x13\x82\x11secret.other.test";
+    const san = "\x30\x0F\x82\x0D*.example.com";
+    const ca = parsedForNameConstraintsTest(
+        constraints,
+        .{ .start = 0, .end = constraints.len },
+        .empty,
+        .empty,
+        true,
+    );
+    const leaf = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+    try ca.verifyNameConstraints(leaf);
+}
+
+// RFC 5280 §4.2.1.10 — the literal SAN under the same exclusion keeps
+// rejecting, and permitted-subtree handling of wildcards is unchanged: the
+// wildcard matches a permitted suffix but not a permitted single host (#156).
+test "Parsed.verifyNameConstraints: literal SAN excluded and permitted wildcard semantics unchanged" {
+    const excluded = "\x30\x18\xA1\x16\x30\x14\x82\x12secret.example.com";
+    const literal_san = "\x30\x14\x82\x12secret.example.com";
+    const ca_excl = parsedForNameConstraintsTest(
+        excluded,
+        .{ .start = 0, .end = excluded.len },
+        .empty,
+        .empty,
+        true,
+    );
+    const literal_leaf = parsedForNameConstraintsTest(
+        literal_san,
+        .empty,
+        .{ .start = 0, .end = literal_san.len },
+        .empty,
+        false,
+    );
+    try std.testing.expectError(error.CertificateNameConstraintViolation, ca_excl.verifyNameConstraints(literal_leaf));
+
+    const wild_san = "\x30\x0F\x82\x0D*.example.com";
+    const wild_leaf = parsedForNameConstraintsTest(
+        wild_san,
+        .empty,
+        .{ .start = 0, .end = wild_san.len },
+        .empty,
+        false,
+    );
+    // Permitted example.com admits the wildcard via suffix match.
+    const perm_suffix = "\x30\x11\xA0\x0F\x30\x0D\x82\x0Bexample.com";
+    const ca_perm_suffix = parsedForNameConstraintsTest(
+        perm_suffix,
+        .{ .start = 0, .end = perm_suffix.len },
+        .empty,
+        .empty,
+        true,
+    );
+    try ca_perm_suffix.verifyNameConstraints(wild_leaf);
+    // Permitted secret.example.com does not: the wildcard is not that host.
+    const perm_host = "\x30\x18\xA0\x16\x30\x14\x82\x12secret.example.com";
+    const ca_perm_host = parsedForNameConstraintsTest(
+        perm_host,
+        .{ .start = 0, .end = perm_host.len },
+        .empty,
+        .empty,
+        true,
+    );
+    try std.testing.expectError(error.CertificateNameConstraintViolation, ca_perm_host.verifyNameConstraints(wild_leaf));
 }
 
 // RFC 5280 §6.1.4 — every supported SAN value is checked, not just the name

@@ -14,3 +14,18 @@ All notable changes to tls are recorded here. The format follows
   before any signature verification. An exponent-1 key previously made the
   RSA public operation the identity, so any well-formed PSS encoding verified
   as a CertificateVerify signature (#157).
+- Name constraints: a zero-length dNSName constraint now matches every DNS
+  name per RFC 5280 §4.2.1.10, so an excluded empty dNSName rejects any leaf
+  DNS SAN or Common Name fallback beneath that CA (#154).
+- Name constraints: an excluded dNSName now rejects a wildcard SAN whose
+  single-label expansion set intersects the exclusion (e.g. SAN
+  `*.example.com` under excluded `secret.example.com`); this deliberately
+  diverges from OpenSSL 3.6, which still compares the wildcard label
+  literally (#156).
+- Chain verification: `certificate.parse` and `certificate.parseClientChain`
+  now apply the leaf's role EKU to every in-chain issuer and to the trust
+  anchor — an issuer carrying an ExtendedKeyUsage extension must include the
+  role OID or id-kp-anyExtendedKeyUsage, otherwise the chain fails with
+  `error.CertificateExtendedKeyUsageRejected` (#155).
+- `certificate_policy.verifyIssuerUsage`, `findVerifiedIssuerInBundle`, and
+  `verifyAgainstBundle` take a new `role: LeafUsage` parameter (#155).

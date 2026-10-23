@@ -206,7 +206,7 @@ pub fn parseClientChain(
             if (policy.host_name) |host_name| try parsed.verifyHostName(host_name);
         }
         if (subject_to_verify) |subject| {
-            try certificate_policy.verifyIssuerUsage(parsed);
+            try certificate_policy.verifyIssuerUsage(parsed, policy.leaf_usage);
             try subject.verify(parsed, policy.now_sec);
         }
         subject_to_verify = parsed;
@@ -220,7 +220,12 @@ pub fn parseClientChain(
         policy.certificate_signature_schemes,
     );
     if (policy.bundle) |bundle| {
-        const anchored = try anchorChain(bundle, chain.constSlice(), policy.now_sec);
+        const anchored = try anchorChain(
+            bundle,
+            chain.constSlice(),
+            policy.now_sec,
+            policy.leaf_usage,
+        );
         try verifyChainPathLength(chain.constSlice(), anchored.anchor, anchored.top);
         try verifyChainNameConstraints(chain.constSlice(), anchored.anchor);
     } else if (!policy.insecure_no_chain_anchor) {
@@ -261,6 +266,7 @@ fn anchorChain(
     bundle: *const Certificate.Bundle,
     chain: []const Certificate.Parsed,
     now_sec: i64,
+    leaf_usage: certificate_policy.LeafUsage,
 ) certificate_policy.VerifyAgainstBundleError!AnchoredChain {
     var i = chain.len;
     while (i > 0) {
@@ -269,6 +275,7 @@ fn anchorChain(
             bundle,
             chain[i],
             now_sec,
+            leaf_usage,
         ) catch |err| switch (err) {
             error.CertificateIssuerNotFound => continue,
             else => return err,
@@ -383,7 +390,7 @@ pub fn parse(msg: []const u8, policy: Policy) ParseError![]const u8 {
             if (policy.host_name) |host_name| try parsed.verifyHostName(host_name);
         }
         if (subject_to_verify) |subject| {
-            try certificate_policy.verifyIssuerUsage(parsed);
+            try certificate_policy.verifyIssuerUsage(parsed, policy.leaf_usage);
             try subject.verify(parsed, policy.now_sec);
         }
         subject_to_verify = parsed;
@@ -397,7 +404,12 @@ pub fn parse(msg: []const u8, policy: Policy) ParseError![]const u8 {
         policy.certificate_signature_schemes,
     );
     if (policy.bundle) |bundle| {
-        const anchored = try anchorChain(bundle, chain.constSlice(), policy.now_sec);
+        const anchored = try anchorChain(
+            bundle,
+            chain.constSlice(),
+            policy.now_sec,
+            policy.leaf_usage,
+        );
         try verifyChainPathLength(chain.constSlice(), anchored.anchor, anchored.top);
         try verifyChainNameConstraints(chain.constSlice(), anchored.anchor);
     } else if (!policy.insecure_no_chain_anchor) {
@@ -700,6 +712,52 @@ fn ncLeafExcludedDer() []const u8 {
 fn ncLeafOutsideDer() []const u8 {
     // ziglint-ignore: Z028
     return &@import("fixtures").nc_leaf_outside_der;
+}
+const eku_root_pem = "tests/fixtures/eku/root.crt";
+const eku_root_email_only_pem = "tests/fixtures/eku/root_email_only.crt";
+fn ekuInterEmailDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_inter_email_der;
+}
+fn ekuLeafServerDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_leaf_server_der;
+}
+fn ekuInterAnyDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_inter_any_der;
+}
+fn ekuLeafAnyDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_leaf_any_der;
+}
+fn ekuInterServerauthDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_inter_serverauth_der;
+}
+fn ekuLeafClientDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_leaf_client_der;
+}
+fn ekuInterPlainDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_inter_plain_der;
+}
+fn ekuLeafPlainDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_leaf_plain_der;
+}
+fn ekuLeafClientPlainDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_leaf_client_plain_der;
+}
+fn ekuAnchorEmailInterDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_anchor_email_inter_der;
+}
+fn ekuAnchorEmailLeafDer() []const u8 {
+    // ziglint-ignore: Z028
+    return &@import("fixtures").eku_anchor_email_leaf_der;
 }
 const pathlen_root_pem = "tests/fixtures/pathlen/root.crt";
 const pathlen_root_plc1_pem = "tests/fixtures/pathlen/root_plc1.crt";
@@ -1337,6 +1395,106 @@ test "parse: insecure no-anchor path still enforces name constraints" {
                 .now_sec = 1_782_864_000,
                 .host_name = "bad.example.com",
             },
+        ),
+    );
+}
+
+// RFC 5280 §4.2.1.12 / RFC 8446 §4.4.2 — issuer EKU chaining (#155). When
+// an in-chain issuer carries an EKU extension, it must contain the leaf's
+// role OID or id-kp-anyExtendedKeyUsage; an absent EKU stays permissive.
+// Fixture family and OpenSSL 3.6.5 ground truth: tests/fixtures/eku/README.md.
+
+const eku_now_sec: i64 = 1_800_000_000;
+
+fn ekuBundle(pem: []const u8) !Certificate.Bundle {
+    var bundle: Certificate.Bundle = empty_bundle;
+    try addCertsFromFixturePath(&bundle, pem);
+    return bundle;
+}
+
+// RFC 5280 §4.2.1.12 — a sub-CA whose EKU is emailProtection only is not
+// authorized to issue a serverAuth leaf (OpenSSL: error 26 "unsuitable
+// certificate purpose" at depth 1).
+test "parse: rejects server-auth chain through emailProtection-only sub-CA" {
+    var bundle = try ekuBundle(eku_root_pem);
+    defer bundle.deinit(testing.allocator);
+
+    var buf: [4096]u8 = undefined;
+    try testing.expectError(
+        error.CertificateExtendedKeyUsageRejected,
+        parse(
+            buildCertChainMsg(&buf, &.{ ekuLeafServerDer(), ekuInterEmailDer() }),
+            .{ .bundle = &bundle, .now_sec = eku_now_sec, .host_name = "victim.test" },
+        ),
+    );
+}
+
+// RFC 5280 §4.2.1.12 — controls: an issuer with no EKU extension is
+// permissive, and id-kp-anyExtendedKeyUsage (2.5.29.37.0) satisfies any role
+// (Go/webpki semantics; OpenSSL is stricter and rejects the anyEKU row —
+// deliberate divergence, see tests/fixtures/eku/README.md).
+test "parse: accepts server-auth chains through no-EKU and anyEKU sub-CAs" {
+    for ([_][2][]const u8{
+        .{ ekuLeafPlainDer(), ekuInterPlainDer() },
+        .{ ekuLeafAnyDer(), ekuInterAnyDer() },
+    }) |chain_der| {
+        var bundle = try ekuBundle(eku_root_pem);
+        defer bundle.deinit(testing.allocator);
+
+        var buf: [4096]u8 = undefined;
+        const pub_key = try parse(
+            buildCertChainMsg(&buf, &chain_der),
+            .{ .bundle = &bundle, .now_sec = eku_now_sec, .host_name = "victim.test" },
+        );
+        try testing.expect(pub_key.len > 0);
+    }
+}
+
+// RFC 5280 §4.2.1.12 — mirror for the client-auth path: a serverAuth-only
+// sub-CA is not authorized to issue a clientAuth leaf.
+test "parseClientChain: rejects client-auth chain through serverAuth-only sub-CA" {
+    var bundle = try ekuBundle(eku_root_pem);
+    defer bundle.deinit(testing.allocator);
+
+    var buf: [4096]u8 = undefined;
+    try testing.expectError(
+        error.CertificateExtendedKeyUsageRejected,
+        parseClientChain(
+            buildCertChainMsg(&buf, &.{ ekuLeafClientDer(), ekuInterServerauthDer() }),
+            &.{},
+            .{ .bundle = &bundle, .now_sec = eku_now_sec, .leaf_usage = .client_auth },
+        ),
+    );
+}
+
+// RFC 5280 §4.2.1.12 — client-auth control: a no-EKU issuer stays permissive.
+test "parseClientChain: accepts client-auth chain through no-EKU sub-CA" {
+    var bundle = try ekuBundle(eku_root_pem);
+    defer bundle.deinit(testing.allocator);
+
+    var buf: [4096]u8 = undefined;
+    const verified = try parseClientChain(
+        buildCertChainMsg(&buf, &.{ ekuLeafClientPlainDer(), ekuInterPlainDer() }),
+        &.{},
+        .{ .bundle = &bundle, .now_sec = eku_now_sec, .leaf_usage = .client_auth },
+    );
+    try testing.expect(verified.pub_key.len > 0);
+}
+
+// RFC 5280 §6.1 / §4.2.1.12 — the trust anchor is not exempt: OpenSSL 3.6.5
+// applies its purpose check to the anchor (error 26 at the anchor's depth
+// for an emailProtection-only root anchoring a serverAuth leaf), and tls
+// matches.
+test "parse: rejects chain anchored by an emailProtection-only root" {
+    var bundle = try ekuBundle(eku_root_email_only_pem);
+    defer bundle.deinit(testing.allocator);
+
+    var buf: [4096]u8 = undefined;
+    try testing.expectError(
+        error.CertificateExtendedKeyUsageRejected,
+        parse(
+            buildCertChainMsg(&buf, &.{ ekuAnchorEmailLeafDer(), ekuAnchorEmailInterDer() }),
+            .{ .bundle = &bundle, .now_sec = eku_now_sec, .host_name = "victim.test" },
         ),
     );
 }
