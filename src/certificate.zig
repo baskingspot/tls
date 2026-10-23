@@ -2183,6 +2183,30 @@ test "verifySignature: client CV rejects scheme absent from offered list" {
     );
 }
 
+// baskingspot/tls#157 / RFC 8446 §4.4.3 — an RSA leaf key with exponent 1
+// makes the public operation the identity, so any well-formed PSS encoding
+// verifies as a CertificateVerify signature without any private key. The key
+// loader must reject the degenerate key before EVP_DigestVerifyFinal, failing
+// closed with InvalidEncoding. The 1024-bit odd modulus satisfies the loader's
+// size policy, so the exponent check alone is what rejects this key.
+test "verifySignature: rejects RSA leaf key with exponent 1" {
+    // RSAPublicKey (PKCS#1, RFC 8017 §A.1.1): n = 2^1023 + 1, e = 1.
+    const e1_pub_key = stdx.fmt.comptimeHex(
+        "308187" ++ "02818100" ++ "80" ++ "00" ** 126 ++ "01" ++ "020101",
+    );
+    const sig: [128]u8 = @splat(0x42);
+    var cv_buf: [512]u8 = undefined;
+    const cv = try encodeCertificateVerify(&cv_buf, .rsa_pss_rsae_sha256, &sig);
+    try testing.expectError(
+        error.InvalidEncoding,
+        verifyServerSignature(cv, &e1_pub_key, &test_transcript_hash),
+    );
+    try testing.expectError(
+        error.InvalidEncoding,
+        verifyClientSignature(cv, &e1_pub_key, &test_transcript_hash),
+    );
+}
+
 // RFC 8446 §4.4.3 — RSASSA-PKCS1-v1_5 schemes are certificate-signature-only
 // in TLS 1.3 and must not be accepted for CertificateVerify.
 test "verifySignature: rejects RSA PKCS1 CertificateVerify scheme" {

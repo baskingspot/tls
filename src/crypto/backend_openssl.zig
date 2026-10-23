@@ -917,6 +917,28 @@ pub fn rsaPublicKeyFromDer(pub_key: []const u8) SignatureError!*pkey {
     const rsa = c.d2i_RSAPublicKey(null, &ptr, @intCast(pub_key.len)) orelse
         return error.InvalidEncoding;
     errdefer c.RSA_free(rsa);
+    // The whole SubjectPublicKey must be one RSAPublicKey; no trailing bytes.
+    if (ptr.? != pub_key.ptr + pub_key.len) return error.InvalidEncoding;
+
+    // RFC 8446 §4.4.3 / §C.3 — CertificateVerify must prove possession of the
+    // leaf key, so the peer key must be a usable RSA key. Mirror the chain
+    // verifier's policy (certificate_parser.zig rsa.PublicKey.fromBytes): odd
+    // exponent >= 3 of at most 32 bits, odd modulus of a supported size.
+    // e = 1 turns the public operation into the identity, so any well-formed
+    // PSS encoding verifies; libcrypto's EVP verify path does not reject it
+    // (baskingspot/tls#157). The modulus floor is 1024 bits (every fixture
+    // and interop key is >= 2048; the chain verifier's 512-bit floor exists
+    // only to ratchet legacy issuer keys); the 8192-bit ceiling matches the
+    // 1024-byte leaf-key retention cap (ClientHandshake.max_leaf_pub_key).
+    var n: ?*const c.BIGNUM = null;
+    var e: ?*const c.BIGNUM = null;
+    c.RSA_get0_key(rsa, &n, &e, null);
+    const n_bits = c.BN_num_bits(n);
+    const e_bits = c.BN_num_bits(e);
+    if (c.BN_is_odd(e) != 1 or e_bits < 2 or e_bits > 32)
+        return error.InvalidEncoding;
+    if (c.BN_is_odd(n) != 1 or n_bits < 1024 or n_bits > 8192)
+        return error.InvalidEncoding;
 
     const key = c.EVP_PKEY_new() orelse return error.SignatureVerificationFailed;
     errdefer c.EVP_PKEY_free(key);

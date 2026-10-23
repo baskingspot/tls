@@ -890,6 +890,40 @@ test "backend.sign: key/scheme mismatch is a libcrypto failure" {
 // EVP_DigestVerifyUpdate; for raw-message Wycheproof vectors, the full message
 // is passed as context and an empty slice as transcript_hash.
 
+// Wycheproof v1 RSA-PSS 2048 public modulus (rsa_pss_2048_sha256_mgf1_32_test.json),
+// shared by the verify vectors below and the #157 key-parameter policy tests.
+const wycheproof_rsa_n_2048_hex =
+    "a2b451a07d0aa5f96e455671513550514a8a5b462ebef717" ++
+    "094fa1fee82224e637f9746d3f7cafd31878d80325b6ef5a1700f65903b469429" ++
+    "e89d6eac8845097b5ab393189db92512ed8a7711a1253facd20f79c15e8247f3" ++
+    "d3e42e46e48c98e254a2fe9765313a03eff8f17e1a029397a1fa26a8dce26f49" ++
+    "0ed81299615d9814c22da610428e09c7d9658594266f5c021d0fceca08d945a1" ++
+    "2be82de4d1ece6b4c03145b5d3495d4ed5411eb878daf05fd7afc3e09ada0f11" ++
+    "26422f590975a1969816f48698bcbba1b4d9cae79d460d8f9f85e7975005d9bc" ++
+    "22c4e5ac0f7c1a45d12569a62807d3b9a02e5a530e773066f453d1f5b4c2e9cf" ++
+    "7820283f742b9d5";
+
+fn comptimeHexByte(comptime v: u8) *const [2]u8 {
+    const digits = "0123456789abcdef";
+    return &.{ digits[v >> 4], digits[v & 0xf] };
+}
+
+fn comptimeDerLenHex(comptime len: u16) []const u8 {
+    if (len < 0x80) return comptimeHexByte(@intCast(len));
+    if (len < 0x100) return "81" ++ comptimeHexByte(@intCast(len));
+    return "82" ++ comptimeHexByte(@intCast(len >> 8)) ++ comptimeHexByte(@truncate(len));
+}
+
+// RFC 8017 §A.1.1 — RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent
+// INTEGER }. Builds well-formed PKCS#1 DER hex around a caller-chosen modulus
+// and exponent TLV so the loader tests can vary one parameter at a time. Both
+// test moduli have the top bit set, so the modulus INTEGER gets the leading
+// 0x00 sign byte.
+fn rsaPubKeyDerHex(comptime n_hex: []const u8, comptime e_tlv_hex: []const u8) []const u8 {
+    const n_tlv = "02" ++ comptimeDerLenHex(n_hex.len / 2 + 1) ++ "00" ++ n_hex;
+    return "30" ++ comptimeDerLenHex(n_tlv.len / 2 + e_tlv_hex.len / 2) ++ n_tlv ++ e_tlv_hex;
+}
+
 // Wycheproof v1 (google-wycheproof 0.9rc5) — RSA-PSS 2048 SHA-256/MGF1-SHA256
 // sLen=32, tcId 3, valid. Source: rsa_pss_2048_sha256_mgf1_32_test.json.
 // The public key is the RSAPublicKey DER extracted from the Wycheproof SPKI.
@@ -897,17 +931,7 @@ test "backend.sign: key/scheme mismatch is a libcrypto failure" {
 // the Wycheproof sLen=32.
 test "backend.sign: Wycheproof RSA-PSS tcId 3 verify" {
     // RSAPublicKey DER (PKCS#1) extracted from the Wycheproof SPKI.
-    const pub_der = stdx.fmt.comptimeHex(
-        "3082010a0282010100a2b451a07d0aa5f96e455671513550514a8a5b462ebef717" ++
-            "094fa1fee82224e637f9746d3f7cafd31878d80325b6ef5a1700f65903b469429" ++
-            "e89d6eac8845097b5ab393189db92512ed8a7711a1253facd20f79c15e8247f3" ++
-            "d3e42e46e48c98e254a2fe9765313a03eff8f17e1a029397a1fa26a8dce26f49" ++
-            "0ed81299615d9814c22da610428e09c7d9658594266f5c021d0fceca08d945a1" ++
-            "2be82de4d1ece6b4c03145b5d3495d4ed5411eb878daf05fd7afc3e09ada0f11" ++
-            "26422f590975a1969816f48698bcbba1b4d9cae79d460d8f9f85e7975005d9bc" ++
-            "22c4e5ac0f7c1a45d12569a62807d3b9a02e5a530e773066f453d1f5b4c2e9cf" ++
-            "7820283f742b9d50203010001",
-    );
+    const pub_der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
     const msg = stdx.fmt.comptimeHex("54657374"); // "Test"
     const sig = stdx.fmt.comptimeHex(
         "401eb03cdb47ca88033e3030f6bdecbac8f5c8fc1dd6a13d23d379ed9a2b3098" ++
@@ -937,17 +961,7 @@ test "backend.sign: Wycheproof RSA-PSS tcId 3 verify" {
 // Source: rsa_pss_2048_sha256_mgf1_32_test.json. The signature is valid for a
 // different message hash; verification must fail for the given message.
 test "backend.sign: Wycheproof RSA-PSS tcId 62 invalid signature" {
-    const pub_der = stdx.fmt.comptimeHex(
-        "3082010a0282010100a2b451a07d0aa5f96e455671513550514a8a5b462ebef717" ++
-            "094fa1fee82224e637f9746d3f7cafd31878d80325b6ef5a1700f65903b469429" ++
-            "e89d6eac8845097b5ab393189db92512ed8a7711a1253facd20f79c15e8247f3" ++
-            "d3e42e46e48c98e254a2fe9765313a03eff8f17e1a029397a1fa26a8dce26f49" ++
-            "0ed81299615d9814c22da610428e09c7d9658594266f5c021d0fceca08d945a1" ++
-            "2be82de4d1ece6b4c03145b5d3495d4ed5411eb878daf05fd7afc3e09ada0f11" ++
-            "26422f590975a1969816f48698bcbba1b4d9cae79d460d8f9f85e7975005d9bc" ++
-            "22c4e5ac0f7c1a45d12569a62807d3b9a02e5a530e773066f453d1f5b4c2e9cf" ++
-            "7820283f742b9d50203010001",
-    );
+    const pub_der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
     const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
     const sig = stdx.fmt.comptimeHex(
         "67d1d1c0a398148625317c3f5e44b738bdf461c27a59594b39ebb2aebef233c7" ++
@@ -967,6 +981,68 @@ test "backend.sign: Wycheproof RSA-PSS tcId 62 invalid signature" {
         error.SignatureVerificationFailed,
         backend.sign.verify(pub_key, .rsa_pss_rsae_sha256, &msg, &.{}, &sig),
     );
+}
+
+// ---------------------------------------------------------------------------
+// RSA public-key parameter policy (baskingspot/tls#157)
+// ---------------------------------------------------------------------------
+
+// RFC 8446 §4.4.3 / §C.3 — the CertificateVerify key loader mirrors the chain
+// verifier's policy (certificate_parser.zig rsa.PublicKey.fromBytes). e = 1
+// makes the RSA public operation the identity, so any well-formed PSS encoding
+// would verify as a CertificateVerify signature without any private key.
+test "backend.sign: RSA public key with exponent 1 is rejected" {
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "020101"));
+    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
+}
+
+test "backend.sign: RSA public key with even exponent is rejected" {
+    // e = 65536: parses, but even.
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010000"));
+    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
+}
+
+test "backend.sign: RSA public key with exponent wider than 32 bits is rejected" {
+    // e = 2^32 + 1: odd, but 33 bits. The 32-bit cap bounds the public
+    // operation's cost for attacker-chosen keys (Windows CryptoAPI limit).
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "02050100000001"));
+    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
+}
+
+test "backend.sign: RSA public key with even modulus is rejected" {
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(
+        wycheproof_rsa_n_2048_hex[0..510] ++ "ce",
+        "0203010001",
+    ));
+    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
+}
+
+test "backend.sign: RSA public key with undersized modulus is rejected" {
+    // 512-bit odd modulus (2^511 + 1): parses fine, but below the 1024-bit
+    // loader floor. Every repo fixture and interop key is >= 2048 bits.
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex("80" ++ "00" ** 62 ++ "01", "020103"));
+    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
+}
+
+test "backend.sign: RSA public key with trailing bytes is rejected" {
+    // The whole SubjectPublicKey must be exactly one RSAPublicKey.
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
+    var buf: [der.len + 1]u8 = undefined;
+    @memcpy(buf[0..der.len], &der);
+    buf[der.len] = 0;
+    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&buf));
+}
+
+test "backend.sign: RSA public key with exponent 3 is accepted" {
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "020103"));
+    const key = try backend.sign.rsaPublicKeyFromDer(&der);
+    defer backend.sign.freeKey(key);
+}
+
+test "backend.sign: RSA public key with exponent 65537 is accepted" {
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
+    const key = try backend.sign.rsaPublicKeyFromDer(&der);
+    defer backend.sign.freeKey(key);
 }
 
 // Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-256 SHA-256 tcId 1,
