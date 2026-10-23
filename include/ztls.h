@@ -88,7 +88,11 @@ size_t ztls_client_align(void);
  *   client      — pointer to the allocated storage (non-NULL)
  *   x25519_pub  — 32-byte X25519 public key (non-NULL)
  *   x25519_sec  — 32-byte X25519 secret key (non-NULL)
- *   host_name   — NUL-terminated server name for SNI; empty string disables SNI
+ *   host_name   — NUL-terminated server name for SNI; empty string disables
+ *                 SNI and hostname verification. Copied into handle-owned
+ *                 storage during init: the caller may free or overwrite the
+ *                 string as soon as this function returns. Names longer than
+ *                 253 bytes are rejected with ZTLS_ERR_HANDSHAKE_FAILURE.
  *   random      — 32-byte ClientHello random (non-NULL, must not be all-zero)
  *
  * WARNING: this entry point does not authenticate the server. It explicitly

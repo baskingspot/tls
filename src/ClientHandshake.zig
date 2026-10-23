@@ -91,6 +91,12 @@ pub const SessionTicket = struct {
     /// derived), so the offering client must use the same hash even before the
     /// new handshake negotiates a suite. RFC 8446 §4.2.11.2, §7.1.
     cipher_suite: CipherSuite = .aes_128_gcm_sha256,
+    /// ALPN protocol selected in the session that issued this ticket. RFC 8446
+    /// §4.2.10 binds 0-RTT acceptance to the ticket's ALPN: when the server
+    /// accepts early_data, the negotiated ALPN must equal this value. Empty
+    /// means the issuing session negotiated no ALPN (ALPN protocols are never
+    /// empty, so empty is unambiguous).
+    alpn_protocol: buffer.Array(u8, 255) = .empty,
 
     /// Erase the ticket identity, PSK capacity, and metadata.
     /// The ticket is invalid after this call.
@@ -188,6 +194,9 @@ pub const Config = struct {
     /// This ASCII DNS name controls SNI and verification against DNS-ID SAN entries.
     /// The caller supplies A-labels after IDNA conversion.
     /// null disables both SNI and hostname verification.
+    /// Caller-owned: like alpn_protocols, the slice must outlive the
+    /// handshake. (The C ABI copies the name into handle-owned storage; see
+    /// ztls_client_init_insecure in include/ztls.h.)
     host_name: ?[]const u8,
     /// Current time in seconds since the Unix epoch for certificate validity.
     /// Required — callers that do not care must pass 0 explicitly.
@@ -623,6 +632,10 @@ offered_psk_identity: ?[]const u8 = null,
 /// Exact value encoded in ClientHello1 and retained for a possible retry.
 offered_psk_obfuscated_ticket_age: u32 = 0,
 offered_psk_cipher_suite: CipherSuite = .aes_128_gcm_sha256,
+/// ALPN protocol of the session that issued the offered ticket (RFC 8446
+/// §4.2.10). Borrows the SessionTicket passed to startWithPsk, which must
+/// outlive the handshake. Empty means the issuing session negotiated no ALPN.
+offered_psk_alpn: []const u8 = "",
 /// Whether the server selected our offered PSK (RFC 8446 §4.2.11). Set in
 /// processServerHello from ServerHello `pre_shared_key.selected_identity`.
 /// The PSK fast-path (bare Finished after EncryptedExtensions, no
@@ -957,6 +970,7 @@ pub fn startWithPsk(
     self.offered_psk_identity = identity;
     self.offered_psk_obfuscated_ticket_age = obfuscated_ticket_age;
     self.offered_psk_cipher_suite = ticket.cipher_suite;
+    self.offered_psk_alpn = ticket.alpn_protocol.constSlice();
 
     // 0-RTT (RFC 8446 §4.2.10, §7.1): if the caller opted in and the ticket
     // permits early data, derive the client_early_traffic_secret over the
@@ -1223,6 +1237,9 @@ pub fn deriveSessionTicket(
         .max_early_data_size = nst.max_early_data_size,
     };
     ticket.identity.appendSliceAssumeCapacity(nst.ticket);
+    // RFC 8446 §4.2.10 — record the issuing session's ALPN so a resumption
+    // that accepts early_data can be checked against it (#162).
+    ticket.alpn_protocol.appendSliceAssumeCapacity(self.selected_alpn.constSlice());
     switch (self.suite) {
         .buffering => return error.NoResumptionSecret,
         inline .sha256, .sha384 => |*s| {
@@ -1463,6 +1480,25 @@ pub fn processHelloRetryRequest(
         else => return error.UnsupportedKeyShareGroup,
     }
 
+    // #158 — this handler is transactional: every fallible step (ClientHello2
+    // length check, hybrid key generation, PSK-offer retry, encoding) runs
+    // before any committed state changes, and the Suite is restored on error.
+    // A failed HRR leaves the client exactly in its pre-message wait_sh state,
+    // so a retried HRR or the real ServerHello is processed under the original
+    // invariants (self.suite still .buffering). There is deliberately no
+    // terminal .failed state: retrying after BufferTooShort (larger out slice)
+    // or IncompleteRecord is part of the API contract.
+    if (out.len < frame.header_len) return error.BufferTooShort;
+    const saved_suite = self.suite;
+    errdefer self.suite = saved_suite;
+    // retryPskOffer may drop an incompatible PSK offer; restore it on error.
+    const saved_offered_psk = self.offered_psk;
+    const saved_offered_psk_identity = self.offered_psk_identity;
+    errdefer {
+        self.offered_psk = saved_offered_psk;
+        self.offered_psk_identity = saved_offered_psk_identity;
+    }
+
     // Collapse the dual transcript to the negotiated hash's arm, carrying over
     // the hasher that already absorbed ClientHello1. RFC 8446 §4.4.1.
     const b = self.suite.buffering;
@@ -1498,25 +1534,18 @@ pub fn processHelloRetryRequest(
         .buffering => unreachable,
     }
 
-    // RFC 8446 §4.1.4: 0-RTT is not compatible with HelloRetryRequest. A
-    // client that offered early data MUST NOT send 0-RTT data after an HRR,
-    // so invalidate the early-data offer before generating ClientHello2.
-    if (self.early_tx) |*early_tx| {
-        early_tx.deinit();
-        self.early_tx = null;
-    }
-
     // Generate ClientHello2 with only the selected group's key_share, leaving
     // room for the TLSPlaintext header. RFC 8446 §4.1.4, §5.1. A hybrid HRR
-    // replaces any ClientHello1 ML-KEM key so the handle matches the new group.
-    if (out.len < frame.header_len) return error.BufferTooShort;
+    // replaces any ClientHello1 ML-KEM key so the handle matches the new group;
+    // the new key is generated into a local and committed only after
+    // ClientHello2 encoding succeeds (#158).
     var hybrid_public: [hybrid_kex.max_client_share_len]u8 = undefined;
     var hybrid_share: ?client_hello.KemShare = null;
+    var new_kem_key: ?hybrid_kex.ClientKeyPair = null;
+    errdefer if (new_kem_key) |*key| key.deinit();
     if (group.hybridSpec() != null) {
-        if (self.kem_key) |*key| key.deinit();
-        self.kem_key = null;
-        self.kem_key = try .generate(group);
-        const public_key = try self.kem_key.?.publicKey(
+        new_kem_key = try .generate(group);
+        const public_key = try new_kem_key.?.publicKey(
             &self.keypairs,
             &hybrid_public,
         );
@@ -1542,6 +1571,19 @@ pub fn processHelloRetryRequest(
 
     if (retry_psk != null) self.patchRetryPskBinder(encoded);
 
+    // Encoding succeeded: commit the deferred state changes (#158). Nothing
+    // below this point can fail.
+    if (self.kem_key) |*key| key.deinit();
+    self.kem_key = new_kem_key;
+    new_kem_key = null;
+    // RFC 8446 §4.1.4: 0-RTT is not compatible with HelloRetryRequest. A
+    // client that offered early data MUST NOT send 0-RTT data after an HRR,
+    // so invalidate the early-data offer now that ClientHello2 is committed.
+    if (self.early_tx) |*early_tx| {
+        early_tx.deinit();
+        self.early_tx = null;
+    }
+
     // The transcript covers the full ClientHello2, including the patched
     // binder, but not the record header. RFC 8446 §4.2.11.2, §4.4.1.
     self.suite.update(encoded.msg);
@@ -1562,6 +1604,16 @@ pub fn processServerHello(self: *ClientHandshake, msg: []const u8) ServerHelloEr
     try server_hello.parseWithSessionIdEcho(msg, self.legacy_session_id.constSlice(), &sh);
     if (!self.offeredSuite(sh.cipher_suite)) return error.UnsupportedCipherSuite;
     if (!self.offered_groups.contains(sh.key_share.group())) return error.UnsupportedKeyShareGroup;
+
+    // #158 — this handler is transactional: the Suite is a plain copyable
+    // value (the libcrypto hash contexts are stack structs), so snapshot it
+    // before the collapse and restore it if any later step (key exchange, PSK
+    // validation, handshake-key derivation) fails. A rejected ServerHello
+    // leaves the client exactly in its pre-message wait_sh state; there is
+    // deliberately no terminal .failed state, so a later ServerHello/HRR must
+    // still find self.suite in its original arm.
+    const saved_suite = self.suite;
+    errdefer self.suite = saved_suite;
 
     if (self.retry_selected_group) |hrr_group| {
         // Post-HRR ServerHello: the suite is already collapsed, and the
@@ -1632,10 +1684,11 @@ pub fn processServerHello(self: *ClientHandshake, msg: []const u8) ServerHelloEr
         if (self.offered_psk == null) return error.UnexpectedExtension;
         if (self.offered_psk_cipher_suite.hash() != sh.cipher_suite.hash())
             return error.IllegalParameter;
-        self.server_selected_psk = true;
         break :blk self.offered_psk;
     } else null;
     const keys = try self.suite.deriveHandshakeKeys(dhe[0..dhe_len], psk);
+    // Commit only after every fallible step succeeded (#158).
+    self.server_selected_psk = sh.selected_identity != null;
     self.rx = keys.rx;
     self.tx = keys.tx;
     self.state = .wait_ee;
@@ -1646,6 +1699,9 @@ pub const FlightError = error{
     UnexpectedEof,
     CertificateKeyTooLarge,
     HandshakeBufferTooShort,
+    // RFC 8446 §4.2.10 — accepted 0-RTT under a cipher suite or ALPN that
+    // differs from the ticket's (#162).
+    IllegalParameter,
 } ||
     encrypted_extensions.ParseError ||
     certificate_request.ParseError ||
@@ -1790,6 +1846,16 @@ fn processFlightMessage(
                 {
                     return error.UnexpectedMessage;
                 }
+                // RFC 8446 §4.2.10 — when the server accepts early_data, the
+                // negotiated cipher suite (full identity, not just the HKDF
+                // hash) and the selected ALPN MUST equal the ticket's; a
+                // server whose preferences drifted must decline early data
+                // instead. Abort with illegal_parameter on mismatch (#162).
+                if (self.cipherSuite() != self.offered_psk_cipher_suite)
+                    return error.IllegalParameter;
+                const ee_alpn: []const u8 = ee.alpn_protocol orelse "";
+                if (!mem.eql(u8, ee_alpn, self.offered_psk_alpn))
+                    return error.IllegalParameter;
                 self.server_accepted_early_data = true;
             } else {
                 self.server_accepted_early_data = false;
@@ -4127,6 +4193,7 @@ fn advanceZeroRttClientToEe(
     hs: *ClientHandshake,
     server_keypair: x25519.KeyPair,
     selection: TestPskSelection,
+    suite: CipherSuite,
 ) !void {
     var key_share: server_hello.KeyShare = .{ .x25519 = server_keypair.public_key };
     var sh_buf: [256]u8 = undefined;
@@ -4135,14 +4202,14 @@ fn advanceZeroRttClientToEe(
             &sh_buf,
             @splat(0xab),
             &.{},
-            .aes_128_gcm_sha256,
+            suite,
             &key_share,
         ),
         .selected => try server_hello.encodeWithKeyShareAndPsk(
             &sh_buf,
             @splat(0xab),
             &.{},
-            .aes_128_gcm_sha256,
+            suite,
             &key_share,
             0,
         ),
@@ -4166,9 +4233,9 @@ test "EncryptedExtensions: rejects early_data when server declined PSK" {
     ticket.identity.appendSliceAssumeCapacity(&identity);
     ticket.psk.appendSliceAssumeCapacity(&psk);
 
-    var hs = try setupZeroRttClientForFuzz(&ticket);
+    var hs = try setupZeroRttClientForFuzz(&ticket, &.{});
     defer hs.deinit();
-    try advanceZeroRttClientToEe(&hs, x25519.KeyPair.generate(), .declined);
+    try advanceZeroRttClientToEe(&hs, x25519.KeyPair.generate(), .declined, .aes_128_gcm_sha256);
 
     try testing.expectError(
         error.UnexpectedMessage,
@@ -4189,9 +4256,9 @@ test "EncryptedExtensions: rejects early_data without early traffic keys" {
     ticket.identity.appendSliceAssumeCapacity(&identity);
     ticket.psk.appendSliceAssumeCapacity(&psk);
 
-    var hs = try setupZeroRttClientForFuzz(&ticket);
+    var hs = try setupZeroRttClientForFuzz(&ticket, &.{});
     defer hs.deinit();
-    try advanceZeroRttClientToEe(&hs, x25519.KeyPair.generate(), .selected);
+    try advanceZeroRttClientToEe(&hs, x25519.KeyPair.generate(), .selected, .aes_128_gcm_sha256);
     hs.early_tx.?.deinit();
     hs.early_tx = null;
 
@@ -4214,9 +4281,9 @@ test "EncryptedExtensions: rejects early_data after HelloRetryRequest" {
     ticket.identity.appendSliceAssumeCapacity(&identity);
     ticket.psk.appendSliceAssumeCapacity(&psk);
 
-    var hs = try setupZeroRttClientForFuzz(&ticket);
+    var hs = try setupZeroRttClientForFuzz(&ticket, &.{});
     defer hs.deinit();
-    try advanceZeroRttClientToEe(&hs, x25519.KeyPair.generate(), .selected);
+    try advanceZeroRttClientToEe(&hs, x25519.KeyPair.generate(), .selected, .aes_128_gcm_sha256);
     hs.retry_selected_group = .secp256r1;
 
     try testing.expectError(
@@ -4842,7 +4909,10 @@ test "fuzz: processFlight handles arbitrary decrypted bytes" {
 // advertises X25519 in the key_share, leaving secp256r1 available for a valid
 // HelloRetryRequest. The input is treated as a sequence of inbound TLS records
 // fed to handleRecord; the target asserts the 0-RTT invariants without panicking.
-fn setupZeroRttClientForFuzz(ticket: *const SessionTicket) !ClientHandshake {
+fn setupZeroRttClientForFuzz(
+    ticket: *const SessionTicket,
+    alpn_protocols: AlpnProtocols,
+) !ClientHandshake {
     var hs: ClientHandshake = .init(.{
         .keypairs = .initWithP256(
             rfc8448_client_keypair,
@@ -4851,6 +4921,7 @@ fn setupZeroRttClientForFuzz(ticket: *const SessionTicket) !ClientHandshake {
         .host_name = null,
         .now_sec = 0,
         .random = .zero,
+        .alpn_protocols = alpn_protocols,
     });
     errdefer hs.deinit();
 
@@ -4887,6 +4958,7 @@ fn setupZeroRttClientForFuzz(ticket: *const SessionTicket) !ClientHandshake {
     // Record the offered PSK so processServerHello can use it.
     hs.offered_psk = ticket.psk.constSlice();
     hs.offered_psk_cipher_suite = ticket.cipher_suite;
+    hs.offered_psk_alpn = ticket.alpn_protocol.constSlice();
     hs.injectClientHello(ch);
 
     // Derive the client_early_traffic_secret over the full ClientHello and
@@ -4910,7 +4982,7 @@ fn fuzzZeroRttClient(_: void, input: []const u8) anyerror!void {
     ticket.identity.appendSliceAssumeCapacity(&identity_bytes);
     ticket.psk.appendSliceAssumeCapacity(&psk_bytes);
 
-    var hs: ClientHandshake = try setupZeroRttClientForFuzz(&ticket);
+    var hs: ClientHandshake = try setupZeroRttClientForFuzz(&ticket, &.{});
     defer hs.deinit();
 
     var out: [4096]u8 = undefined;
@@ -5517,4 +5589,234 @@ test "deinit leaves caller-owned buffers to the caller" {
 
     try testing.expect(mem.allEqual(u8, &reassembly, 0xc7));
     try testing.expect(mem.allEqual(u8, &retained, 0xd8));
+}
+
+/// Build an HRR with a cookie extension by hand: encode a normal HRR, insert
+/// the cookie extension before the trailing supported_versions extension, and
+/// fix the enclosing lengths. RFC 8446 §4.1.4, §4.2.2.
+fn encodeHrrWithCookieForTest(
+    out: []u8,
+    suite: CipherSuite,
+    group: NamedGroup,
+    cookie: []const u8,
+) ![]const u8 {
+    var base_buf: [128]u8 = undefined;
+    const base = try server_hello.encodeHelloRetryRequest(&base_buf, &.{}, suite, group);
+    // The HRR extensions are key_share (6 bytes) + supported_versions (6
+    // bytes); the cookie extension goes before supported_versions.
+    const cookie_ext_len = 4 + 2 + cookie.len;
+    const sv_offset = base.len - 6;
+    const total = base.len + cookie_ext_len;
+    if (out.len < total) return error.BufferTooShort;
+    @memcpy(out[0..sv_offset], base[0..sv_offset]);
+    memx.writeInt(u16, out[sv_offset..][0..2], 0x002c); // cookie extension
+    memx.writeInt(u16, out[sv_offset + 2 ..][0..2], @intCast(2 + cookie.len));
+    memx.writeInt(u16, out[sv_offset + 4 ..][0..2], @intCast(cookie.len));
+    @memcpy(out[sv_offset + 6 ..][0..cookie.len], cookie);
+    @memcpy(out[sv_offset + cookie_ext_len ..][0..6], base[sv_offset..]);
+    // Fix the handshake body length (bytes 1..4, u24) and extensions_len
+    // (u16 at offset 42: 4+2+32+1+2+1).
+    memx.writeInt(u24, out[1..4], @intCast(total - 4));
+    const old_ext_len = memx.readInt(u16, out[42..][0..2]);
+    memx.writeInt(u16, out[42..][0..2], old_ext_len + @as(u16, @intCast(cookie_ext_len)));
+    return out[0..total];
+}
+
+// RFC 8446 §4.1.3 — #158: a ServerHello that fails a post-collapse check
+// (all-zero X25519 key_share -> IdentityElement) must leave the client in its
+// exact pre-message wait_sh state; a following valid ServerHello is processed
+// under the original invariants and reaches wait_ee. The pre-fix code left
+// the transcript union collapsed, so the second ServerHello read the
+// inactive .buffering arm (ReleaseSafe panic, ReleaseFast UB).
+test "processServerHello: failed key exchange rolls back the transcript union" {
+    var hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
+    defer hs.deinit();
+    var ch_buf: [512]u8 = undefined;
+    const ch = try client_hello.encodeWithP256(
+        &ch_buf,
+        .zero,
+        hs.keypairs.x25519.public_key,
+        hs.keypairs.p256.public_key,
+        null,
+        &.{},
+    );
+    hs.injectClientHello(ch);
+
+    var bad_buf: [256]u8 = undefined;
+    var zero_share: server_hello.KeyShare = .{ .x25519 = .zero };
+    const bad_sh = try server_hello.encodeWithKeyShare(
+        &bad_buf,
+        @splat(0xab),
+        &.{},
+        .aes_128_gcm_sha256,
+        &zero_share,
+    );
+    try testing.expectError(error.IdentityElement, hs.processServerHello(bad_sh));
+    try testing.expectEqual(.wait_sh, hs.state);
+    try testing.expect(std.meta.activeTag(hs.suite) == .buffering);
+
+    var good_buf: [256]u8 = undefined;
+    const server_keypair = x25519.KeyPair.generate();
+    var good_share: server_hello.KeyShare = .{ .x25519 = server_keypair.public_key };
+    const good_sh = try server_hello.encodeWithKeyShare(
+        &good_buf,
+        @splat(0xab),
+        &.{},
+        .aes_128_gcm_sha256,
+        &good_share,
+    );
+    try hs.processServerHello(good_sh);
+    try testing.expectEqual(.wait_ee, hs.state);
+    try testing.expectEqual(CipherSuite.aes_128_gcm_sha256, hs.cipherSuite());
+}
+
+// RFC 8446 §4.1.4, §4.2.2 — #158: an HRR whose cookie makes ClientHello2
+// exceed the caller's out slice returns BufferTooShort and leaves the client
+// in its exact pre-HRR state (suite still buffering, retry_selected_group
+// unset); retrying the same HRR with a full-size buffer succeeds and emits a
+// valid ClientHello2. The pre-fix code collapsed the transcript union before
+// the length check, so the retry read the inactive .buffering arm.
+test "processHelloRetryRequest: BufferTooShort rolls back; retry succeeds" {
+    const client_p256 = try p256.KeyPair.generateDeterministic(p256_client_seed);
+    var hs: ClientHandshake = .init(.{
+        .keypairs = .initWithP256(rfc8448_client_keypair, client_p256),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer hs.deinit();
+    var ch_buf: [512]u8 = undefined;
+    const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
+    hs.injectClientHello(ch);
+
+    const cookie: [2000]u8 = @splat(0xc0);
+    var hrr_buf: [4096]u8 = undefined;
+    const hrr = try encodeHrrWithCookieForTest(
+        &hrr_buf,
+        .aes_128_gcm_sha256,
+        .secp256r1,
+        &cookie,
+    );
+
+    var short_out: [1024]u8 = undefined;
+    try testing.expectError(
+        error.BufferTooShort,
+        hs.processHelloRetryRequest(hrr, &short_out),
+    );
+    try testing.expectEqual(.wait_sh, hs.state);
+    try testing.expect(std.meta.activeTag(hs.suite) == .buffering);
+    try testing.expectEqual(@as(?NamedGroup, null), hs.retry_selected_group);
+
+    var full_out: [8192]u8 = undefined;
+    const ch2_record = (try hs.processHelloRetryRequest(hrr, &full_out)).?;
+    try testing.expectEqual(.wait_sh, hs.state);
+    try testing.expectEqual(NamedGroup.secp256r1, hs.retry_selected_group.?);
+    const parsed = try client_hello.parse(ch2_record[frame.header_len..]);
+    try testing.expectEqual(@as(?x25519.PublicKey, null), parsed.public_key);
+    try testing.expectEqualSlices(u8, &client_p256.public_key.data, &parsed.public_key_p256.?.data);
+}
+
+// RFC 8446 §4.2.10 — #162: when the server accepts early_data, the negotiated
+// cipher suite MUST equal the ticket's (full suite identity, not just the
+// HKDF hash). A chacha20_poly1305_sha256 ServerHello against an
+// aes_128_gcm_sha256 ticket passes the hash check but must abort with
+// illegal_parameter once EncryptedExtensions accepts the early data.
+test "EncryptedExtensions: rejects accepted 0-RTT under a different same-hash suite" {
+    const psk: [32]u8 = @splat(0x42);
+    const identity = [_]u8{0x01};
+    var ticket: SessionTicket = .{
+        .cipher_suite = .aes_128_gcm_sha256,
+        .max_early_data_size = 1024,
+    };
+    ticket.identity.appendSliceAssumeCapacity(&identity);
+    ticket.psk.appendSliceAssumeCapacity(&psk);
+
+    var hs = try setupZeroRttClientForFuzz(&ticket, &.{});
+    defer hs.deinit();
+    try advanceZeroRttClientToEe(
+        &hs,
+        x25519.KeyPair.generate(),
+        .selected,
+        .chacha20_poly1305_sha256,
+    );
+
+    try testing.expectError(
+        error.IllegalParameter,
+        hs.processFlight(&accepted_early_data_ee, hs.policy),
+    );
+    try testing.expect(!hs.server_accepted_early_data);
+}
+
+// RFC 8446 §4.2.10 — #162: when the server accepts early_data, the selected
+// ALPN protocol MUST equal the ALPN of the session that issued the ticket
+// (both absent counts as equal; exactly one absent is a mismatch). A server
+// whose ALPN preference drifted from h2 to http/1.1 during the ticket
+// lifetime must decline early data, not accept it.
+test "EncryptedExtensions: rejects accepted 0-RTT under a mismatched ALPN" {
+    const psk: [32]u8 = @splat(0x42);
+    const identity = [_]u8{0x01};
+    var ticket: SessionTicket = .{
+        .cipher_suite = .aes_128_gcm_sha256,
+        .max_early_data_size = 1024,
+    };
+    ticket.identity.appendSliceAssumeCapacity(&identity);
+    ticket.psk.appendSliceAssumeCapacity(&psk);
+    ticket.alpn_protocol.appendSliceAssumeCapacity("h2");
+
+    var hs = try setupZeroRttClientForFuzz(&ticket, &.{ "h2", "http/1.1" });
+    defer hs.deinit();
+    try advanceZeroRttClientToEe(
+        &hs,
+        x25519.KeyPair.generate(),
+        .selected,
+        .aes_128_gcm_sha256,
+    );
+
+    // EE: alpn=http/1.1 + early_data.
+    const ee_alpn_mismatch = [_]u8{
+        0x08, 0x00, 0x00, 0x15, 0x00, 0x13,
+        0x00, 0x10, 0x00, 0x0b, 0x00, 0x09,
+        0x08, 'h',  't',  't',  'p',  '/',
+        '1',  '.',  '1',  0x00, 0x2a, 0x00,
+        0x00,
+    };
+    try testing.expectError(
+        error.IllegalParameter,
+        hs.processFlight(&ee_alpn_mismatch, hs.policy),
+    );
+    try testing.expect(!hs.server_accepted_early_data);
+}
+
+// RFC 8446 §4.2.10 — #162: with matching cipher suite and ALPN, accepted
+// early_data is reported normally.
+test "EncryptedExtensions: accepts 0-RTT when suite and ALPN match the ticket" {
+    const psk: [32]u8 = @splat(0x42);
+    const identity = [_]u8{0x01};
+    var ticket: SessionTicket = .{
+        .cipher_suite = .aes_128_gcm_sha256,
+        .max_early_data_size = 1024,
+    };
+    ticket.identity.appendSliceAssumeCapacity(&identity);
+    ticket.psk.appendSliceAssumeCapacity(&psk);
+    ticket.alpn_protocol.appendSliceAssumeCapacity("h2");
+
+    var hs = try setupZeroRttClientForFuzz(&ticket, &.{"h2"});
+    defer hs.deinit();
+    try advanceZeroRttClientToEe(
+        &hs,
+        x25519.KeyPair.generate(),
+        .selected,
+        .aes_128_gcm_sha256,
+    );
+
+    // EE: alpn=h2 + early_data.
+    const ee_alpn_match = [_]u8{
+        0x08, 0x00, 0x00, 0x0f, 0x00, 0x0d,
+        0x00, 0x10, 0x00, 0x05, 0x00, 0x03,
+        0x02, 'h',  '2',  0x00, 0x2a, 0x00,
+        0x00,
+    };
+    try hs.processFlight(&ee_alpn_match, hs.policy);
+    try testing.expect(hs.server_accepted_early_data);
+    try testing.expectEqualStrings("h2", hs.selectedAlpnProtocol().?);
 }

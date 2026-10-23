@@ -61,19 +61,34 @@ fn versionImpl() callconv(.c) [*:0]const u8 {
 
 // Size / alignment
 fn clientSizeImpl() callconv(.c) usize {
-    return @sizeOf(ClientHandshake);
+    return @sizeOf(CapiClient);
 }
 
 fn clientAlignImpl() callconv(.c) usize {
-    return @alignOf(ClientHandshake);
+    return @alignOf(CapiClient);
 }
 
 // Helpers
-/// Cast the opaque C pointer to a typed client pointer. The caller is
-/// responsible for having allocated enough storage with correct alignment.
-fn asClient(ptr: ?*anyopaque) ?*ClientHandshake {
+/// The opaque C handle. The TLS client is followed by storage the C ABI owns
+/// on the caller's behalf, so the Zig-facing ClientHandshake does not grow
+/// for C-only needs (the host_name copy, #159). ztls_client_size() reports
+/// this wrapper's size; the layout stays opaque to C.
+const CapiClient = struct {
+    handshake: ClientHandshake,
+    host_name_buf: [ztls.client_hello.max_server_name_len]u8,
+};
+
+/// Cast the opaque C pointer to the wrapper. The caller is responsible for
+/// having allocated enough storage with correct alignment.
+fn asCapiClient(ptr: ?*anyopaque) ?*CapiClient {
     const p = ptr orelse return null;
-    return @as(*ClientHandshake, @ptrCast(@alignCast(p)));
+    return @as(*CapiClient, @ptrCast(@alignCast(p)));
+}
+
+/// Cast the opaque C pointer to a typed client pointer.
+fn asClient(ptr: ?*anyopaque) ?*ClientHandshake {
+    const c = asCapiClient(ptr) orelse return null;
+    return &c.handshake;
 }
 
 /// Map a Zig error to the closest C result enum value. Unmapped errors fall
@@ -138,7 +153,7 @@ fn clientInitInsecureImpl(
     if (client == null) return .err_null_parameter;
     if (x25519_pub == null or x25519_sec == null or random == null) return .err_null_parameter;
 
-    const c = asClient(client) orelse return .err_null_parameter;
+    const c = asCapiClient(client) orelse return .err_null_parameter;
 
     // Copy the key material into local arrays — the caller may free or
     // overwrite the input arrays after init returns (RECON-FFI.md F1 lifetime).
@@ -149,7 +164,14 @@ fn clientInitInsecureImpl(
     var random_bytes: [32]u8 = undefined;
     @memcpy(&random_bytes, random.?[0..32]);
 
+    // Validate and bound the name here so the copy below always fits; an
+    // empty string disables SNI/verification per include/ztls.h (#159).
     const host: ?[]const u8 = if (host_name) |hn| std.mem.span(hn) else null;
+    const host_to_use: ?[]const u8 = if (host) |h| blk: {
+        if (h.len == 0) break :blk null;
+        if (h.len > ztls.client_hello.max_server_name_len) return .err_handshake_failure;
+        break :blk h;
+    } else null;
 
     const keypair: ztls.x25519.KeyPair = .{
         .public_key = .{ .data = pub_key },
@@ -161,14 +183,22 @@ fn clientInitInsecureImpl(
     const keypairs = ClientHandshake.KeyPairs.init(keypair) catch |err| return mapError(err);
     const config: Config = .{
         .keypairs = keypairs,
-        .host_name = host,
+        .host_name = null, // installed below, pointing at handle-owned storage
         .now_sec = 0,
         .random = .{ .data = random_bytes },
         // The exported name makes this explicit until verified init lands in #30.
         .insecure_no_chain_anchor = true,
     };
 
-    c.* = ClientHandshake.init(config);
+    c.handshake = ClientHandshake.init(config);
+    // Copy the name into handle-owned storage so the caller may free or
+    // overwrite its string as soon as init returns, exactly like the key and
+    // random inputs above (#159). The handle is non-copyable (ztls.h), so the
+    // self-referential slice stays valid until ztls_client_deinit.
+    if (host_to_use) |h| {
+        @memcpy(c.host_name_buf[0..h.len], h);
+        c.handshake.policy.host_name = c.host_name_buf[0..h.len];
+    }
     return .ok;
 }
 
@@ -392,7 +422,7 @@ test "capi: full client handshake through the C ABI" {
     const server_random: ztls.Random = .{ .data = @splat(0x37) };
 
     // Client setup via C ABI
-    var client_storage: [@sizeOf(ClientHandshake)]u8 align(@alignOf(ClientHandshake)) = undefined;
+    var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
 
     const init_result = clientInitInsecureImpl(
         &client_storage,
@@ -560,7 +590,7 @@ test "capi: full client handshake through the C ABI" {
 }
 
 test "capi: send_application_data before connected fails" {
-    var client_storage: [@sizeOf(ClientHandshake)]u8 align(@alignOf(ClientHandshake)) = undefined;
+    var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
     const kp: ztls.x25519.KeyPair = .generate();
     var rand: ztls.Random = .{ .data = @splat(0x55) };
 
@@ -588,7 +618,7 @@ test "capi: send_application_data before connected fails" {
 }
 
 fn connectClientAndServerForTest(
-    client_storage: *[@sizeOf(ClientHandshake)]u8,
+    client_storage: *[@sizeOf(CapiClient)]u8,
     server: *ServerHandshake,
 ) !void {
     var signer: ztls.signature.PrivateKey = try .fromP256Scalar(
@@ -632,7 +662,7 @@ fn connectClientAndServerForTest(
 }
 
 fn finishHandshakeForTest(
-    client_storage: *[@sizeOf(ClientHandshake)]u8,
+    client_storage: *[@sizeOf(CapiClient)]u8,
     server: *ServerHandshake,
     client_hello: []const u8,
     client_out: []u8,
@@ -675,7 +705,7 @@ fn finishHandshakeForTest(
 // RFC 8446 §4.6.3 — a requested peer KeyUpdate produces a response record
 // that the C caller must write and acknowledge before continuing.
 test "capi: KeyUpdate response is surfaced as a write event" {
-    var client_storage: [@sizeOf(ClientHandshake)]u8 align(@alignOf(ClientHandshake)) = undefined;
+    var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
     var server: ServerHandshake = undefined;
     try connectClientAndServerForTest(&client_storage, &server);
     defer _ = clientDeinitImpl(&client_storage);
@@ -732,7 +762,7 @@ test "capi: KeyUpdate response is surfaced as a write event" {
 // RFC 8446 §4.6.3 — update_not_requested has no response and therefore must
 // not set the pending-write interlock.
 test "capi: KeyUpdate without response maps to none without pending write" {
-    var client_storage: [@sizeOf(ClientHandshake)]u8 align(@alignOf(ClientHandshake)) = undefined;
+    var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
     var server: ServerHandshake = undefined;
     try connectClientAndServerForTest(&client_storage, &server);
     defer _ = clientDeinitImpl(&client_storage);
@@ -774,7 +804,7 @@ test "capi: KeyUpdate without response maps to none without pending write" {
 // RFC 8446 §4.6.1 — an ignored NewSessionTicket has no write response and
 // must not leave the C client blocked by the pending-write interlock.
 test "capi: NewSessionTicket maps to none without pending write" {
-    var client_storage: [@sizeOf(ClientHandshake)]u8 align(@alignOf(ClientHandshake)) = undefined;
+    var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
     var server: ServerHandshake = undefined;
     try connectClientAndServerForTest(&client_storage, &server);
     defer _ = clientDeinitImpl(&client_storage);
@@ -817,4 +847,136 @@ test "capi: NewSessionTicket maps to none without pending write" {
     ));
     try testing.expectEqual(ZtlsEventType.application_data, event.type);
     try testing.expectEqualStrings("after", event.data.?[0..event.data_len]);
+}
+
+// #159 test helper: drive a full handshake between a C-ABI client handle
+// (already initialized in client_storage) and a native-Zig server, asserting
+// the client connects. The fixture certificate's SAN is "ztls.server.test",
+// so hostname verification only passes when the engine verifies the name
+// captured at init.
+fn expectCapiClientConnects(client_storage: anytype) !void {
+    const cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
+    const scalar: []const u8 = &fixtures.server_ecdsa_scalar;
+
+    var signer: ztls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
+    defer signer.deinit();
+
+    var server: ServerHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .random = .{ .data = @splat(0x37) },
+    });
+    defer server.deinit();
+    server.setCredentials(&.{cert_der}, signer.signer());
+
+    var server_out: ServerHandshake.OutBuffer = .empty;
+    var flight: ServerHandshake.FlightBuffer = .empty;
+    var client_out: [frame.max_wire_record_len]u8 = undefined;
+    var event: ZtlsEvent = undefined;
+
+    var out_written: usize = 0;
+    try testing.expectEqual(.ok, clientStartImpl(
+        client_storage,
+        &client_out,
+        client_out.len,
+        &out_written,
+    ));
+    _ = clientCompleteWriteImpl(client_storage);
+
+    const sh_record = try server.acceptClientHello(client_out[0..out_written], &server_out.buffer);
+    server.completeWrite();
+    var sh_buf: [frame.max_wire_record_len]u8 = undefined;
+    @memcpy(sh_buf[0..sh_record.len], sh_record);
+    try testing.expectEqual(.ok, clientHandleRecordImpl(
+        client_storage,
+        &sh_buf,
+        sh_record.len,
+        &client_out,
+        client_out.len,
+        &event,
+    ));
+
+    const flight_record = (try server.sendServerFlightBuffered(&flight)).?;
+    server.completeWrite();
+    var flight_buf: [frame.max_wire_record_len]u8 = undefined;
+    @memcpy(flight_buf[0..flight_record.len], flight_record);
+    try testing.expectEqual(.ok, clientHandleRecordImpl(
+        client_storage,
+        &flight_buf,
+        flight_record.len,
+        &client_out,
+        client_out.len,
+        &event,
+    ));
+    try testing.expectEqual(ZtlsEventType.write, event.type);
+    _ = clientCompleteWriteImpl(client_storage);
+    try server.processClientFinished(client_out[0..event.data_len]);
+
+    try testing.expect(clientIsConnectedImpl(client_storage));
+    try testing.expect(server.isConnected());
+}
+
+// #159 — ztls_client_init_insecure copies host_name into handle-owned
+// storage: overwriting the caller's buffer after init must not change SNI or
+// hostname verification. The pre-fix engine kept the borrowed pointer, so the
+// overwritten bytes ("X...") failed verifyHostName against the fixture SAN.
+test "capi: host_name is copied at init; caller storage may be overwritten" {
+    const client_keypair: ztls.x25519.KeyPair = .generate();
+    const client_random: ztls.Random = .{ .data = @splat(0x42) };
+
+    var host_buf: [64]u8 = @splat(0);
+    const name: [:0]const u8 = "ztls.server.test";
+    @memcpy(host_buf[0 .. name.len + 1], name[0 .. name.len + 1]);
+
+    var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
+    try testing.expectEqual(.ok, clientInitInsecureImpl(
+        &client_storage,
+        &client_keypair.public_key.data,
+        &client_keypair.secret_key.data,
+        host_buf[0..name.len :0].ptr,
+        &client_random.data,
+    ));
+    defer _ = clientDeinitImpl(&client_storage);
+
+    // The contract (ztls.h) permits this immediately after init returns.
+    @memset(&host_buf, 'X');
+
+    try expectCapiClientConnects(&client_storage);
+}
+
+// #159 — an empty host_name disables SNI and hostname verification (the
+// header's documented behavior); the handshake completes without SNI.
+test "capi: empty host_name disables SNI and still connects" {
+    const client_keypair: ztls.x25519.KeyPair = .generate();
+    const client_random: ztls.Random = .{ .data = @splat(0x42) };
+
+    var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
+    try testing.expectEqual(.ok, clientInitInsecureImpl(
+        &client_storage,
+        &client_keypair.public_key.data,
+        &client_keypair.secret_key.data,
+        "",
+        &client_random.data,
+    ));
+    defer _ = clientDeinitImpl(&client_storage);
+
+    try expectCapiClientConnects(&client_storage);
+}
+
+// #159 — host_name is bounded by client_hello.max_server_name_len (253);
+// longer names are rejected at init.
+test "capi: host_name longer than 253 bytes is rejected" {
+    const client_keypair: ztls.x25519.KeyPair = .generate();
+    const client_random: ztls.Random = .{ .data = @splat(0x42) };
+
+    var host_buf: [300]u8 = @splat('a');
+    host_buf[254] = 0; // 254-byte name: one over the limit
+
+    var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
+    try testing.expectEqual(.err_handshake_failure, clientInitInsecureImpl(
+        &client_storage,
+        &client_keypair.public_key.data,
+        &client_keypair.secret_key.data,
+        host_buf[0..254 :0].ptr,
+        &client_random.data,
+    ));
 }

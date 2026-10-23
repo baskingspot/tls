@@ -9,9 +9,23 @@ All notable changes to tls are recorded here. The format follows
 
 - `ServerHandshake.PskEntry.alpn`: optional ALPN of the connection that
   issued the ticket, required for 0-RTT acceptance (#161).
+- `ClientHandshake.SessionTicket.alpn_protocol`: ALPN of the session that
+  issued the ticket; `deriveSessionTicket` records it so a resumption can
+  check it against accepted early data (#162).
 
 ### Fixed
 
+- Client `wait_sh` handlers are transactional: a rejected ServerHello or
+  HelloRetryRequest (e.g. `BufferTooShort` from a large HRR cookie) no longer
+  leaves the transcript union collapsed, so retrying with a larger buffer or
+  processing the next record no longer reads an inactive union field (#158).
+- Client now aborts with `error.IllegalParameter` (illegal_parameter alert)
+  when a server accepts 0-RTT under a cipher suite or ALPN that differs from
+  the ticket's, per RFC 8446 §4.2.10 (#162).
+- C ABI: `ztls_client_init_insecure` now copies `host_name` into handle-owned
+  storage (caller may free/overwrite it after init), treats an empty string
+  as no SNI, and rejects names over 253 bytes with
+  `ZTLS_ERR_HANDSHAKE_FAILURE` (#159).
 - `ServerHandshake` ClientHello processing is now transactional: a
   ClientHello that fails after PSK selection no longer leaves its PSK, 0-RTT
   key, or other negotiation state for the next ClientHello, and a failed
