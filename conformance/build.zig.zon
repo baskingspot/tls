@@ -10,8 +10,8 @@
         // Development-only: comptime txtar fixtures. Lazy so consumers of this
         // package never fetch it.
         .testingx = .{
-            .url = "https://baskingspot.dev/testingx/v0.1.1.tar.gz",
-            .hash = "testingx-0.1.1-ib95-6ivAgB3rCWLHww0C7edG1NLC71y1p1wogPV0Djf",
+            .url = "https://baskingspot.dev/testingx/v0.2.0.tar.gz",
+            .hash = "testingx-0.2.0-ib95-5lNAwA8WZQH6Q6eDm2hgfC3ixFJuhkOrR8gcZAm",
             .lazy = true,
         },
         .tlsanvil = .{
