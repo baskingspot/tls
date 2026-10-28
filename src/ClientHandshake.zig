@@ -196,7 +196,7 @@ pub const Config = struct {
     /// null disables both SNI and hostname verification.
     /// Caller-owned: like alpn_protocols, the slice must outlive the
     /// handshake. (The C ABI copies the name into handle-owned storage; see
-    /// ztls_client_init_insecure in include/ztls.h.)
+    /// baskingspot_tls_client_init_insecure in include/baskingspot_tls.h.)
     host_name: ?[]const u8,
     /// Current time in seconds since the Unix epoch for certificate validity.
     /// Required — callers that do not care must pass 0 explicitly.

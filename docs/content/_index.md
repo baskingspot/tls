@@ -715,11 +715,16 @@ The raw exports remain available for specialized integrations. They are immediat
 
 # C ABI
 
-The C surface is partial and client only: `include/ztls.h`, `libztls.a` from
-`zig build -Dcapi`, and `examples/c_client.c`. It is wired into `just ci` as
-`capi-ci`. The names stay `ztls_*` until the C namespace is chosen. The repo is
-`tls`; the C prefix is not, and `libtls.a` belongs to LibreSSL. That decision is
-[#149](https://github.com/baskingspot/tls/issues/149).
+The C surface is partial and client only: `include/baskingspot_tls.h`,
+`libbaskingspot_tls.a` from `zig build -Dcapi`, and `examples/c_client.c`. It is
+wired into `just ci` as `capi-ci`.
+
+The C names are not the package name. A C symbol namespace has to survive being
+linked into programs that already carry LibreSSL, mbedTLS, or wolfSSL, so it
+names the project rather than the protocol: `baskingspot_tls_*` symbols,
+`BASKINGSPOT_TLS_*` enumerators, `BASKINGSPOT_TLS_H` for the guard. `tls_*`
+and `libtls.a` are LibreSSL's, and a short abbreviation reads as noise in a
+linker error.
 
 # Performance
 

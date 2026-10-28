@@ -1,5 +1,5 @@
 /*
- * ztls C ABI example — minimal client lifecycle.
+ * baskingspot_tls C ABI example — minimal client lifecycle.
  *
  * Queries size/alignment, allocates an aligned buffer, initializes the client
  * with a test keypair + host name + zero random, starts the handshake, and
@@ -8,7 +8,7 @@
  *
  * Build: see just/check.just capi-ci recipe.
  */
-#include "ztls.h"
+#include "baskingspot_tls.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,15 +17,15 @@
 
 int main(void) {
     /* Query the opaque size/alignment at runtime. */
-    size_t sz = ztls_client_size();
-    size_t al = ztls_client_align();
+    size_t sz = baskingspot_tls_client_size();
+    size_t al = baskingspot_tls_client_align();
     if (sz == 0 || al == 0) {
-        fprintf(stderr, "ztls_client_size/align returned 0\n");
+        fprintf(stderr, "baskingspot_tls_client_size/align returned 0\n");
         return 1;
     }
 
     /* Allocate aligned storage. We over-allocate to satisfy the runtime
-     * alignment requirement (ztls_client_align may exceed max_align_t on
+     * alignment requirement (baskingspot_tls_client_align may exceed max_align_t on
      * platforms with SIMD types). */
     size_t total = sz + al;
     unsigned char *raw = malloc(total);
@@ -54,10 +54,10 @@ int main(void) {
 
     /* This demo explicitly uses the insecure initializer because trust-anchor
      * plumbing is deferred to #30. It does not authenticate the server. */
-    ztls_result r = ztls_client_init_insecure(client, pub, sec,
+    baskingspot_tls_result r = baskingspot_tls_client_init_insecure(client, pub, sec,
                                               "ztls.server.test", random);
-    if (r != ZTLS_OK) {
-        fprintf(stderr, "ztls_client_init_insecure failed: %d\n", (int)r);
+    if (r != BASKINGSPOT_TLS_OK) {
+        fprintf(stderr, "baskingspot_tls_client_init_insecure failed: %d\n", (int)r);
         free(raw);
         return 1;
     }
@@ -65,10 +65,10 @@ int main(void) {
     /* Start the handshake — encode ClientHello into out. */
     unsigned char out[16645];
     size_t out_written = 0;
-    r = ztls_client_start(client, out, sizeof(out), &out_written);
-    if (r != ZTLS_OK) {
-        fprintf(stderr, "ztls_client_start failed: %d\n", (int)r);
-        ztls_client_deinit(client);
+    r = baskingspot_tls_client_start(client, out, sizeof(out), &out_written);
+    if (r != BASKINGSPOT_TLS_OK) {
+        fprintf(stderr, "baskingspot_tls_client_start failed: %d\n", (int)r);
+        baskingspot_tls_client_deinit(client);
         free(raw);
         return 1;
     }
@@ -77,20 +77,20 @@ int main(void) {
      * RFC 8446 §5.1 — content_type=handshake(0x16), legacy_version=0x0303. */
     if (out_written < 5) {
         fprintf(stderr, "ClientHello too short: %zu bytes\n", out_written);
-        ztls_client_deinit(client);
+        baskingspot_tls_client_deinit(client);
         free(raw);
         return 1;
     }
     if (out[0] != 0x16) {
         fprintf(stderr, "expected content_type 0x16, got 0x%02x\n", out[0]);
-        ztls_client_deinit(client);
+        baskingspot_tls_client_deinit(client);
         free(raw);
         return 1;
     }
     if (out[1] != 0x03 || out[2] != 0x03) {
         fprintf(stderr, "expected legacy_version 0x0303, got 0x%02x%02x\n",
                 out[1], out[2]);
-        ztls_client_deinit(client);
+        baskingspot_tls_client_deinit(client);
         free(raw);
         return 1;
     }
@@ -103,16 +103,16 @@ int main(void) {
     if (record_len + 5 != out_written) {
         fprintf(stderr, "record length mismatch: header says %zu, got %zu\n",
                 record_len + 5, out_written);
-        ztls_client_deinit(client);
+        baskingspot_tls_client_deinit(client);
         free(raw);
         return 1;
     }
     printf("record length field: %zu — OK\n", record_len);
 
     /* Clean up. */
-    ztls_client_deinit(client);
+    baskingspot_tls_client_deinit(client);
     free(raw);
 
-    printf("ztls C ABI example: OK\n");
+    printf("baskingspot_tls C ABI example: OK\n");
     return 0;
 }

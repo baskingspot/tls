@@ -196,10 +196,14 @@ pub fn build(b: *Build) void {
     });
 
     // C ABI library (-Dcapi)
-    // Produces libztls.a (static) from src/capi.zig. Consumers link a compatible
-    // libcrypto-family library. Installs include/ztls.h alongside. Behind the
+    // Produces libbaskingspot_tls.a (static) from src/capi.zig. Consumers link a compatible
+    // libcrypto-family library. Installs include/baskingspot_tls.h alongside. Behind the
     // option so default builds are unaffected. #30.
-    const capi = b.option(bool, "capi", "Build the C ABI library (libztls.a)") orelse false;
+    const capi = b.option(
+        bool,
+        "capi",
+        "Build the C ABI library (libbaskingspot_tls.a)",
+    ) orelse false;
     if (capi) {
         const capi_mod = b.createModule(.{
             .root_source_file = b.path("src/capi.zig"),
@@ -236,8 +240,8 @@ pub fn build(b: *Build) void {
             capi_mod.addSystemIncludePath(.{ .cwd_relative = include_dir });
         }
 
-        const libztls = b.addLibrary(.{
-            .name = "ztls",
+        const baskingspot_tls_lib = b.addLibrary(.{
+            .name = "baskingspot_tls",
             .root_module = capi_mod,
             .linkage = .static,
         });
@@ -246,11 +250,14 @@ pub fn build(b: *Build) void {
         // clean single-object .a (ziglang/zig#25129). Using the LLVM toolchain
         // routes archiving through llvm-ar, which produces a well-formed
         // archive. Local builds never reproduced the bug; this guards CI.
-        libztls.use_llvm = true;
-        const install_lib = b.addInstallArtifact(libztls, .{});
-        const install_header = b.addInstallFile(b.path("include/ztls.h"), "include/ztls.h");
+        baskingspot_tls_lib.use_llvm = true;
+        const install_lib = b.addInstallArtifact(baskingspot_tls_lib, .{});
+        const install_header = b.addInstallFile(
+            b.path("include/baskingspot_tls.h"),
+            "include/baskingspot_tls.h",
+        );
 
-        const capi_step = b.step("capi", "Build the C ABI library (libztls.a)");
+        const capi_step = b.step("capi", "Build the C ABI library (libbaskingspot_tls.a)");
         capi_step.dependOn(&install_lib.step);
         capi_step.dependOn(&install_header.step);
 

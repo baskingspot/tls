@@ -32,7 +32,7 @@ commit because the branch moved.
 | Session resumption | Partial | The engine side is proven; persistence, expiry, rotation, replay, and SNI partitioning are yours |
 | 0-RTT early data | Partial | Offer, accept, and reject are proven; accept is gated on the RFC 8446 §4.2.10 exact-suite, ALPN, and first-identity checks; ticket-age and anti-replay policy are yours, and the engine default is off |
 | kTLS | Proven | Linux only; key export and the kernel data plane |
-| C ABI | Partial | Client lifecycle only; see `include/ztls.h` |
+| C ABI | Partial | Client lifecycle only; see `include/baskingspot_tls.h` |
 | TLS 1.2, DTLS, Windows | Out of scope | Not coming |
 
 Crypto primitives come from a libcrypto backend chosen at build time. OpenSSL,

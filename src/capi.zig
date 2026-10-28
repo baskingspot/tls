@@ -1,9 +1,9 @@
-//! C ABI shims for the ztls TLS 1.3 client lifecycle (#30).
+//! C ABI shims for the client lifecycle (#30).
 //!
 //! This module exports a C-callable surface for the client-side handshake.
 //! The internal layout of the client handle is opaque: the C consumer
-//! allocates `ztls_client_size()` bytes with alignment `ztls_client_align()`
-//! and passes the pointer to `ztls_client_init_insecure`. Layout is unstable; the
+//! allocates `baskingspot_tls_client_size()` bytes with alignment `baskingspot_tls_client_align()`
+//! and passes the pointer to `baskingspot_tls_client_init_insecure`. Layout is unstable; the
 //! consumer must not access the memory directly.
 //!
 //! The opaque-sized approach is used because `ClientHandshake.Suite` is a
@@ -21,14 +21,14 @@ const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
 
-const ztls = @import("root.zig");
-const ClientHandshake = ztls.ClientHandshake;
-const ServerHandshake = ztls.ServerHandshake;
+const tls = @import("root.zig");
+const ClientHandshake = tls.ClientHandshake;
+const ServerHandshake = tls.ServerHandshake;
 const Config = ClientHandshake.Config;
-const frame = ztls.frame;
+const frame = tls.frame;
 
 // C-facing types
-pub const ZtlsResult = enum(c_int) {
+pub const BaskingspotTlsResult = enum(c_int) {
     ok = 0,
     err_null_parameter = 1,
     err_buffer_too_short = 2,
@@ -41,15 +41,15 @@ pub const ZtlsResult = enum(c_int) {
     err_internal = 9,
 };
 
-pub const ZtlsEventType = enum(c_int) {
+pub const BaskingspotTlsEventType = enum(c_int) {
     none = 0,
     application_data = 1,
     write = 2,
     closed = 3,
 };
 
-pub const ZtlsEvent = extern struct {
-    type: ZtlsEventType,
+pub const BaskingspotTlsEvent = extern struct {
+    type: BaskingspotTlsEventType,
     data: ?[*]const u8,
     data_len: usize,
 };
@@ -71,11 +71,11 @@ fn clientAlignImpl() callconv(.c) usize {
 // Helpers
 /// The opaque C handle. The TLS client is followed by storage the C ABI owns
 /// on the caller's behalf, so the Zig-facing ClientHandshake does not grow
-/// for C-only needs (the host_name copy, #159). ztls_client_size() reports
+/// for C-only needs (the host_name copy, #159). baskingspot_tls_client_size() reports
 /// this wrapper's size; the layout stays opaque to C.
 const CapiClient = struct {
     handshake: ClientHandshake,
-    host_name_buf: [ztls.client_hello.max_server_name_len]u8,
+    host_name_buf: [tls.client_hello.max_server_name_len]u8,
 };
 
 /// Cast the opaque C pointer to the wrapper. The caller is responsible for
@@ -92,9 +92,9 @@ fn asClient(ptr: ?*anyopaque) ?*ClientHandshake {
 }
 
 /// Map a Zig error to the closest C result enum value. Unmapped errors fall
-/// back to ZTLS_ERR_HANDSHAKE_FAILURE for protocol errors, or a more specific
+/// back to BASKINGSPOT_TLS_ERR_HANDSHAKE_FAILURE for protocol errors, or a more specific
 /// code where the semantic is clear.
-fn mapError(err: anyerror) ZtlsResult {
+fn mapError(err: anyerror) BaskingspotTlsResult {
     return switch (err) {
         error.PendingWrite => .err_pending_write,
         error.BufferTooShort => .err_buffer_too_short,
@@ -149,7 +149,7 @@ fn clientInitInsecureImpl(
     x25519_sec: ?[*]const u8,
     host_name: ?[*:0]const u8,
     random: ?[*]const u8,
-) callconv(.c) ZtlsResult {
+) callconv(.c) BaskingspotTlsResult {
     if (client == null) return .err_null_parameter;
     if (x25519_pub == null or x25519_sec == null or random == null) return .err_null_parameter;
 
@@ -165,15 +165,15 @@ fn clientInitInsecureImpl(
     @memcpy(&random_bytes, random.?[0..32]);
 
     // Validate and bound the name here so the copy below always fits; an
-    // empty string disables SNI/verification per include/ztls.h (#159).
+    // empty string disables SNI/verification per include/baskingspot_tls.h (#159).
     const host: ?[]const u8 = if (host_name) |hn| std.mem.span(hn) else null;
     const host_to_use: ?[]const u8 = if (host) |h| blk: {
         if (h.len == 0) break :blk null;
-        if (h.len > ztls.client_hello.max_server_name_len) return .err_handshake_failure;
+        if (h.len > tls.client_hello.max_server_name_len) return .err_handshake_failure;
         break :blk h;
     } else null;
 
-    const keypair: ztls.x25519.KeyPair = .{
+    const keypair: tls.x25519.KeyPair = .{
         .public_key = .{ .data = pub_key },
         .secret_key = .{ .data = sec_key },
     };
@@ -193,8 +193,8 @@ fn clientInitInsecureImpl(
     c.handshake = ClientHandshake.init(config);
     // Copy the name into handle-owned storage so the caller may free or
     // overwrite its string as soon as init returns, exactly like the key and
-    // random inputs above (#159). The handle is non-copyable (ztls.h), so the
-    // self-referential slice stays valid until ztls_client_deinit.
+    // random inputs above (#159). The handle is non-copyable (baskingspot_tls.h), so the
+    // self-referential slice stays valid until baskingspot_tls_client_deinit.
     if (host_to_use) |h| {
         @memcpy(c.host_name_buf[0..h.len], h);
         c.handshake.policy.host_name = c.host_name_buf[0..h.len];
@@ -202,7 +202,7 @@ fn clientInitInsecureImpl(
     return .ok;
 }
 
-fn clientDeinitImpl(client: ?*anyopaque) callconv(.c) ZtlsResult {
+fn clientDeinitImpl(client: ?*anyopaque) callconv(.c) BaskingspotTlsResult {
     const c = asClient(client) orelse return .err_null_parameter;
     ClientHandshake.deinit(c);
     return .ok;
@@ -213,7 +213,7 @@ fn clientStartImpl(
     out: ?[*]u8,
     out_len: usize,
     out_written: ?*usize,
-) callconv(.c) ZtlsResult {
+) callconv(.c) BaskingspotTlsResult {
     const c = asClient(client) orelse return .err_null_parameter;
     if (out == null and out_len > 0) return .err_null_parameter;
     if (out_len == 0) return .err_buffer_too_short;
@@ -230,8 +230,8 @@ fn clientHandleRecordImpl(
     record_len: usize,
     out: ?[*]u8,
     out_len: usize,
-    event: ?*ZtlsEvent,
-) callconv(.c) ZtlsResult {
+    event: ?*BaskingspotTlsEvent,
+) callconv(.c) BaskingspotTlsResult {
     const c = asClient(client) orelse return .err_null_parameter;
     if (record == null and record_len > 0) return .err_null_parameter;
     if (record_len == 0) return .err_buffer_too_short;
@@ -285,7 +285,7 @@ fn clientHandleRecordImpl(
     return .ok;
 }
 
-fn clientCompleteWriteImpl(client: ?*anyopaque) callconv(.c) ZtlsResult {
+fn clientCompleteWriteImpl(client: ?*anyopaque) callconv(.c) BaskingspotTlsResult {
     const c = asClient(client) orelse return .err_null_parameter;
     ClientHandshake.completeWrite(c);
     return .ok;
@@ -298,7 +298,7 @@ fn clientSendApplicationDataImpl(
     out: ?[*]u8,
     out_len: usize,
     out_written: ?*usize,
-) callconv(.c) ZtlsResult {
+) callconv(.c) BaskingspotTlsResult {
     const c = asClient(client) orelse return .err_null_parameter;
     if (plaintext == null and plaintext_len > 0) return .err_null_parameter;
     if (out == null and out_len > 0) return .err_null_parameter;
@@ -323,7 +323,7 @@ fn clientSelectedAlpnImpl(
     client: ?*anyopaque,
     out_ptr: ?*[*]const u8,
     out_len: ?*usize,
-) callconv(.c) ZtlsResult {
+) callconv(.c) BaskingspotTlsResult {
     const c = asClient(client) orelse return .err_null_parameter;
     if (out_ptr == null or out_len == null) return .err_null_parameter;
 
@@ -335,17 +335,19 @@ fn clientSelectedAlpnImpl(
 
 // Exports
 comptime {
-    @export(&versionImpl, .{ .name = "ztls_version" });
-    @export(&clientSizeImpl, .{ .name = "ztls_client_size" });
-    @export(&clientAlignImpl, .{ .name = "ztls_client_align" });
-    @export(&clientInitInsecureImpl, .{ .name = "ztls_client_init_insecure" });
-    @export(&clientDeinitImpl, .{ .name = "ztls_client_deinit" });
-    @export(&clientStartImpl, .{ .name = "ztls_client_start" });
-    @export(&clientHandleRecordImpl, .{ .name = "ztls_client_handle_record" });
-    @export(&clientCompleteWriteImpl, .{ .name = "ztls_client_complete_write" });
-    @export(&clientSendApplicationDataImpl, .{ .name = "ztls_client_send_application_data" });
-    @export(&clientIsConnectedImpl, .{ .name = "ztls_client_is_connected" });
-    @export(&clientSelectedAlpnImpl, .{ .name = "ztls_client_selected_alpn" });
+    @export(&versionImpl, .{ .name = "baskingspot_tls_version" });
+    @export(&clientSizeImpl, .{ .name = "baskingspot_tls_client_size" });
+    @export(&clientAlignImpl, .{ .name = "baskingspot_tls_client_align" });
+    @export(&clientInitInsecureImpl, .{ .name = "baskingspot_tls_client_init_insecure" });
+    @export(&clientDeinitImpl, .{ .name = "baskingspot_tls_client_deinit" });
+    @export(&clientStartImpl, .{ .name = "baskingspot_tls_client_start" });
+    @export(&clientHandleRecordImpl, .{ .name = "baskingspot_tls_client_handle_record" });
+    @export(&clientCompleteWriteImpl, .{ .name = "baskingspot_tls_client_complete_write" });
+    @export(&clientSendApplicationDataImpl, .{
+        .name = "baskingspot_tls_client_send_application_data",
+    });
+    @export(&clientIsConnectedImpl, .{ .name = "baskingspot_tls_client_is_connected" });
+    @export(&clientSelectedAlpnImpl, .{ .name = "baskingspot_tls_client_selected_alpn" });
 }
 
 // Tests
@@ -357,7 +359,7 @@ comptime {
 
 const fixtures = @import("fixtures");
 
-test "capi: ztls_version returns a non-empty string" {
+test "capi: baskingspot_tls_version returns a non-empty string" {
     const v = versionImpl();
     try testing.expect(v[0] != 0);
 }
@@ -378,7 +380,7 @@ test "capi: size and alignment are non-zero and sane" {
 }
 
 test "capi: NULL parameters are rejected" {
-    // ztls_client_init_insecure with NULL client
+    // baskingspot_tls_client_init_insecure with NULL client
     var dummy: [32]u8 = @splat(0);
     try testing.expectEqual(.err_null_parameter, clientInitInsecureImpl(
         null,
@@ -388,7 +390,7 @@ test "capi: NULL parameters are rejected" {
         &dummy,
     ));
 
-    // ztls_client_start with NULL client
+    // baskingspot_tls_client_start with NULL client
     var out: [1024]u8 = undefined;
     var written: usize = 0;
     try testing.expectEqual(.err_null_parameter, clientStartImpl(
@@ -398,10 +400,10 @@ test "capi: NULL parameters are rejected" {
         &written,
     ));
 
-    // ztls_client_deinit with NULL
+    // baskingspot_tls_client_deinit with NULL
     try testing.expectEqual(.err_null_parameter, clientDeinitImpl(null));
 
-    // ztls_client_is_connected with NULL returns false
+    // baskingspot_tls_client_is_connected with NULL returns false
     try testing.expect(!clientIsConnectedImpl(null));
 }
 
@@ -411,15 +413,15 @@ test "capi: full client handshake through the C ABI" {
     const cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
     const scalar: []const u8 = &fixtures.server_ecdsa_scalar;
 
-    var signer: ztls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
+    var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
     const signer_api = signer.signer();
 
-    const server_keypair: ztls.x25519.KeyPair = .generate();
-    const client_keypair: ztls.x25519.KeyPair = .generate();
+    const server_keypair: tls.x25519.KeyPair = .generate();
+    const client_keypair: tls.x25519.KeyPair = .generate();
 
-    const client_random: ztls.Random = .{ .data = @splat(0x42) };
-    const server_random: ztls.Random = .{ .data = @splat(0x37) };
+    const client_random: tls.Random = .{ .data = @splat(0x42) };
+    const server_random: tls.Random = .{ .data = @splat(0x37) };
 
     // Client setup via C ABI
     var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
@@ -484,7 +486,7 @@ test "capi: full client handshake through the C ABI" {
     // the C ABI handle_record does NOT call processServerHello — it calls
     // processHandshakeRecord which handles the wait_sh state by parsing
     // ServerHello directly. Let's verify this works.
-    var event: ZtlsEvent = undefined;
+    var event: BaskingspotTlsEvent = undefined;
     var client_out2: [frame.max_wire_record_len]u8 = undefined;
 
     // Copy sh_record into a mutable buffer for handle_record.
@@ -500,7 +502,7 @@ test "capi: full client handshake through the C ABI" {
         &event,
     ));
     // After ServerHello, the client should be in wait_ee (no event to surface).
-    try testing.expectEqual(ZtlsEventType.none, event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.none, event.type);
 
     // 4. Server sends authenticated flight
     const flight_record = (try server.sendServerFlightBuffered(&flight)).?;
@@ -510,7 +512,7 @@ test "capi: full client handshake through the C ABI" {
     var flight_buf: [frame.max_wire_record_len]u8 = undefined;
     @memcpy(flight_buf[0..flight_record.len], flight_record);
 
-    var event2: ZtlsEvent = undefined;
+    var event2: BaskingspotTlsEvent = undefined;
     var client_out3: [frame.max_wire_record_len]u8 = undefined;
     try testing.expectEqual(.ok, clientHandleRecordImpl(
         &client_storage,
@@ -521,7 +523,7 @@ test "capi: full client handshake through the C ABI" {
         &event2,
     ));
     // The client should emit its Finished as a write event.
-    try testing.expectEqual(ZtlsEventType.write, event2.type);
+    try testing.expectEqual(BaskingspotTlsEventType.write, event2.type);
     try testing.expect(event2.data_len > 0);
 
     const client_finished_len = event2.data_len;
@@ -575,7 +577,7 @@ test "capi: full client handshake through the C ABI" {
     var pong_buf: [frame.max_wire_record_len]u8 = undefined;
     @memcpy(pong_buf[0..pong_record.len], pong_record);
 
-    var app_event: ZtlsEvent = undefined;
+    var app_event: BaskingspotTlsEvent = undefined;
     var app_out2: [frame.max_wire_record_len]u8 = undefined;
     try testing.expectEqual(.ok, clientHandleRecordImpl(
         &client_storage,
@@ -585,14 +587,14 @@ test "capi: full client handshake through the C ABI" {
         app_out2.len,
         &app_event,
     ));
-    try testing.expectEqual(ZtlsEventType.application_data, app_event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.application_data, app_event.type);
     try testing.expectEqualStrings("pong", app_event.data.?[0..app_event.data_len]);
 }
 
 test "capi: send_application_data before connected fails" {
     var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
-    const kp: ztls.x25519.KeyPair = .generate();
-    var rand: ztls.Random = .{ .data = @splat(0x55) };
+    const kp: tls.x25519.KeyPair = .generate();
+    var rand: tls.Random = .{ .data = @splat(0x55) };
 
     _ = clientInitInsecureImpl(
         &client_storage,
@@ -621,13 +623,13 @@ fn connectClientAndServerForTest(
     client_storage: *[@sizeOf(CapiClient)]u8,
     server: *ServerHandshake,
 ) !void {
-    var signer: ztls.signature.PrivateKey = try .fromP256Scalar(
+    var signer: tls.signature.PrivateKey = try .fromP256Scalar(
         fixtures.server_ecdsa_scalar[0..32],
     );
     defer signer.deinit();
 
-    const client_keypair: ztls.x25519.KeyPair = .generate();
-    const client_random: ztls.Random = .{ .data = @splat(0x42) };
+    const client_keypair: tls.x25519.KeyPair = .generate();
+    const client_random: tls.Random = .{ .data = @splat(0x42) };
     const init_result = clientInitInsecureImpl(
         client_storage,
         &client_keypair.public_key.data,
@@ -638,7 +640,7 @@ fn connectClientAndServerForTest(
     try testing.expectEqual(.ok, init_result);
 
     server.* = .init(.{
-        .keypairs = try .init(ztls.x25519.KeyPair.generate()),
+        .keypairs = try .init(tls.x25519.KeyPair.generate()),
         .random = .{ .data = @splat(0x37) },
     });
     server.setCredentials(&.{&fixtures.server_ecdsa_cert_der}, signer.signer());
@@ -673,7 +675,7 @@ fn finishHandshakeForTest(
 
     var record: [frame.max_wire_record_len]u8 = undefined;
     @memcpy(record[0..server_hello.len], server_hello);
-    var event: ZtlsEvent = undefined;
+    var event: BaskingspotTlsEvent = undefined;
     try testing.expectEqual(.ok, clientHandleRecordImpl(
         client_storage,
         &record,
@@ -695,7 +697,7 @@ fn finishHandshakeForTest(
         client_out.len,
         &event,
     ));
-    try testing.expectEqual(ZtlsEventType.write, event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.write, event.type);
     _ = clientCompleteWriteImpl(client_storage);
     try server.processClientFinished(client_out[0..event.data_len]);
     try testing.expect(clientIsConnectedImpl(client_storage));
@@ -718,7 +720,7 @@ test "capi: KeyUpdate response is surfaced as a write event" {
     @memcpy(update_record[0..update.len], update);
 
     var client_out: [128]u8 = undefined;
-    var event: ZtlsEvent = undefined;
+    var event: BaskingspotTlsEvent = undefined;
     try testing.expectEqual(.ok, clientHandleRecordImpl(
         &client_storage,
         &update_record,
@@ -727,7 +729,7 @@ test "capi: KeyUpdate response is surfaced as a write event" {
         client_out.len,
         &event,
     ));
-    try testing.expectEqual(ZtlsEventType.write, event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.write, event.type);
     try testing.expect(event.data_len > 0);
     try testing.expectEqualSlices(
         u8,
@@ -755,7 +757,7 @@ test "capi: KeyUpdate response is surfaced as a write event" {
         client_out.len,
         &event,
     ));
-    try testing.expectEqual(ZtlsEventType.application_data, event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.application_data, event.type);
     try testing.expectEqualStrings("after", event.data.?[0..event.data_len]);
 }
 
@@ -775,7 +777,7 @@ test "capi: KeyUpdate without response maps to none without pending write" {
     @memcpy(input[0..update.len], update);
 
     var client_out: [128]u8 = undefined;
-    var event: ZtlsEvent = undefined;
+    var event: BaskingspotTlsEvent = undefined;
     try testing.expectEqual(.ok, clientHandleRecordImpl(
         &client_storage,
         &input,
@@ -784,7 +786,7 @@ test "capi: KeyUpdate without response maps to none without pending write" {
         client_out.len,
         &event,
     ));
-    try testing.expectEqual(ZtlsEventType.none, event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.none, event.type);
 
     const still_open = try server.sendApplicationData("open", &server_out);
     server.completeWrite();
@@ -797,7 +799,7 @@ test "capi: KeyUpdate without response maps to none without pending write" {
         client_out.len,
         &event,
     ));
-    try testing.expectEqual(ZtlsEventType.application_data, event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.application_data, event.type);
     try testing.expectEqualStrings("open", event.data.?[0..event.data_len]);
 }
 
@@ -823,7 +825,7 @@ test "capi: NewSessionTicket maps to none without pending write" {
     @memcpy(input[0..ticket_record.len], ticket_record);
 
     var client_out: [128]u8 = undefined;
-    var event: ZtlsEvent = undefined;
+    var event: BaskingspotTlsEvent = undefined;
     try testing.expectEqual(.ok, clientHandleRecordImpl(
         &client_storage,
         &input,
@@ -832,7 +834,7 @@ test "capi: NewSessionTicket maps to none without pending write" {
         client_out.len,
         &event,
     ));
-    try testing.expectEqual(ZtlsEventType.none, event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.none, event.type);
 
     const after = try server.sendApplicationData("after", &server_out);
     server.completeWrite();
@@ -845,7 +847,7 @@ test "capi: NewSessionTicket maps to none without pending write" {
         client_out.len,
         &event,
     ));
-    try testing.expectEqual(ZtlsEventType.application_data, event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.application_data, event.type);
     try testing.expectEqualStrings("after", event.data.?[0..event.data_len]);
 }
 
@@ -858,7 +860,7 @@ fn expectCapiClientConnects(client_storage: anytype) !void {
     const cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
     const scalar: []const u8 = &fixtures.server_ecdsa_scalar;
 
-    var signer: ztls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
+    var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
 
     var server: ServerHandshake = .init(.{
@@ -871,7 +873,7 @@ fn expectCapiClientConnects(client_storage: anytype) !void {
     var server_out: ServerHandshake.OutBuffer = .empty;
     var flight: ServerHandshake.FlightBuffer = .empty;
     var client_out: [frame.max_wire_record_len]u8 = undefined;
-    var event: ZtlsEvent = undefined;
+    var event: BaskingspotTlsEvent = undefined;
 
     var out_written: usize = 0;
     try testing.expectEqual(.ok, clientStartImpl(
@@ -907,7 +909,7 @@ fn expectCapiClientConnects(client_storage: anytype) !void {
         client_out.len,
         &event,
     ));
-    try testing.expectEqual(ZtlsEventType.write, event.type);
+    try testing.expectEqual(BaskingspotTlsEventType.write, event.type);
     _ = clientCompleteWriteImpl(client_storage);
     try server.processClientFinished(client_out[0..event.data_len]);
 
@@ -915,13 +917,13 @@ fn expectCapiClientConnects(client_storage: anytype) !void {
     try testing.expect(server.isConnected());
 }
 
-// #159 — ztls_client_init_insecure copies host_name into handle-owned
+// #159 — baskingspot_tls_client_init_insecure copies host_name into handle-owned
 // storage: overwriting the caller's buffer after init must not change SNI or
 // hostname verification. The pre-fix engine kept the borrowed pointer, so the
 // overwritten bytes ("X...") failed verifyHostName against the fixture SAN.
 test "capi: host_name is copied at init; caller storage may be overwritten" {
-    const client_keypair: ztls.x25519.KeyPair = .generate();
-    const client_random: ztls.Random = .{ .data = @splat(0x42) };
+    const client_keypair: tls.x25519.KeyPair = .generate();
+    const client_random: tls.Random = .{ .data = @splat(0x42) };
 
     var host_buf: [64]u8 = @splat(0);
     const name: [:0]const u8 = "ztls.server.test";
@@ -937,7 +939,7 @@ test "capi: host_name is copied at init; caller storage may be overwritten" {
     ));
     defer _ = clientDeinitImpl(&client_storage);
 
-    // The contract (ztls.h) permits this immediately after init returns.
+    // The contract (baskingspot_tls.h) permits this immediately after init returns.
     @memset(&host_buf, 'X');
 
     try expectCapiClientConnects(&client_storage);
@@ -946,8 +948,8 @@ test "capi: host_name is copied at init; caller storage may be overwritten" {
 // #159 — an empty host_name disables SNI and hostname verification (the
 // header's documented behavior); the handshake completes without SNI.
 test "capi: empty host_name disables SNI and still connects" {
-    const client_keypair: ztls.x25519.KeyPair = .generate();
-    const client_random: ztls.Random = .{ .data = @splat(0x42) };
+    const client_keypair: tls.x25519.KeyPair = .generate();
+    const client_random: tls.Random = .{ .data = @splat(0x42) };
 
     var client_storage: [@sizeOf(CapiClient)]u8 align(@alignOf(CapiClient)) = undefined;
     try testing.expectEqual(.ok, clientInitInsecureImpl(
@@ -965,8 +967,8 @@ test "capi: empty host_name disables SNI and still connects" {
 // #159 — host_name is bounded by client_hello.max_server_name_len (253);
 // longer names are rejected at init.
 test "capi: host_name longer than 253 bytes is rejected" {
-    const client_keypair: ztls.x25519.KeyPair = .generate();
-    const client_random: ztls.Random = .{ .data = @splat(0x42) };
+    const client_keypair: tls.x25519.KeyPair = .generate();
+    const client_random: tls.Random = .{ .data = @splat(0x42) };
 
     var host_buf: [300]u8 = @splat('a');
     host_buf[254] = 0; // 254-byte name: one over the limit

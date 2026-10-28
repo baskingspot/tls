@@ -13,6 +13,13 @@ All notable changes to tls are recorded here. The format follows
   issued the ticket; `deriveSessionTicket` records it so a resumption can
   check it against accepted early data (#162).
 
+### Changed
+
+- C ABI names are `baskingspot_tls_*`, with `include/baskingspot_tls.h` and
+  `libbaskingspot_tls.a`. Rename every `ztls_*` call, `ZTLS_*` enumerator, and
+  `#include "ztls.h"`, and link `-lbaskingspot_tls`. The C surface has never
+  been released, so there is no compatibility alias (#149).
+
 ### Fixed
 
 - Client `wait_sh` handlers are transactional: a rejected ServerHello or
@@ -22,10 +29,10 @@ All notable changes to tls are recorded here. The format follows
 - Client now aborts with `error.IllegalParameter` (illegal_parameter alert)
   when a server accepts 0-RTT under a cipher suite or ALPN that differs from
   the ticket's, per RFC 8446 §4.2.10 (#162).
-- C ABI: `ztls_client_init_insecure` now copies `host_name` into handle-owned
-  storage (caller may free/overwrite it after init), treats an empty string
-  as no SNI, and rejects names over 253 bytes with
-  `ZTLS_ERR_HANDSHAKE_FAILURE` (#159).
+- C ABI: `baskingspot_tls_client_init_insecure` now copies `host_name` into
+  handle-owned storage (caller may free/overwrite it after init), treats an
+  empty string as no SNI, and rejects names over 253 bytes with
+  `BASKINGSPOT_TLS_ERR_HANDSHAKE_FAILURE` (#159).
 - `ServerHandshake` ClientHello processing is now transactional: a
   ClientHello that fails after PSK selection no longer leaves its PSK, 0-RTT
   key, or other negotiation state for the next ClientHello, and a failed

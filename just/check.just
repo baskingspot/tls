@@ -173,15 +173,15 @@ qualify-candidate $TLS_SHA $HANDOFF_SHA $Z53_SHA $OUT_DIR:
 consumer-gate-selftest:
     ./scripts/consumer-gate.sh --selftest
 
-[doc("Build and run the C ABI example (libztls.a + c_client.c)")]
+[doc("Build and run the C ABI example (libbaskingspot_tls.a + c_client.c)")]
 [group("check")]
 capi-ci:
     #!/usr/bin/env bash
     set -euo pipefail
     zig build -Dcapi --summary all
-    lib=$(find zig-out -name 'libztls.a' -print -quit)
+    lib=$(find zig-out -name 'libbaskingspot_tls.a' -print -quit)
     if [ -z "$lib" ]; then
-        echo "libztls.a not found in zig-out" >&2
+        echo "libbaskingspot_tls.a not found in zig-out" >&2
         exit 1
     fi
     libdir=$(dirname "$lib")
@@ -193,10 +193,10 @@ capi-ci:
     printf '%s\n' "$archive_members"
     shared_members=$(printf '%s\n' "$archive_members" | grep -E '(\.so$|\.so\.|\.dylib$)' || true)
     if [ -n "$shared_members" ]; then
-        printf 'libztls.a contains shared-object archive members:\n%s\n' "$shared_members" >&2
+        printf 'libbaskingspot_tls.a contains shared-object archive members:\n%s\n' "$shared_members" >&2
         exit 1
     fi
-    zig cc -o zig-out/c_client examples/c_client.c -I include -L "$libdir" -lztls -lcrypto -lm
+    zig cc -o zig-out/c_client examples/c_client.c -I include -L "$libdir" -lbaskingspot_tls -lcrypto -lm
     zig-out/c_client
 
 [doc("Run deterministic examples as TLS smoke tests")]

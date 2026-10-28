@@ -27,7 +27,7 @@ TLS-Anvil and tlsfuzzer. The API is not frozen, so pin a commit.
 - [The drive loop](https://baskingspot.dev/tls/#the-drive-loop): working client and server code, the `pending_write` interlock, close semantics, and peer alerts.
 - [Credentials and negotiation](https://baskingspot.dev/tls/#credentials-and-negotiation): server credentials, certificate policy, tickets, SNI, ALPN, and the RFC 10024 hybrid groups.
 - [Integrations](https://baskingspot.dev/tls/#integrations): blocking streams, epoll, io_uring, libxev, and kTLS.
-- [C ABI](https://baskingspot.dev/tls/#c-abi): the partial, client-only C surface, with `ztls_*` names until the C namespace is chosen.
+- [C ABI](https://baskingspot.dev/tls/#c-abi): the partial, client-only C surface — `baskingspot_tls_*`, `include/baskingspot_tls.h`, and `libbaskingspot_tls.a`.
 - [Performance](https://baskingspot.dev/tls/#performance): the AES-128-GCM headline row against rustls and libssl, three n=10 captures, and where it loses.
 
 Not implemented:
