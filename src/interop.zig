@@ -56,6 +56,45 @@ const hybrid_groups = [_]InteropGroup{
     .{ .openssl_name = "SecP384r1MLKEM1024", .tls_group = .secp384r1_mlkem1024 },
 };
 
+/// A listening socket the test owns, not the server thread.
+///
+/// The thread exists to run `accept` and `serve`; the caller owns the
+/// listener so it can wake a thread stuck in `accept` after the peer failed.
+/// Without that, a failed `openssl s_client` leaves the thread blocked in
+/// `accept` on its only socket, `join` never returns, and the test hangs with
+/// no CPU use (#141).
+///
+/// The wake-up is a loopback connection to the listener, which is the one
+/// mechanism that works on every target: closing the fd from another thread
+/// does not interrupt `accept` on Linux, and `shutdown` on a listening socket
+/// is not portable.
+const Listener = struct {
+    server: Server,
+    /// The kernel-assigned port, so parallel test runs cannot collide.
+    port: u16,
+
+    fn init() !Listener {
+        const addr: IpAddress = try .parse(host, 0);
+        const server = try addr.listen(testing.io, .{ .reuse_address = true });
+        return .{ .server = server, .port = server.socket.address.getPort() };
+    }
+
+    /// Releases a thread blocked in `accept`. The connection is accepted and
+    /// closed at once, so the server sees `error.ClientClosed` from `serve`
+    /// and returns. Idempotent, and a no-op once the peer connected and the
+    /// thread returned.
+    fn cancel(listener: *const Listener) void {
+        const addr: IpAddress = .{ .ip4 = .loopback(listener.port) };
+        const stream = addr.connect(testing.io, .{ .mode = .stream }) catch return;
+        stream.close(testing.io);
+    }
+
+    fn deinit(listener: *Listener) void {
+        listener.server.deinit(testing.io);
+        listener.* = undefined;
+    }
+};
+
 test "OpenSSL s_server interoperates with tls client" {
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
@@ -69,9 +108,7 @@ test "OpenSSL s_server interoperates with tls client" {
 
     try genCert(cert_path, key_path);
 
-    for (client_suites, 0..) |suite, i| {
-        try runClientSuite(arena, cert_path, key_path, suite, 14433 + @as(u16, @intCast(i)));
-    }
+    for (client_suites) |suite| try runClientSuite(arena, cert_path, key_path, suite);
 }
 
 // RFC 8446 §4.2.8.2, §7.4 — OpenSSL independently validates the tls
@@ -90,7 +127,7 @@ test "OpenSSL s_server interoperates with tls P-384 client" {
     const key_path = try path.join(arena, &.{ dir, "key.pem" });
     try genCert(cert_path, key_path);
 
-    try runClientGroup(arena, cert_path, key_path, p384_group, 20343);
+    try runClientGroup(arena, cert_path, key_path, p384_group);
 }
 
 // RFC 10024 §4 — OpenSSL independently validates every tls client hybrid
@@ -108,16 +145,10 @@ test "OpenSSL s_server interoperates with tls RFC 10024 client groups" {
     try genCert(cert_path, key_path);
 
     var tested = false;
-    for (hybrid_groups, 0..) |group, i| {
+    for (hybrid_groups) |group| {
         if (!backend.supportsClientHybridGroup(group.tls_group)) continue;
         tested = true;
-        try runClientGroup(
-            arena,
-            cert_path,
-            key_path,
-            group,
-            20433 + @as(u16, @intCast(i)),
-        );
+        try runClientGroup(arena, cert_path, key_path, group);
     }
     if (!tested) return error.SkipZigTest;
 }
@@ -138,7 +169,7 @@ test "tls client resumes with OpenSSL s_server (PSK resumption)" {
     const key_path = try path.join(arena, &.{ dir, "key.pem" });
     try genCert(cert_path, key_path);
 
-    try runResumptionInterop(arena, cert_path, key_path, 19433);
+    try runResumptionInterop(arena, cert_path, key_path);
 }
 
 // RFC 8446 §4.2.10, §4.5, §7.1 — tls client sends 0-RTT early data to
@@ -158,7 +189,7 @@ test "tls client sends 0-RTT early data to OpenSSL s_server" {
     const key_path = try path.join(arena, &.{ dir, "key.pem" });
     try genCert(cert_path, key_path);
 
-    try runEarlyDataInterop(arena, cert_path, key_path, 19434);
+    try runEarlyDataInterop(arena, cert_path, key_path);
 }
 
 test "OpenSSL s_client interoperates with tls server" {
@@ -166,9 +197,7 @@ test "OpenSSL s_client interoperates with tls server" {
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
 
-    for (server_suites, 0..) |suite, i| {
-        try runServerSuite(arena, suite, 16433 + @as(u16, @intCast(i)));
-    }
+    for (server_suites) |suite| try runServerSuite(arena, suite);
 }
 
 // RFC 8446 §4.6.1, §4.2.11 — OpenSSL stores a tls-issued ticket on the first
@@ -182,7 +211,7 @@ test "OpenSSL s_client resumes with tls server-issued ticket" {
     defer tmp.cleanup();
     const dir = try tmpDirPath(arena, &tmp);
     const session_path = try path.join(arena, &.{ dir, "session.pem" });
-    try runServerResumptionSuite(arena, session_path, 16533);
+    try runServerResumptionSuite(arena, session_path);
 }
 
 // RFC 8446 §4.2.8.2, §7.4 — OpenSSL independently validates the tls
@@ -194,7 +223,7 @@ test "OpenSSL s_client interoperates with tls P-384 server" {
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
 
-    try runServerGroup(arena, p384_group, 21343);
+    try runServerGroup(arena, p384_group);
 }
 
 // RFC 10024 §4 — OpenSSL independently validates every tls server hybrid
@@ -205,10 +234,10 @@ test "OpenSSL s_client interoperates with tls RFC 10024 server groups" {
     const arena = arena_allocator.allocator();
 
     var tested = false;
-    for (hybrid_groups, 0..) |group, i| {
+    for (hybrid_groups) |group| {
         if (!backend.supportsServerHybridGroup(group.tls_group)) continue;
         tested = true;
-        try runServerGroup(arena, group, 21433 + @as(u16, @intCast(i)));
+        try runServerGroup(arena, group);
     }
     if (!tested) return error.SkipZigTest;
 }
@@ -227,12 +256,61 @@ test "OpenSSL s_client with -cert interoperates with tls server (required client
     const client_key_path = try path.join(arena, &.{ dir, "client.key" });
     try genCert(client_cert_path, client_key_path);
 
-    try runServerClientAuthSuite(
-        arena,
-        client_cert_path,
-        client_key_path,
-        17433,
+    try runServerClientAuthSuite(arena, client_cert_path, client_key_path);
+}
+
+// #141 — a peer that reads its request and exits without ever dialing the
+// server used to leave the server thread blocked in `accept` on its only
+// socket. `join` then never returned, the test hung with no CPU use, and the
+// error that explains it was never reached. The suite must return the client
+// failure instead.
+test "a peer that exits without connecting fails the server suite" {
+    var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    // Reads the request off stdin, so the write side cannot race an early
+    // exit, then fails. `sh` is the one interpreter every target has.
+    const absent_peer = &.{ "sh", "-c", "cat >/dev/null; exit 1" };
+    try testing.expectError(
+        error.OpenSslClientFailed,
+        runServerSuiteAgainst(arena, server_suites[0], absent_peer),
     );
+}
+
+// #141 — the suites used to bind fixed ports (16433+i, 16533, 21343, 21433+i),
+// so a second checkout on the same host, or anything else holding the port,
+// made the bind fail on one side and `accept` block on the other. Ports are
+// kernel-assigned now, so two suites run at once on one host.
+test "two server suites run at once on one host" {
+    const Runner = struct {
+        fn run(suite: ServerSuite, failure: *?anyerror) void {
+            // A per-thread arena: the suite allocates and never frees.
+            var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
+            defer arena_allocator.deinit();
+            runServerSuite(arena_allocator.allocator(), suite) catch |err| {
+                failure.* = err;
+            };
+        }
+    };
+
+    var first_failure: ?anyerror = null;
+    var second_failure: ?anyerror = null;
+    const first = try std.Thread.spawn(
+        .{},
+        Runner.run,
+        .{ server_suites[0], &first_failure },
+    );
+    const second = try std.Thread.spawn(
+        .{},
+        Runner.run,
+        .{ server_suites[1], &second_failure },
+    );
+    first.join();
+    second.join();
+
+    try testing.expectEqual(@as(?anyerror, null), first_failure);
+    try testing.expectEqual(@as(?anyerror, null), second_failure);
 }
 
 // RFC 8446 §4.7.2, §4.4.2, §4.4.3 — tls client presenting a certificate to
@@ -254,7 +332,7 @@ test "tls client with credentials interoperates with OpenSSL s_server -Verify" {
     const client_ca_path = try path.join(arena, &.{ dir, "client_ca.pem" });
     try writeFixtureCertPem(arena, client_ca_path);
 
-    try runClientAuthClientSuite(arena, server_cert_path, server_key_path, client_ca_path, 18433);
+    try runClientAuthClientSuite(arena, server_cert_path, server_key_path, client_ca_path);
 }
 
 // RFC 8446 §4.6.3, §7.2 — tls-to-tls TCP loopback KeyUpdate round trip.
@@ -266,20 +344,14 @@ test "tls client with credentials interoperates with OpenSSL s_server -Verify" {
 // reassembly and partial reads.
 test "tls-to-tls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
     const KuCtx = struct {
-        port: std.atomic.Value(u16) = .init(0),
         server_keypair: tls.x25519.KeyPair,
     };
     const server_keypair: tls.x25519.KeyPair = .generate();
     var ctx: KuCtx = .{ .server_keypair = server_keypair };
 
     const ServerThread = struct {
-        fn run(c: *KuCtx) !void {
-            const addr: IpAddress = try .parse(host, 0);
-            var listener = try addr.listen(testing.io, .{ .reuse_address = true });
-            defer listener.deinit(testing.io);
-            c.port.store(listener.socket.address.getPort(), .release);
-
-            const stream = try listener.accept(testing.io);
+        fn serveKeyUpdate(c: *KuCtx, listener: *Listener) !void {
+            const stream = try listener.server.accept(testing.io);
             defer stream.close(testing.io);
 
             var random: tls.Random = .empty;
@@ -359,23 +431,39 @@ test "tls-to-tls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
                 }
             }
         }
+
+        fn start(c: *KuCtx, listener: *Listener, failure: *?anyerror) void {
+            serveKeyUpdate(c, listener) catch |err| {
+                failure.* = err;
+            };
+        }
     };
 
-    const server_thread = try std.Thread.spawn(.{}, ServerThread.run, .{&ctx});
-    defer server_thread.join();
+    // The listener is bound before the thread starts, so its port is known
+    // without a spin-wait, and an early client failure cancels `accept`
+    // instead of leaving the join blocked (#141).
+    var listener: Listener = try .init();
+    defer listener.deinit();
 
-    // Wait for the server to bind and publish its port.
-    var server_port: u16 = 0;
-    while (server_port == 0) {
-        server_port = ctx.port.load(.acquire);
-        if (server_port == 0) {
-            std.Thread.yield() catch return error.ServerBindFailed;
-        }
+    var server_failure: ?anyerror = null;
+    const server_thread = try std.Thread.spawn(
+        .{},
+        ServerThread.start,
+        .{ &ctx, &listener, &server_failure },
+    );
+    // LIFO: the join runs before this check. `serveKeyUpdate` ends with
+    // `error.ClientClosed` once the client hangs up; anything else is a bug.
+    defer if (server_failure) |err| {
+        std.debug.assert(err == error.ClientClosed);
+    };
+    defer {
+        listener.cancel();
+        server_thread.join();
     }
 
     // Client side.
     const client_keypair: tls.x25519.KeyPair = .generate();
-    const addr: IpAddress = try .parse(host, server_port);
+    const addr: IpAddress = try .parse(host, listener.port);
     const stream = try addr.connect(testing.io, .{ .mode = .stream });
     defer stream.close(testing.io);
 
@@ -456,8 +544,8 @@ fn runClientSuite(
     cert_path: []const u8,
     key_path: []const u8,
     suite: []const u8,
-    port: u16,
 ) !void {
+    const port = try freePort();
     var server = try startServer(arena, cert_path, key_path, suite, port);
     defer killChild(&server);
     const stream = try connectWithRetry(port);
@@ -470,8 +558,8 @@ fn runClientGroup(
     cert_path: []const u8,
     key_path: []const u8,
     group: InteropGroup,
-    port: u16,
 ) !void {
+    const port = try freePort();
     var server = try startServerWithGroup(arena, cert_path, key_path, group, port);
     defer killChild(&server);
     const stream = try connectWithRetry(port);
@@ -483,8 +571,8 @@ fn runResumptionInterop(
     arena: Allocator,
     cert_path: []const u8,
     key_path: []const u8,
-    port: u16,
 ) !void {
+    const port = try freePort();
     var server = try startServer(arena, cert_path, key_path, "TLS_AES_128_GCM_SHA256", port);
     defer killChild(&server);
 
@@ -504,8 +592,8 @@ fn runEarlyDataInterop(
     arena: Allocator,
     cert_path: []const u8,
     key_path: []const u8,
-    port: u16,
 ) !void {
+    const port = try freePort();
     // Start s_server with -early_data to accept 0-RTT.
     const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
     const argv = &.{
@@ -932,9 +1020,12 @@ fn clientEarlyDataInterop(
 }
 
 const ServerArgs = struct {
-    port: u16,
     suite: tls.CipherSuite,
     group: ?tls.kex.NamedGroup = null,
+    /// The server thread records its outcome here so a failure surfaces as
+    /// itself rather than as a generic missing response. `error.ClientClosed`
+    /// is how `serve` ends when the peer hangs up, so callers ignore it.
+    failure: ?anyerror = null,
 };
 
 const server_ticket_identity = "tls-openssl-resumption";
@@ -962,94 +1053,154 @@ const ServerTicketPhase = enum {
 };
 
 const ServerResumptionArgs = struct {
-    port: u16,
     ticket: ServerTicketState = .{},
+    failure: ?anyerror = null,
 };
 
-fn runServerSuite(arena: Allocator, suite: ServerSuite, port: u16) !void {
-    var args: ServerArgs = .{ .port = port, .suite = suite.tls_suite };
-    const thread = try std.Thread.spawn(.{}, serverThread, .{&args});
-
-    var child = try startClient(arena, suite.openssl_name, port);
-    defer killChild(&child);
-    try writeFileAll(child.stdin.?, "GET / HTTP/1.0\r\n\r\n");
-    closeFile(child.stdin.?);
-    child.stdin = null;
-
-    var stdout_buf: [4096]u8 = undefined;
-    const n = try readFileAll(child.stdout.?, &stdout_buf);
-    const term = try waitChild(&child);
-    thread.join();
-
-    if (!exitedZero(term)) return error.OpenSslClientFailed;
-    if (!mem.containsAtLeast(u8, stdout_buf[0..n], 1, "hello")) return error.NoServerResponse;
+fn runServerSuite(arena: Allocator, suite: ServerSuite) !void {
+    return runServerSuiteAgainst(arena, suite, &.{"openssl"});
 }
 
-fn runServerResumptionSuite(arena: Allocator, session_path: []const u8, port: u16) !void {
-    var args: ServerResumptionArgs = .{ .port = port };
-    defer std.crypto.secureZero(u8, &args.ticket.psk);
-    const thread = try std.Thread.spawn(.{}, resumptionServerThread, .{&args});
+/// `program` is the peer executable. The suite runs `openssl s_client`; the
+/// cancellation test runs a program that exits without dialing the server,
+/// which must fail the test instead of hanging it (#141).
+fn runServerSuiteAgainst(arena: Allocator, suite: ServerSuite, program: []const []const u8) !void {
+    var listener: Listener = try .init();
+    defer listener.deinit();
 
-    var first = try startClientSaveSession(arena, session_path, port);
-    defer killChild(&first);
-    try writeFileAll(first.stdin.?, "GET / HTTP/1.0\r\n\r\n");
-    closeFile(first.stdin.?);
-    first.stdin = null;
-    var stdout_buf: [4096]u8 = undefined;
-    const first_n = try readFileAll(first.stdout.?, &stdout_buf);
-    const first_term = try waitChild(&first);
-    if (!exitedZero(first_term)) return error.OpenSslClientFailed;
-    if (!mem.containsAtLeast(u8, stdout_buf[0..first_n], 1, "hello"))
-        return error.NoServerResponse;
+    var args: ServerArgs = .{ .suite = suite.tls_suite };
+    const thread = try std.Thread.spawn(.{}, serverThread, .{ &listener, &args });
 
-    var second = try startClientReuseSession(arena, session_path, port);
-    defer killChild(&second);
-    try writeFileAll(second.stdin.?, "GET / HTTP/1.0\r\n\r\n");
-    closeFile(second.stdin.?);
-    second.stdin = null;
-    const second_n = try readFileAll(second.stdout.?, &stdout_buf);
-    const second_term = try waitChild(&second);
+    const peer = driveSinglePeer(arena, program, suite.openssl_name, listener.port);
+    listener.cancel();
     thread.join();
+    const outcome = try peer;
 
-    if (!exitedZero(second_term)) return error.OpenSslClientFailed;
-    if (!mem.containsAtLeast(u8, stdout_buf[0..second_n], 1, "hello"))
-        return error.NoServerResponse;
+    if (!outcome.exited_ok) return error.OpenSslClientFailed;
+    if (args.failure) |err| if (err != error.ClientClosed) return err;
+    if (!outcome.saw_response) return error.NoServerResponse;
+}
+
+fn runServerResumptionSuite(arena: Allocator, session_path: []const u8) !void {
+    var listener: Listener = try .init();
+    defer listener.deinit();
+
+    var args: ServerResumptionArgs = .{};
+    defer std.crypto.secureZero(u8, &args.ticket.psk);
+    const thread = try std.Thread.spawn(.{}, resumptionServerThread, .{ &listener, &args });
+
+    const peers = driveResumptionPeers(arena, session_path, listener.port);
+    listener.cancel();
+    thread.join();
+    const outcome = try peers;
+
+    if (!outcome.first.exited_ok) return error.OpenSslClientFailed;
+    if (!outcome.first.saw_response) return error.NoServerResponse;
+    if (!outcome.second.exited_ok) return error.OpenSslClientFailed;
+    if (args.failure) |err| if (err != error.ClientClosed) return err;
+    if (!outcome.second.saw_response) return error.NoServerResponse;
     if (!args.ticket.did_resume) return error.OpenSslClientDidNotResume;
 }
 
-fn runServerGroup(arena: Allocator, group: InteropGroup, port: u16) !void {
+fn runServerGroup(arena: Allocator, group: InteropGroup) !void {
+    var listener: Listener = try .init();
+    defer listener.deinit();
+
     var args: ServerArgs = .{
-        .port = port,
         .suite = .aes_128_gcm_sha256,
         .group = group.tls_group,
     };
-    const thread = try std.Thread.spawn(.{}, serverThread, .{&args});
+    const thread = try std.Thread.spawn(.{}, serverThread, .{ &listener, &args });
 
-    var child = try startClientWithGroup(arena, group, port);
-    defer killChild(&child);
+    const peer = driveGroupPeer(arena, group, listener.port);
+    listener.cancel();
+    thread.join();
+    const outcome = try peer;
+
+    if (!outcome.exited_ok) return error.OpenSslClientFailed;
+    if (args.failure) |err| if (err != error.ClientClosed) return err;
+    if (!outcome.saw_response) return error.NoServerResponse;
+}
+
+/// What one peer left behind. Which half is a failure belongs to the caller,
+/// because the peer that exits at once is the expected result in the
+/// cancellation test.
+const PeerOutcome = struct {
+    exited_ok: bool,
+    saw_response: bool,
+};
+
+/// Feeds the peer one request and records what it said. The caller cancels
+/// the listener, so this returns the error rather than deciding its meaning.
+fn drivePeer(child: *Child) !PeerOutcome {
+    defer killChild(child);
     try writeFileAll(child.stdin.?, "GET / HTTP/1.0\r\n\r\n");
     closeFile(child.stdin.?);
     child.stdin = null;
 
     var stdout_buf: [4096]u8 = undefined;
     const n = try readFileAll(child.stdout.?, &stdout_buf);
-    const term = try waitChild(&child);
-    thread.join();
-
-    if (!exitedZero(term)) return error.OpenSslClientFailed;
-    if (!mem.containsAtLeast(u8, stdout_buf[0..n], 1, "hello")) return error.NoServerResponse;
+    const term = try waitChild(child);
+    return .{
+        .exited_ok = exitedZero(term),
+        .saw_response = mem.containsAtLeast(u8, stdout_buf[0..n], 1, "hello"),
+    };
 }
 
-fn startClient(arena: Allocator, suite: []const u8, port: u16) !Child {
+fn driveSinglePeer(
+    arena: Allocator,
+    program: []const []const u8,
+    suite: []const u8,
+    port: u16,
+) !PeerOutcome {
+    var child = try startClient(arena, program, suite, port);
+    return drivePeer(&child);
+}
+
+fn driveGroupPeer(arena: Allocator, group: InteropGroup, port: u16) !PeerOutcome {
+    var child = try startClientWithGroup(arena, group, port);
+    return drivePeer(&child);
+}
+
+const ResumptionPeers = struct {
+    first: PeerOutcome,
+    second: PeerOutcome,
+};
+
+fn driveResumptionPeers(
+    arena: Allocator,
+    session_path: []const u8,
+    port: u16,
+) !ResumptionPeers {
+    const first = blk: {
+        var child = try startClientSaveSession(arena, session_path, port);
+        break :blk try drivePeer(&child);
+    };
+    const second = blk: {
+        var child = try startClientReuseSession(arena, session_path, port);
+        break :blk try drivePeer(&child);
+    };
+    return .{ .first = first, .second = second };
+}
+
+fn startClient(
+    arena: Allocator,
+    program: []const []const u8,
+    suite: []const u8,
+    port: u16,
+) !Child {
     const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
     const connect_to = try std.fmt.allocPrint(arena, "{s}:{s}", .{ host, port_str });
-    const argv = &.{
-        "openssl",     "s_client",
-        "-tls1_3",     "-connect",
-        connect_to,    "-ciphersuites",
-        suite,         "-alpn",
-        alpn_protocol, "-quiet",
+    const tail = [_][]const u8{
+        "s_client",      "-tls1_3",
+        "-connect",      connect_to,
+        "-ciphersuites", suite,
+        "-alpn",         alpn_protocol,
+        "-quiet",
     };
+    const argv = try arena.alloc([]const u8, program.len + tail.len);
+    @memcpy(argv[0..program.len], program);
+    @memcpy(argv[program.len..], &tail);
     return std.process.spawn(testing.io, .{
         .argv = argv,
         .stdin = .pipe,
@@ -1122,26 +1273,36 @@ fn startClientWithGroup(arena: Allocator, group: InteropGroup, port: u16) !Child
     });
 }
 
-fn serverThread(args: *const ServerArgs) !void {
-    const addr: IpAddress = try .parse(host, args.port);
-    var server = try addr.listen(testing.io, .{ .reuse_address = true });
-    defer server.deinit(testing.io);
-    const stream = try server.accept(testing.io);
+/// Runs on the server thread and records its outcome in `args`, so a failure
+/// in `serve` surfaces as itself instead of as a missing response. Returning
+/// `void` keeps the thread entry unwrapped: the caller reads the reason after
+/// `join`.
+fn serverThread(listener: *Listener, args: *ServerArgs) void {
+    serveSuite(listener, args) catch |err| {
+        args.failure = err;
+    };
+}
+
+fn serveSuite(listener: *Listener, args: *const ServerArgs) !void {
+    const stream = try listener.server.accept(testing.io);
     defer stream.close(testing.io);
     try serve(stream, args.suite, args.group, null, .none);
 }
 
-fn resumptionServerThread(args: *ServerResumptionArgs) !void {
-    const addr: IpAddress = try .parse(host, args.port);
-    var server = try addr.listen(testing.io, .{ .reuse_address = true });
-    defer server.deinit(testing.io);
+fn resumptionServerThread(listener: *Listener, args: *ServerResumptionArgs) void {
+    serveResumption(listener, args) catch |err| {
+        args.failure = err;
+    };
+}
+
+fn serveResumption(listener: *Listener, args: *ServerResumptionArgs) !void {
     {
-        const stream = try server.accept(testing.io);
+        const stream = try listener.server.accept(testing.io);
         defer stream.close(testing.io);
         try serve(stream, .aes_128_gcm_sha256, null, &args.ticket, .issue);
     }
     {
-        const stream = try server.accept(testing.io);
+        const stream = try listener.server.accept(testing.io);
         defer stream.close(testing.io);
         try serve(stream, .aes_128_gcm_sha256, null, &args.ticket, .reuse);
     }
@@ -1286,37 +1447,47 @@ fn runServerClientAuthSuite(
     arena: Allocator,
     client_cert_path: []const u8,
     client_key_path: []const u8,
-    port: u16,
 ) !void {
-    var args: ServerAuthArgs = .{ .port = port };
-    const thread = try std.Thread.spawn(.{}, serverClientAuthThread, .{&args});
+    var listener: Listener = try .init();
+    defer listener.deinit();
 
-    var child = try startClientWithCert(arena, client_cert_path, client_key_path, port);
-    defer killChild(&child);
-    try writeFileAll(child.stdin.?, "GET / HTTP/1.0\r\n\r\n");
-    closeFile(child.stdin.?);
-    child.stdin = null;
+    var args: ServerAuthArgs = .{};
+    const thread = try std.Thread.spawn(.{}, serverClientAuthThread, .{ &listener, &args });
 
-    var stdout_buf: [4096]u8 = undefined;
-    const n = try readFileAll(child.stdout.?, &stdout_buf);
-    const term = try waitChild(&child);
+    const peer = driveCertPeer(arena, client_cert_path, client_key_path, listener.port);
+    listener.cancel();
     thread.join();
+    const outcome = try peer;
 
-    if (!exitedZero(term)) return error.OpenSslClientFailed;
-    if (!mem.containsAtLeast(u8, stdout_buf[0..n], 1, "hello")) return error.NoServerResponse;
+    if (!outcome.exited_ok) return error.OpenSslClientFailed;
+    if (args.failure) |err| if (err != error.ClientClosed) return err;
+    if (!outcome.saw_response) return error.NoServerResponse;
 }
 
 const ServerAuthArgs = struct {
-    port: u16,
+    failure: ?anyerror = null,
 };
 
-fn serverClientAuthThread(args: *const ServerAuthArgs) !void {
-    const addr: IpAddress = try .parse(host, args.port);
-    var server = try addr.listen(testing.io, .{ .reuse_address = true });
-    defer server.deinit(testing.io);
-    const stream = try server.accept(testing.io);
+fn serverClientAuthThread(listener: *Listener, args: *ServerAuthArgs) void {
+    serveClientAuthOn(listener) catch |err| {
+        args.failure = err;
+    };
+}
+
+fn serveClientAuthOn(listener: *Listener) !void {
+    const stream = try listener.server.accept(testing.io);
     defer stream.close(testing.io);
     try serveClientAuth(stream);
+}
+
+fn driveCertPeer(
+    arena: Allocator,
+    client_cert_path: []const u8,
+    client_key_path: []const u8,
+    port: u16,
+) !PeerOutcome {
+    var child = try startClientWithCert(arena, client_cert_path, client_key_path, port);
+    return drivePeer(&child);
 }
 
 fn serveClientAuth(stream: Stream) !void {
@@ -1430,8 +1601,8 @@ fn runClientAuthClientSuite(
     server_cert_path: []const u8,
     server_key_path: []const u8,
     client_ca_path: []const u8,
-    port: u16,
 ) !void {
+    const port = try freePort();
     var child = try startServerVerify(
         arena,
         server_cert_path,
@@ -1578,6 +1749,17 @@ fn sendBestEffortAlert(
     const description = tls.alert.alertForError(err);
     const alert_record = hs.sendAlert(description, out) catch return;
     tls.io.writeAll(testing.io, stream, alert_record) catch return;
+}
+
+/// A port no process holds, for a peer that binds it a moment later. The
+/// kernel assigns it, so concurrent test runs get different ports. The peer
+/// may lose the tiny race to another process between release and bind;
+/// `connectWithRetry` then fails fast instead of blocking.
+fn freePort() !u16 {
+    const addr: IpAddress = try .parse(host, 0);
+    var server = try addr.listen(testing.io, .{ .reuse_address = true });
+    defer server.deinit(testing.io);
+    return server.socket.address.getPort();
 }
 
 fn connectWithRetry(port: u16) !Stream {
