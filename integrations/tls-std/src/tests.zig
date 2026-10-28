@@ -113,6 +113,15 @@ const Step = union(enum) {
     /// straight to the socket, framing included, so a test can put a broken
     /// header where a real one belongs.
     send_raw: []const u8,
+    /// One encrypted application record carrying `data`, followed by `raw`,
+    /// in a single `write`. The payload is under the smallest MSS, so it
+    /// travels as one segment and one read on the peer delivers both. Two
+    /// writes carrying the same bytes would be two segments, and whether they
+    /// coalesce is an interleaving, not a contract.
+    send_then_raw: struct { data: []const u8, raw: []const u8 },
+    /// Open the caller's gate, so a test waits until the peer has actually
+    /// written instead of guessing when bytes arrive.
+    signal: *Gate,
     /// Delay, to force the client to see a record boundary.
     pause_ms: u64,
     /// close_notify + socket close.
@@ -223,6 +232,19 @@ fn serverRun(ctx: *ServerCtx) void {
                 rest = rest[@intCast(written)..];
             }
         },
+        .send_then_raw => |pair| {
+            const record = conn.hs.sendApplicationData(pair.data, &conn.out.buffer) catch |err|
+                return ctx.fail(err);
+            var buf: [4096]u8 = undefined;
+            const total = record.len + pair.raw.len;
+            if (total > buf.len) return ctx.fail(error.BufferTooSmall);
+            @memcpy(buf[0..record.len], record);
+            @memcpy(buf[record.len..][0..pair.raw.len], pair.raw);
+            const written = std.c.write(ctx.fd, &buf, total);
+            conn.hs.completeWrite();
+            if (written != @as(isize, @intCast(total))) return ctx.fail(error.ShortWrite);
+        },
+        .signal => |gate| gate.open(),
         .pause_ms => |ms| sleepMs(ms),
         .close => conn.close(),
     };
@@ -1667,20 +1689,28 @@ test "hasBuffered: drains coalesced records without a transport read" {
 // application_data, and change_cipher_spec. A header naming anything else
 // fails on the five header bytes alone; the body its length field claims
 // never has to arrive. `hasBuffered` is what lets a poll loop reach that
-// error instead of waiting on the transport for a body it does not need, and
-// it has to answer yes for a broken header as well as a complete record.
+// error instead of reading again for a body it does not need, and it has to
+// answer yes for a broken header as well as for a complete record.
+//
+// The peer sends the record and the broken header in one `write`, under the
+// smallest MSS, so one segment carries both and one read delivers both. Two
+// writes would be two segments, and whether a read happens to coalesce them
+// is an interleaving, not a contract: the first version of this test passed
+// on Linux loopback and failed on macOS for exactly that reason.
 test "hasBuffered: a bad header behind a good record is buffered, and the read fails" {
     const io = testIo();
     const fds = try socketPair();
     defer _ = std.c.close(fds[0]);
 
+    var written: Gate = .{};
     var sctx: ServerCtx = .{
         .fd = fds[1],
         .steps = &.{
-            .{ .send = "hello" },
-            // Content type 'G' is not a record type, and nothing follows it.
-            .{ .send_raw = "GET /" },
-            .{ .pause_ms = 100 },
+            .{ .send_then_raw = .{ .data = "hello", .raw = "GET /" } },
+            .{ .signal = &written },
+            // Held open so a read that waits for the body blocks here and
+            // reports EOF at close, not the protocol error the header earns.
+            .{ .pause_ms = 150 },
             .close,
         },
     };
@@ -1690,6 +1720,10 @@ test "hasBuffered: a bad header behind a good record is buffered, and the read f
     var conn: tls.Client = undefined;
     try conn.connect(io, streamFor(fds[0]), .{ .host = test_host, .verify = .insecure });
     defer conn.deinit();
+
+    // Wait for the peer's single write, so the read below cannot lose a race
+    // with it and observe a half-delivered segment.
+    try written.wait();
 
     const r = conn.reader();
     try r.fillMore();
