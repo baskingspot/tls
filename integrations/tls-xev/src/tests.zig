@@ -734,6 +734,84 @@ test "xev server: a client that handshakes then leaves without speaking" {
     try testing.expectEqual(Silent.Outcome.eof, s.server_read.?);
 }
 
+/// A server whose peer says `GET /` and nothing else. The five bytes are a
+/// record header whose content type 'G' is not one RFC 8446 §5.1 defines, so
+/// the record layer fails on the header without waiting for the body its
+/// length field claims (#143).
+const HeaderOnly = struct {
+    loop: *xev.Loop,
+
+    server: tls.Server = undefined,
+    server_storage: tls.Server.Storage = .{},
+    handshake: ?anyerror!void = null,
+    closed: bool = false,
+
+    fn done(s: *const HeaderOnly) bool {
+        return s.closed;
+    }
+
+    fn onHandshake(s: *HeaderOnly, r: tls.HandshakeResult) void {
+        s.handshake = r.result;
+        // The abort is already unwinding with its alert; this chains onto it so
+        // the test learns when the alert is on the wire and the fd is closed.
+        s.server.closeReset(s, onClose);
+    }
+
+    fn onClose(s: *HeaderOnly) void {
+        s.server.deinit();
+        s.server_storage.secureZero();
+        s.closed = true;
+    }
+};
+
+test "xev server: a header-only failure ends the handshake with unexpected_message" {
+    const fds = try socketPair();
+    defer _ = std.c.close(fds[0]);
+
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    const loop = &harness.loop;
+
+    // Not a TLS content type, and no body behind it. A server that waits for
+    // the body blocks until the peer disappears.
+    try writeAllFd(fds[0], "GET /");
+
+    var key: tls_core.signature.PrivateKey = try .fromP256Scalar(@ptrCast(test_scalar[0..32]));
+    defer key.deinit();
+    const server_config: tls.ServerConfig = try .init(.{
+        .cert_chain = &.{test_cert_der},
+        .signer = key.signer(),
+    });
+
+    const io = testing.io;
+    var s: HeaderOnly = .{ .loop = loop };
+    try s.server.init(io, loop, .initFd(fds[1]), &server_config, null, s.server_storage.buffers());
+    s.server.handshake(&s, HeaderOnly.onHandshake);
+
+    var watchdog: Watchdog = try .init();
+    runUntil(loop, &watchdog, &s) catch |err| {
+        std.debug.print(
+            "\nstalled: server={t} handshake_reported={} closed={}\n",
+            .{ s.server.state(), s.handshake != null, s.closed },
+        );
+        return err;
+    };
+
+    // The core error is UnexpectedRecord, which the projection flattens to
+    // ProtocolError; that flattening is exactly why the alert cannot be chosen
+    // from the projection.
+    try testing.expect(s.handshake != null);
+    try testing.expectError(error.ProtocolError, s.handshake.?);
+
+    // RFC 8446 §5.1, §6.2 — the peer gets the reason, not a bare FIN, and the
+    // reason is unexpected_message (10), not illegal_parameter (47).
+    var alert: [7]u8 = undefined;
+    const n = try readFd(fds[0], &alert);
+    try testing.expectEqual(@as(usize, 7), n);
+    try testing.expectEqualSlices(u8, &.{ 0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x0a }, &alert);
+}
+
 // ───────────────────────────────
 // Closing with work in flight (#83)
 // ───────────────────────────────

@@ -109,6 +109,10 @@ const Step = union(enum) {
     send_corrupt_record,
     /// Abort with a fatal alert instead of close_notify. RFC 8446 §6.2.
     send_fatal_alert: tls_core.alert.Description,
+    /// Hostile peer: bytes that are not a well-formed TLS record. Written
+    /// straight to the socket, framing included, so a test can put a broken
+    /// header where a real one belongs.
+    send_raw: []const u8,
     /// Delay, to force the client to see a record boundary.
     pause_ms: u64,
     /// close_notify + socket close.
@@ -211,10 +215,53 @@ fn serverRun(ctx: *ServerCtx) void {
             conn.hs.completeWrite();
             if (written != @as(isize, @intCast(record.len))) return ctx.fail(error.ShortWrite);
         },
+        .send_raw => |bytes| {
+            var rest = bytes;
+            while (rest.len > 0) {
+                const written = std.c.write(ctx.fd, rest.ptr, rest.len);
+                if (written <= 0) return ctx.fail(error.WriteFailed);
+                rest = rest[@intCast(written)..];
+            }
+        },
         .pause_ms => |ms| sleepMs(ms),
         .close => conn.close(),
     };
 }
+
+/// A peer that speaks no TLS at all: it writes one blob and then holds the
+/// socket open until the test releases it.
+///
+/// A record-layer failure has to be reached while the peer is still
+/// connected. A peer that closed would make "rejected the header" and "waited
+/// for a body that never came, then saw EOF" produce the same error, so the
+/// difference would be invisible. The wait is bounded and the timeout is
+/// recorded, which turns a blocked handshake into a failure with a reason
+/// rather than a hung suite.
+const RawPeer = struct {
+    fd: posix.fd_t,
+    bytes: []const u8,
+    written: Gate = .{},
+    release: Gate = .{},
+    failed: ?anyerror = null,
+    timed_out: bool = false,
+
+    fn run(peer: *RawPeer) void {
+        defer _ = std.c.close(peer.fd);
+        var rest = peer.bytes;
+        while (rest.len > 0) {
+            const written = std.c.write(peer.fd, rest.ptr, rest.len);
+            if (written <= 0) {
+                peer.failed = error.WriteFailed;
+                return;
+            }
+            rest = rest[@intCast(written)..];
+        }
+        peer.written.open();
+        peer.release.wait() catch {
+            peer.timed_out = true;
+        };
+    }
+};
 
 fn spawnServer(ctx: *ServerCtx) !std.Thread {
     return std.Thread.spawn(.{}, serverRun, .{ctx});
@@ -1614,6 +1661,99 @@ test "hasBuffered: drains coalesced records without a transport read" {
     conn.close();
     server.join();
     if (sctx.err) |err| return err;
+}
+
+// RFC 8446 §5.1 — the record content types are handshake, alert,
+// application_data, and change_cipher_spec. A header naming anything else
+// fails on the five header bytes alone; the body its length field claims
+// never has to arrive. `hasBuffered` is what lets a poll loop reach that
+// error instead of waiting on the transport for a body it does not need, and
+// it has to answer yes for a broken header as well as a complete record.
+test "hasBuffered: a bad header behind a good record is buffered, and the read fails" {
+    const io = testIo();
+    const fds = try socketPair();
+    defer _ = std.c.close(fds[0]);
+
+    var sctx: ServerCtx = .{
+        .fd = fds[1],
+        .steps = &.{
+            .{ .send = "hello" },
+            // Content type 'G' is not a record type, and nothing follows it.
+            .{ .send_raw = "GET /" },
+            .{ .pause_ms = 100 },
+            .close,
+        },
+    };
+    const server = try spawnServer(&sctx);
+    defer server.join();
+
+    var conn: tls.Client = undefined;
+    try conn.connect(io, streamFor(fds[0]), .{ .host = test_host, .verify = .insecure });
+    defer conn.deinit();
+
+    const r = conn.reader();
+    try r.fillMore();
+    const chunk = r.buffered();
+    try testing.expectEqualStrings("hello", chunk);
+    r.toss(chunk.len);
+
+    // No transport read between the two: the bad header arrived in the same
+    // read as the record, so a drain loop must still see work to do.
+    try testing.expect(conn.hasBuffered());
+    try testing.expectError(error.ReadFailed, r.fillMore());
+    try testing.expectEqual(tls.ReadError.TlsProtocolError, conn.readError().?);
+}
+
+// RFC 8446 §5.1 — a peer that sends `GET /` and nothing else has sent a
+// header whose content type is not a record type. The handshake must fail on
+// that header rather than wait for the body its length field claims. `GET /`
+// is a 5-byte header by accident of length; the content type read as 'G' is
+// the reason it fails.
+test "connect: a header-only failure ends the handshake without waiting for a body" {
+    const io = testIo();
+    const fds = try socketPair();
+    defer _ = std.c.close(fds[0]);
+
+    var peer: RawPeer = .{ .fd = fds[1], .bytes = "GET /" };
+    const thread = try std.Thread.spawn(.{}, RawPeer.run, .{&peer});
+
+    var conn: tls.Client = undefined;
+    const result = conn.connect(io, streamFor(fds[0]), .{
+        .host = test_host,
+        .verify = .insecure,
+    });
+    // Released whatever happened, so a blocked handshake gets EOF from the
+    // peer and the test reports it instead of hanging.
+    peer.release.open();
+    thread.join();
+
+    try testing.expect(!peer.timed_out);
+    try testing.expectEqual(@as(?anyerror, null), peer.failed);
+    try testing.expectError(error.HandshakeProtocolError, result);
+}
+
+test "accept: a header-only failure ends the handshake without waiting for a body" {
+    const io = testIo();
+    const fds = try socketPair();
+    defer _ = std.c.close(fds[0]);
+
+    var peer: RawPeer = .{ .fd = fds[1], .bytes = "GET /" };
+    const thread = try std.Thread.spawn(.{}, RawPeer.run, .{&peer});
+
+    var key: tls_core.signature.PrivateKey = try .fromP256Scalar(@ptrCast(test_scalar[0..32]));
+    defer key.deinit();
+
+    var conn: tls.Server = undefined;
+    const result = conn.accept(io, streamFor(fds[0]), .{
+        .cert_chain = &.{test_cert_der},
+        .signer = key.signer(),
+    });
+    peer.release.open();
+    thread.join();
+
+    try testing.expect(!peer.timed_out);
+    try testing.expectEqual(@as(?anyerror, null), peer.failed);
+    try testing.expectError(error.HandshakeProtocolError, result);
 }
 
 // ───────────────────────────────

@@ -486,7 +486,7 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
             // the first read.
             if (role == .client) {
                 const hello = self.hs.start(self.out) catch |err|
-                    return self.abortHandshake(root.fromCore(err));
+                    return self.abortWithCore(err);
                 self.queueWire(hello);
             }
             self.pump();
@@ -799,7 +799,7 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
                         return self.issueWrite();
                     }
                 } else |err| {
-                    self.abortWith(root.fromCore(err));
+                    self.abortWithCore(err);
                     return;
                 }
             }
@@ -898,7 +898,7 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
             var idle: usize = 0;
             while (true) {
                 const record = (self.rb.next() catch |err| {
-                    self.abortWith(root.fromCore(err));
+                    self.abortWithCore(err);
                     return true;
                 }) orelse return false;
 
@@ -909,7 +909,7 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
                 idle += 1;
 
                 const ev = self.hs.handleRecord(record, self.out) catch |err| {
-                    self.abortWith(root.fromCore(err));
+                    self.abortWithCore(err);
                     return true;
                 };
 
@@ -970,8 +970,20 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
         }
 
         fn abortWith(self: *Self, err: Error) void {
+            self.abortWithAlert(err, alertFor(err));
+        }
+
+        /// A core failure arrives before the projection, so the alert comes from the
+        /// canonical per-error table. The projection is lossy in exactly the place
+        /// that matters here: every protocol failure becomes `Error.ProtocolError`,
+        /// and one alert cannot name them all.
+        fn abortWithCore(self: *Self, err: tls.errors.HandshakeError) void {
+            self.abortWithAlert(root.fromCore(err), alertForCore(err));
+        }
+
+        fn abortWithAlert(self: *Self, err: Error, description: ?tls.alert.Description) void {
             self.failure = err;
-            if (self.handshake_slot.armed()) return self.abortHandshake(err);
+            if (self.handshake_slot.armed()) return self.abortHandshakeWithAlert(err, description);
             if (self.read_slot.armed()) self.deliverRead(.{ .err = err });
             if (self.write_slot.armed()) self.deliverWrite(.{ .written = err });
         }
@@ -979,7 +991,14 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
         /// RFC 8446 §6.2 — tell the peer why before closing, so it logs a reason rather
         /// than a bare FIN.
         fn abortHandshake(self: *Self, err: Error) void {
-            const description = alertFor(err);
+            self.abortHandshakeWithAlert(err, alertFor(err));
+        }
+
+        fn abortHandshakeWithAlert(
+            self: *Self,
+            err: Error,
+            description: ?tls.alert.Description,
+        ) void {
             self.lifecycle = .closing;
             // Every exit from here goes through the close sequence, including the
             // one where the alert write fails: without a phase that path resumes
@@ -996,6 +1015,18 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
             self.issueSocketClose();
         }
 
+        /// The peer-visible reason for a core handshake failure, from the canonical
+        /// table rather than the coarse `classify` bucket. RFC 8446 §5 makes an
+        /// unexpected record `unexpected_message`, not `illegal_parameter`.
+        fn alertForCore(err: tls.errors.HandshakeError) ?tls.alert.Description {
+            return switch (err) {
+                error.PeerAlert => null,
+                else => tls.alert.alertForError(err),
+            };
+        }
+
+        /// Local conditions that never reached the core. Peer faults go through
+        /// `alertForCore` so the alert names the specific TLS reason.
         fn alertFor(err: Error) ?tls.alert.Description {
             return switch (err) {
                 error.CertificateVerificationFailed => .bad_certificate,
@@ -1244,9 +1275,29 @@ test "Buffers: documented minimums match what init asserts" {
     try testing.expect(TestConn.recommended_reassembly_len > 0);
 }
 
+// The alert has to be chosen from the core error. The projection to `Error`
+// flattens the protocol bucket, so deriving the alert afterwards sends
+// `illegal_parameter` for an unexpected record where RFC 8446 §5 wants
+// `unexpected_message`, and `decrypt_error` for a bad record MAC.
+test "alertForCore: the core error names the alert, not the projection" {
+    const D = tls.alert.Description;
+    try testing.expectEqual(D.unexpected_message, TestConn.alertForCore(error.UnexpectedRecord).?);
+    try testing.expectEqual(D.record_overflow, TestConn.alertForCore(error.RecordTooLarge).?);
+    try testing.expectEqual(D.bad_record_mac, TestConn.alertForCore(error.AuthenticationFailed).?);
+
+    // The peer already told us; RFC 8446 §6.2 says close without replying.
+    try testing.expectEqual(@as(?D, null), TestConn.alertForCore(error.PeerAlert));
+
+    // Why the alert cannot be derived after the projection: three errors, three
+    // alerts, two projected variants in between.
+    try testing.expectEqual(Error.ProtocolError, root.fromCore(error.UnexpectedRecord));
+    try testing.expectEqual(Error.RecordOverflow, root.fromCore(error.RecordTooLarge));
+    try testing.expectEqual(Error.DecryptError, root.fromCore(error.AuthenticationFailed));
+}
+
 // Every failure a caller can be handed must map to a peer-visible reason or an
 // explicit decision not to send one. A new Error variant fails this switch.
-test "TestConn.alertFor: every error is classified, and peer-fault errors get an alert" {
+test "TestConn.alertFor: every local error is classified, and peer-fault errors get an alert" {
     const D = tls.alert.Description;
     const cert_failed = error.CertificateVerificationFailed;
     try testing.expectEqual(D.bad_certificate, TestConn.alertFor(cert_failed).?);
