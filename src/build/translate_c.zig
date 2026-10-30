@@ -40,6 +40,7 @@ pub fn addModules(b: *Build, opts: struct {
         .target = opts.target,
         .optimize = opts.optimize,
     });
+    openssl_c.defineCMacro("_FORTIFY_SOURCE", "0");
     linkCrypto(b, openssl_c, "crypto");
 
     const openssl_ssl = b.addTranslateC(.{
@@ -47,6 +48,7 @@ pub fn addModules(b: *Build, opts: struct {
         .target = opts.target,
         .optimize = opts.optimize,
     });
+    openssl_ssl.defineCMacro("_FORTIFY_SOURCE", "0");
     linkCrypto(b, openssl_ssl, "ssl");
 
     const pty_c = b.addTranslateC(.{
@@ -54,6 +56,10 @@ pub fn addModules(b: *Build, opts: struct {
         .target = opts.target,
         .optimize = opts.optimize,
     });
+    // Release modes define __OPTIMIZE__, which turns on glibc's fortify
+    // wrappers; translate-c lowers their compile-time error calls as if they
+    // were real. The wrappers are declarations to us, so disable fortify.
+    pty_c.defineCMacro("_FORTIFY_SOURCE", "0");
 
     return .{
         .openssl_c = bareModule(b, openssl_c),
