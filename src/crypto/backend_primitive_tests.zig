@@ -13,6 +13,7 @@
 const std = @import("std");
 const stdx = @import("stdx");
 const testing = std.testing;
+const assert = std.debug.assert;
 
 const backend = @import("backend.zig");
 const Certificate = @import("../certificate_parser.zig");
@@ -1481,8 +1482,8 @@ test "backend.sha2: one-shot hash matches std for lengths 0..300" {
     const input = sha2Input(&buf, 0x138);
     inline for (sha2_pairs) |pair| {
         const B, const S = pair;
-        comptime std.debug.assert(B.digest_length == S.digest_length);
-        comptime std.debug.assert(B.block_length == S.block_length);
+        comptime assert(B.digest_length == S.digest_length);
+        comptime assert(B.block_length == S.block_length);
         for (0..input.len + 1) |len| {
             var got: [B.digest_length]u8 = undefined;
             var want: [S.digest_length]u8 = undefined;

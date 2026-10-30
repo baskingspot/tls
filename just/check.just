@@ -345,11 +345,12 @@ fmt-zig:
 fmt-rust:
     cargo fmt --manifest-path bench/rustls/Cargo.toml
 
-[doc("Lint Zig sources: fmt --check, ziglint, and the ast-grep rules")]
+[doc("Lint Zig sources: fmt --check, ziglint, ast-grep (baskingspot-lint and the repo's own rules)")]
 [group("check")]
 lint-zig:
     zig fmt --check src/ examples/ bench/ tests/distribution-consumer/ build.zig
     ziglint build.zig examples bench tests/distribution-consumer $(fd --extension zig --exclude certificate_parser.zig . src)
+    baskingspot-lint src
     ast-grep scan --rule rules/no-tls-owned-allocations.yml src --globs '*.zig' --globs '!src/test/**' --globs '!src/bench/**' --globs '!src/interop.zig' --report-style short
     ast-grep scan --rule rules/no-c-pointer-types.yml src --globs '*.zig' --report-style short
     # std-alias rules: enforce the aliases we always want. certificate_parser.zig

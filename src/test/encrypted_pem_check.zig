@@ -38,6 +38,8 @@
 //! whose `error.WouldBlock` is the typed form of "this non-blocking fd is
 //! empty".
 const std = @import("std");
+const mem = std.mem;
+const print = std.debug.print;
 const tls = @import("tls");
 const fixtures = @import("fixtures");
 
@@ -217,7 +219,7 @@ const Probe = struct {
             if (read == 0) return false;
             count += read;
         }
-        return std.mem.eql(u8, &seen, sentinel);
+        return mem.eql(u8, &seen, sentinel);
     }
 
     /// Whatever the probe's stdout and stderr received. Empty is the expected
@@ -260,18 +262,18 @@ pub fn main() void {
     _ = c.alarm(check_timeout_seconds);
 
     runProbes() catch |err| {
-        std.debug.print("encrypted-pem-check: FAILED ({s})\n", .{@errorName(err)});
+        print("encrypted-pem-check: FAILED ({s})\n", .{@errorName(err)});
         std.process.exit(1);
     };
 
     _ = c.alarm(0);
-    std.debug.print("encrypted-pem-check: ok (pipe, terminal)\n", .{});
+    print("encrypted-pem-check: ok (pipe, terminal)\n", .{});
 }
 
 fn runProbes() Failure!void {
     for ([_]Kind{ .pipe, .terminal }) |kind| {
         runProbe(kind) catch |err| {
-            std.debug.print(
+            print(
                 "encrypted-pem-check: {s} probe failed ({s})\n",
                 .{ @tagName(kind), @errorName(err) },
             );
@@ -290,19 +292,19 @@ fn runProbe(kind: Kind) Failure!void {
     try expectDeclinedLoads();
 
     const output = try probe.capturedOutput();
-    const prompt_written = std.mem.indexOf(u8, output, prompt_marker) != null;
+    const prompt_written = mem.find(u8, output, prompt_marker) != null;
     const stdin_consumed = !try probe.stdinSentinelIntact();
     if (prompt_written or stdin_consumed) {
         // Report both observations on the real stderr; detach is idempotent.
         probe.detach();
         if (prompt_written) {
-            std.debug.print(
+            print(
                 "encrypted-pem-check: {s} probe: provider prompt written to the loader's stderr\n",
                 .{@tagName(kind)},
             );
         }
         if (stdin_consumed) {
-            std.debug.print(
+            print(
                 "encrypted-pem-check: {s} probe: loader consumed stdin\n",
                 .{@tagName(kind)},
             );

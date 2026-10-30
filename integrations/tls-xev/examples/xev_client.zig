@@ -124,7 +124,7 @@ const App = struct {
             .data => |bytes| {
                 if (!self.flags.contains(.saw_status_line)) {
                     self.flags.insert(.saw_status_line);
-                    const line_end = mem.indexOfScalar(u8, bytes, '\n') orelse bytes.len;
+                    const line_end = mem.findScalar(u8, bytes, '\n') orelse bytes.len;
                     print("[xev] {s}\n", .{mem.trimEnd(u8, bytes[0..line_end], "\r")});
                 }
                 self.body_bytes += bytes.len;

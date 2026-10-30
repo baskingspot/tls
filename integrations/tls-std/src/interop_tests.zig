@@ -183,13 +183,13 @@ fn generateClientAuthCertificate(
     allocator: mem.Allocator,
     dir: []const u8,
 ) !struct { ca: []const u8, cert: []const u8, key: []const u8, der: []const u8 } {
-    const ca_path = try std.Io.Dir.path.join(allocator, &.{ dir, "client-ca.pem" });
-    const ca_key = try std.Io.Dir.path.join(allocator, &.{ dir, "client-ca.key" });
-    const csr_path = try std.Io.Dir.path.join(allocator, &.{ dir, "client.csr" });
-    const key_path = try std.Io.Dir.path.join(allocator, &.{ dir, "client.key" });
-    const cert_path = try std.Io.Dir.path.join(allocator, &.{ dir, "client.pem" });
-    const der_path = try std.Io.Dir.path.join(allocator, &.{ dir, "client.der" });
-    const ext_path = try std.Io.Dir.path.join(allocator, &.{ dir, "client.ext" });
+    const ca_path = try Io.Dir.path.join(allocator, &.{ dir, "client-ca.pem" });
+    const ca_key = try Io.Dir.path.join(allocator, &.{ dir, "client-ca.key" });
+    const csr_path = try Io.Dir.path.join(allocator, &.{ dir, "client.csr" });
+    const key_path = try Io.Dir.path.join(allocator, &.{ dir, "client.key" });
+    const cert_path = try Io.Dir.path.join(allocator, &.{ dir, "client.pem" });
+    const der_path = try Io.Dir.path.join(allocator, &.{ dir, "client.der" });
+    const ext_path = try Io.Dir.path.join(allocator, &.{ dir, "client.ext" });
     try Io.Dir.cwd().writeFile(testIo(), .{
         .sub_path = ext_path,
         .data = "basicConstraints=critical,CA:FALSE\n" ++
@@ -499,8 +499,8 @@ test "tls_std.Client interoperates with openssl s_server" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir = try tmpDirPath(allocator, &tmp);
-    const cert_path = try std.Io.Dir.path.join(allocator, &.{ dir, "cert.pem" });
-    const key_path = try std.Io.Dir.path.join(allocator, &.{ dir, "key.pem" });
+    const cert_path = try Io.Dir.path.join(allocator, &.{ dir, "cert.pem" });
+    const key_path = try Io.Dir.path.join(allocator, &.{ dir, "key.pem" });
     try generateCertificate(cert_path, key_path);
 
     const port = try availablePort();
@@ -537,7 +537,7 @@ test "openssl s_client interoperates with tls_std.Server" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir = try tmpDirPath(allocator, &tmp);
-    const ca_path = try std.Io.Dir.path.join(allocator, &.{ dir, "ca.pem" });
+    const ca_path = try Io.Dir.path.join(allocator, &.{ dir, "ca.pem" });
     try writeDerCertificatePem(allocator, server_cert_der, ca_path);
 
     const addr = try net.IpAddress.parse(host, 0);
@@ -587,9 +587,9 @@ test "tls_std.Client credentials interoperate with openssl s_server -Verify" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir = try tmpDirPath(allocator, &tmp);
-    const cert_path = try std.Io.Dir.path.join(allocator, &.{ dir, "cert.pem" });
-    const key_path = try std.Io.Dir.path.join(allocator, &.{ dir, "key.pem" });
-    const client_ca_path = try std.Io.Dir.path.join(allocator, &.{ dir, "client-ca.pem" });
+    const cert_path = try Io.Dir.path.join(allocator, &.{ dir, "cert.pem" });
+    const key_path = try Io.Dir.path.join(allocator, &.{ dir, "key.pem" });
+    const client_ca_path = try Io.Dir.path.join(allocator, &.{ dir, "client-ca.pem" });
     try generateCertificate(cert_path, key_path);
     try writeDerCertificatePem(allocator, client_cert_der, client_ca_path);
 
@@ -639,9 +639,9 @@ test "tls_std.Client without credentials is rejected by openssl s_server -Verify
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir = try tmpDirPath(allocator, &tmp);
-    const cert_path = try std.Io.Dir.path.join(allocator, &.{ dir, "cert.pem" });
-    const key_path = try std.Io.Dir.path.join(allocator, &.{ dir, "key.pem" });
-    const client_ca_path = try std.Io.Dir.path.join(allocator, &.{ dir, "client-ca.pem" });
+    const cert_path = try Io.Dir.path.join(allocator, &.{ dir, "cert.pem" });
+    const key_path = try Io.Dir.path.join(allocator, &.{ dir, "key.pem" });
+    const client_ca_path = try Io.Dir.path.join(allocator, &.{ dir, "client-ca.pem" });
     try generateCertificate(cert_path, key_path);
     try writeDerCertificatePem(allocator, client_cert_der, client_ca_path);
 
@@ -682,7 +682,7 @@ test "openssl s_client credentials interoperate with a requiring tls_std.Server"
     defer tmp.cleanup();
     const dir = try tmpDirPath(allocator, &tmp);
     const creds = try generateClientAuthCertificate(allocator, dir);
-    const server_ca_path = try std.Io.Dir.path.join(allocator, &.{ dir, "ca.pem" });
+    const server_ca_path = try Io.Dir.path.join(allocator, &.{ dir, "ca.pem" });
     try writeDerCertificatePem(allocator, server_cert_der, server_ca_path);
 
     // The caller-owned trust bundle the server verifies clients against.
@@ -755,7 +755,7 @@ test "openssl s_client without credentials receives certificate_required from tl
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir = try tmpDirPath(allocator, &tmp);
-    const server_ca_path = try std.Io.Dir.path.join(allocator, &.{ dir, "ca.pem" });
+    const server_ca_path = try Io.Dir.path.join(allocator, &.{ dir, "ca.pem" });
     try writeDerCertificatePem(allocator, server_cert_der, server_ca_path);
 
     var bundle: std.crypto.Certificate.Bundle = .empty;

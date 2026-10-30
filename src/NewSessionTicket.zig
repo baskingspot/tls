@@ -2,6 +2,7 @@
 //! RFC 8446 §4.6.1.
 const std = @import("std");
 const testing = std.testing;
+const assert = std.debug.assert;
 const fuzz_compat = @import("fuzz_compat.zig");
 
 const extension_type = @import("extension_type.zig");
@@ -75,7 +76,7 @@ pub fn encode(out: []u8, ticket: NewSessionTicket) EncodeError![]const u8 {
         writer.appendAssumeCapacity(u16, 4);
         writer.appendAssumeCapacity(u32, max_early_data_size);
     }
-    std.debug.assert(writer.buffered().len == encoded_len);
+    assert(writer.buffered().len == encoded_len);
     return writer.buffered();
 }
 

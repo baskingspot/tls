@@ -33,9 +33,9 @@ pub const Backend = enum {
 /// Backend family inferred from the selected libcrypto headers, plus the
 /// explicit compile-time FIPS capability policy.
 pub const active: Backend = switch (c_openssl.family) {
-    .openssl => if (build_options.crypto_fips) .@"openssl-fips" else .openssl,
-    .@"aws-lc" => if (build_options.crypto_fips) .@"aws-lc-fips" else .@"aws-lc",
-    .boringssl => if (build_options.crypto_fips)
+    .openssl => if (is_fips) .@"openssl-fips" else .openssl,
+    .@"aws-lc" => if (is_fips) .@"aws-lc-fips" else .@"aws-lc",
+    .boringssl => if (is_fips)
         @compileError("-Dcrypto-fips=true is unsupported with BoringSSL")
     else
         .boringssl,
