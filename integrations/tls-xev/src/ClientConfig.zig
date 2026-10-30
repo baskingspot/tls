@@ -40,7 +40,7 @@ pub const Options = struct {
     alpn: []const []const u8 = &.{},
     /// RFC 10024 hybrid supported-groups and initial key-share policy.
     /// Disabled by default; borrowed slices must outlive every connection.
-    hybrid: tls.ClientHandshake.HybridPolicy = .{},
+    hybrid: tls.ClientHandshake.HybridPolicy = .empty,
 };
 
 verify: Verify,
@@ -123,7 +123,7 @@ test "init: local policy faults are explicit" {
     try testing.expectError(error.InvalidVerifyPolicy, init(.{ .verify = .owned_bundle }));
     try testing.expectError(error.InvalidHybridPolicy, init(.{
         .verify = .insecure,
-        .hybrid = .{ .initial_key_share = .x25519_mlkem768 },
+        .hybrid = .{ .supported_groups = &.{}, .initial_key_share = .x25519_mlkem768 },
     }));
 }
 
@@ -135,7 +135,7 @@ test "initSystemBundle: policy validation precedes trust-store allocation" {
         fba.allocator(),
         .{
             .verify = .owned_bundle,
-            .hybrid = .{ .initial_key_share = .x25519_mlkem768 },
+            .hybrid = .{ .supported_groups = &.{}, .initial_key_share = .x25519_mlkem768 },
         },
     ));
 }
@@ -145,11 +145,11 @@ test "config is reusable across connections: no per-connection state" {
     // the trust store is loaded once. Assert the type carries nothing that would
     // make sharing it unsafe.
     inline for (@typeInfo(ClientConfig).@"struct".fields) |field| {
-        const ok = comptime std.mem.eql(u8, field.name, "verify") or
-            std.mem.eql(u8, field.name, "alpn") or
-            std.mem.eql(u8, field.name, "hybrid") or
-            std.mem.eql(u8, field.name, "bundle") or
-            std.mem.eql(u8, field.name, "gpa");
+        const ok = comptime mem.eql(u8, field.name, "verify") or
+            mem.eql(u8, field.name, "alpn") or
+            mem.eql(u8, field.name, "hybrid") or
+            mem.eql(u8, field.name, "bundle") or
+            mem.eql(u8, field.name, "gpa");
         if (!ok) @compileError("new ClientConfig field '" ++ field.name ++
             "': confirm it is connection-independent before sharing a Config");
     }

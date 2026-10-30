@@ -56,19 +56,35 @@ tx: RecordLayer,
 suite: Suite,
 /// Reassembles a post-handshake KeyUpdate fragmented across records
 /// (RFC 8446 §5.1). KeyUpdate is a 4-byte header plus a 1-byte body.
-ku_frag: KeyUpdateFragmentBuffer = .empty,
+ku_frag: KeyUpdateFragmentBuffer,
 /// Consecutive post-handshake KeyUpdates without intervening application
 /// data — the flood cap. A malicious peer cannot ratchet us forever.
-post_handshake_count: u8 = 0,
+post_handshake_count: u8,
 /// Most recent non-close_notify peer alert (RFC 8446 §6.2); close_notify
 /// (§6.1) never sets it.
-last_peer_alert: ?alert.Alert = null,
+last_peer_alert: ?alert.Alert,
 /// An inbound update_requested KeyUpdate must be answered before any
 /// application data is sent (RFC 8446 §4.6.3).
-key_update_obligation: handshake.KeyUpdateObligation = .none,
+key_update_obligation: handshake.KeyUpdateObligation,
 /// TX latch: set when a call hands the caller bytes that must be written
 /// before more engine output is safe. Mirrors ServerHandshake's.
-pending_write: PendingWrite = .idle,
+pending_write: PendingWrite,
+
+/// A connected session over the given record layers and traffic-secret suite,
+/// with no KeyUpdate in flight and nothing pending. `ServerHandshake` calls
+/// this only from `extractEstablished`; construct one that way, not directly.
+pub fn init(rx: RecordLayer, tx: RecordLayer, suite: Suite) EstablishedSession {
+    return .{
+        .rx = rx,
+        .tx = tx,
+        .suite = suite,
+        .ku_frag = .empty,
+        .post_handshake_count = 0,
+        .last_peer_alert = null,
+        .key_update_obligation = .none,
+        .pending_write = .idle,
+    };
+}
 
 /// Release the backend AEAD contexts and zero every secret this engine owns.
 pub fn deinit(self: *EstablishedSession) void {

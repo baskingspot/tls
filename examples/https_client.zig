@@ -44,13 +44,14 @@ pub fn main(init: std.process.Init) !void {
     var random: tls.Random = .empty;
     io.random(&random.data);
 
-    var hs: tls.ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
-        .host_name = server_name,
-        .now_sec = Io.Timestamp.now(io, .real).toSeconds(),
-        .random = random,
-        .alpn_protocols = &.{"http/1.1"},
-    });
+    var hs_config: tls.ClientHandshake.Config = .init(
+        try .init(client_keypair),
+        server_name,
+        Io.Timestamp.now(io, .real).toSeconds(),
+        random,
+    );
+    hs_config.alpn_protocols = &.{"http/1.1"};
+    var hs: tls.ClientHandshake = .init(hs_config);
     defer hs.deinit();
 
     // Certificate verification policy: pinned trust anchor.

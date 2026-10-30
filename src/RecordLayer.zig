@@ -45,15 +45,37 @@ pub const KtlsCipherType = enum(u16) {
 /// RecordLayer so callers never borrow slices into state that deinit() will
 /// secure-zero.
 pub const KtlsInfo = struct {
-    version: u16 = 0x0304,
+    version: u16,
     cipher_type: KtlsCipherType,
-    key: [32]u8 = @splat(0),
+    key: [32]u8,
     key_len: u8,
-    salt: [4]u8 = @splat(0),
+    salt: [4]u8,
     salt_len: u8,
-    iv: [12]u8 = @splat(0),
+    iv: [12]u8,
     iv_len: u8,
     rec_seq: [8]u8,
+
+    /// A TLS 1.3 snapshot with zeroed key, salt, and IV; the caller fills the
+    /// secret and nonce bytes it needs. `version` is fixed at 0x0304.
+    pub fn init(
+        cipher_type: KtlsCipherType,
+        key_len: u8,
+        salt_len: u8,
+        iv_len: u8,
+        rec_seq: [8]u8,
+    ) KtlsInfo {
+        return .{
+            .version = 0x0304,
+            .cipher_type = cipher_type,
+            .key = @splat(0),
+            .key_len = key_len,
+            .salt = @splat(0),
+            .salt_len = salt_len,
+            .iv = @splat(0),
+            .iv_len = iv_len,
+            .rec_seq = rec_seq,
+        };
+    }
 
     /// Erase the exported traffic key, IV, and sequence snapshot.
     /// The snapshot is invalid after this call.
@@ -68,7 +90,7 @@ pub const overhead = frame.header_len + 1 + tag_len;
 
 aead: Aead,
 iv: Iv,
-seq: u64 = 0,
+seq: u64,
 key_limit: u64,
 ctx: AeadContext,
 
@@ -76,6 +98,7 @@ pub fn init(aead_: Aead, iv_: Iv) AeadError!RecordLayer {
     return .{
         .aead = aead_,
         .iv = iv_,
+        .seq = 0,
         .key_limit = aead_.keyUsageLimit(),
         .ctx = try .init(aead_),
     };
@@ -111,27 +134,27 @@ pub fn clone(self: *const RecordLayer) AeadError!RecordLayer {
 /// salt and 8-byte IV but uses the same nonce construction.
 pub fn ktlsInfo(self: *const RecordLayer) KtlsInfo {
     var info: KtlsInfo = switch (self.aead) {
-        .aes_128_gcm_sha256 => |key| .{
-            .cipher_type = .aes_gcm_128,
-            .key_len = key.data.len,
-            .salt_len = 4,
-            .iv_len = 8,
-            .rec_seq = memx.toBytes(u64, self.seq),
-        },
-        .aes_256_gcm_sha384 => |key| .{
-            .cipher_type = .aes_gcm_256,
-            .key_len = key.data.len,
-            .salt_len = 4,
-            .iv_len = 8,
-            .rec_seq = memx.toBytes(u64, self.seq),
-        },
-        .chacha20_poly1305_sha256 => |key| .{
-            .cipher_type = .chacha20_poly1305,
-            .key_len = key.data.len,
-            .salt_len = 0,
-            .iv_len = 12,
-            .rec_seq = memx.toBytes(u64, self.seq),
-        },
+        .aes_128_gcm_sha256 => |key| .init(
+            .aes_gcm_128,
+            key.data.len,
+            4,
+            8,
+            memx.toBytes(u64, self.seq),
+        ),
+        .aes_256_gcm_sha384 => |key| .init(
+            .aes_gcm_256,
+            key.data.len,
+            4,
+            8,
+            memx.toBytes(u64, self.seq),
+        ),
+        .chacha20_poly1305_sha256 => |key| .init(
+            .chacha20_poly1305,
+            key.data.len,
+            0,
+            12,
+            memx.toBytes(u64, self.seq),
+        ),
     };
 
     switch (self.aead) {

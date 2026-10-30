@@ -409,13 +409,7 @@ test "packed kTLS info secureZero methods erase every byte" {
 // RFC 8446 §5.3 — the AES-GCM pack splits the 12-byte IV into salt[4] + iv[8];
 // the kernel reconstructs the nonce as salt || iv XOR seq.
 test "packAesGcm128 splits the 12-byte IV and copies key/seq" {
-    var info: KtlsInfo = .{
-        .cipher_type = .aes_gcm_128,
-        .key_len = 16,
-        .salt_len = 4,
-        .iv_len = 8,
-        .rec_seq = .{ 0, 0, 0, 0, 0, 0, 0, 5 },
-    };
+    var info: KtlsInfo = .init(.aes_gcm_128, 16, 4, 8, .{ 0, 0, 0, 0, 0, 0, 0, 5 });
     defer info.secureZero();
     info.key[0..16].* = [_]u8{0xaa} ** 16;
     info.salt = .{ 0x01, 0x02, 0x03, 0x04 };
@@ -436,13 +430,7 @@ test "packAesGcm128 splits the 12-byte IV and copies key/seq" {
 }
 
 test "packAesGcm128 rejects a non-AES-GCM-128 info" {
-    var info: KtlsInfo = .{
-        .cipher_type = .aes_gcm_256,
-        .key_len = 32,
-        .salt_len = 4,
-        .iv_len = 8,
-        .rec_seq = .{0} ** 8,
-    };
+    var info: KtlsInfo = .init(.aes_gcm_256, 32, 4, 8, .{0} ** 8);
     defer info.secureZero();
     info.key[0..32].* = [_]u8{0xbb} ** 32;
     info.salt = .{ 0, 0, 0, 0 };
@@ -452,13 +440,7 @@ test "packAesGcm128 rejects a non-AES-GCM-128 info" {
 
 // RFC 8446 §5.3 — ChaCha20-Poly1305 uses the full 12-byte IV with no salt.
 test "packChaCha20Poly1305 uses the full 12-byte IV" {
-    var info: KtlsInfo = .{
-        .cipher_type = .chacha20_poly1305,
-        .key_len = 32,
-        .salt_len = 0,
-        .iv_len = 12,
-        .rec_seq = .{ 0, 0, 0, 0, 0, 0, 0, 9 },
-    };
+    var info: KtlsInfo = .init(.chacha20_poly1305, 32, 0, 12, .{ 0, 0, 0, 0, 0, 0, 0, 9 });
     defer info.secureZero();
     info.key[0..32].* = [_]u8{0xcc} ** 32;
     info.iv = .{ 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b };
@@ -472,13 +454,7 @@ test "packChaCha20Poly1305 uses the full 12-byte IV" {
 }
 
 test "packAesGcm256 copies the 32-byte key and splits the IV" {
-    var info: KtlsInfo = .{
-        .cipher_type = .aes_gcm_256,
-        .key_len = 32,
-        .salt_len = 4,
-        .iv_len = 8,
-        .rec_seq = @splat(0),
-    };
+    var info: KtlsInfo = .init(.aes_gcm_256, 32, 4, 8, @splat(0));
     defer info.secureZero();
     info.key[0..32].* = [_]u8{0xdd} ** 32;
     info.salt = .{ 0xa, 0xb, 0xc, 0xd };

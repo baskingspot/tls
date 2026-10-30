@@ -181,14 +181,14 @@ fn clientInitInsecureImpl(
     // A backend that cannot produce the P-256 half is a failure this ABI
     // reports rather than one it retries past (#88).
     const keypairs = ClientHandshake.KeyPairs.init(keypair) catch |err| return mapError(err);
-    const config: Config = .{
-        .keypairs = keypairs,
-        .host_name = null, // installed below, pointing at handle-owned storage
-        .now_sec = 0,
-        .random = .{ .data = random_bytes },
-        // The exported name makes this explicit until verified init lands in #30.
-        .insecure_no_chain_anchor = true,
-    };
+    var config: Config = .init(
+        keypairs,
+        null, // installed below, pointing at handle-owned storage
+        0,
+        .{ .data = random_bytes },
+    );
+    // The exported name makes this explicit until verified init lands in #30.
+    config.insecure_no_chain_anchor = true;
 
     c.handshake = ClientHandshake.init(config);
     // Copy the name into handle-owned storage so the caller may free or
@@ -441,10 +441,7 @@ test "capi: full client handshake through the C ABI" {
     }
 
     // Server setup (native Zig)
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = server_random,
-    });
+    var server: ServerHandshake = .init(.init(try .init(server_keypair), server_random));
     defer server.deinit();
     server.setCredentials(&.{cert_der}, signer_api);
 
@@ -639,10 +636,10 @@ fn connectClientAndServerForTest(
     );
     try testing.expectEqual(.ok, init_result);
 
-    server.* = .init(.{
-        .keypairs = try .init(tls.x25519.KeyPair.generate()),
-        .random = .{ .data = @splat(0x37) },
-    });
+    server.* = .init(.init(
+        try .init(tls.x25519.KeyPair.generate()),
+        .{ .data = @splat(0x37) },
+    ));
     server.setCredentials(&.{&fixtures.server_ecdsa_cert_der}, signer.signer());
 
     var client_out: [frame.max_wire_record_len]u8 = undefined;
@@ -863,10 +860,10 @@ fn expectCapiClientConnects(client_storage: anytype) !void {
     var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .{ .data = @splat(0x37) },
-    });
+    var server: ServerHandshake = .init(.init(
+        try .init(.generate()),
+        .{ .data = @splat(0x37) },
+    ));
     defer server.deinit();
     server.setCredentials(&.{cert_der}, signer.signer());
 

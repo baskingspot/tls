@@ -14,6 +14,8 @@
 const std = @import("std");
 const crypto = std.crypto;
 const mem = std.mem;
+const testing = std.testing;
+const assert = std.debug.assert;
 /// OS trust-store loading stays std-owned; tls owns X.509 parse-and-verify.
 pub const Bundle = std.crypto.Certificate.Bundle;
 
@@ -205,10 +207,52 @@ pub const Parsed = struct {
     ext_key_usage_slice: Slice,
     name_constraints_slice: Slice,
     name_constraints_critical: bool,
-    is_ca: bool = false,
-    basic_constraints_path_len: ?u8 = null,
+    is_ca: bool,
+    basic_constraints_path_len: ?u8,
     validity: Validity,
     version: Version,
+
+    /// A parsed certificate with the policy fields at their defaults: not a
+    /// CA and no basicConstraints path length.
+    pub fn init(
+        certificate: Certificate,
+        issuer_slice: Slice,
+        subject_slice: Slice,
+        common_name_slice: Slice,
+        signature_slice: Slice,
+        signature_algorithm: Algorithm,
+        pub_key_algo: PubKeyAlgo,
+        pub_key_slice: Slice,
+        message_slice: Slice,
+        subject_alt_name_slice: Slice,
+        key_usage_slice: Slice,
+        ext_key_usage_slice: Slice,
+        name_constraints_slice: Slice,
+        name_constraints_critical: bool,
+        validity: Validity,
+        version: Version,
+    ) Parsed {
+        return .{
+            .certificate = certificate,
+            .issuer_slice = issuer_slice,
+            .subject_slice = subject_slice,
+            .common_name_slice = common_name_slice,
+            .signature_slice = signature_slice,
+            .signature_algorithm = signature_algorithm,
+            .pub_key_algo = pub_key_algo,
+            .pub_key_slice = pub_key_slice,
+            .message_slice = message_slice,
+            .subject_alt_name_slice = subject_alt_name_slice,
+            .key_usage_slice = key_usage_slice,
+            .ext_key_usage_slice = ext_key_usage_slice,
+            .name_constraints_slice = name_constraints_slice,
+            .name_constraints_critical = name_constraints_critical,
+            .is_ca = false,
+            .basic_constraints_path_len = null,
+            .validity = validity,
+            .version = version,
+        };
+    }
 
     pub const PubKeyAlgo = union(AlgorithmCategory) {
         rsaEncryption: void,
@@ -766,7 +810,7 @@ test "Parsed.verifyHostName rejects universal tag 2 as dNSName" {
         false,
     );
 
-    try std.testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("victim.com"));
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("victim.com"));
 }
 
 // RFC 6125 §6.4.4 and RFC 9525 §6.1 — DNS-ID SANs, not the deprecated
@@ -780,7 +824,7 @@ test "Parsed.verifyHostName requires dNSName SAN" {
         .{ .start = 0, .end = common_name.len },
         false,
     );
-    try std.testing.expectError(
+    try testing.expectError(
         error.CertificateHostMismatch,
         without_san.verifyHostName("example.com"),
     );
@@ -808,7 +852,7 @@ test "Parsed.verifyHostName accepts caller-converted A-labels" {
     );
     try parsed.verifyHostName("xn--bcher-kva.example");
     try parsed.verifyHostName("XN--BCHER-KVA.EXAMPLE");
-    try std.testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("bücher.example"));
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("bücher.example"));
 }
 
 // RFC 9525 §6.3 — a wildcard matches an A-label, not an unconverted U-label.
@@ -822,7 +866,7 @@ test "Parsed.verifyHostName rejects U-label references under a wildcard" {
         false,
     );
     try parsed.verifyHostName("xn--bcher-kva.example.com");
-    try std.testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("bücher.example.com"));
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("bücher.example.com"));
 }
 
 // RFC 9525 §2 and §6.3 — matching never treats raw UTF-8 as a DNS-ID.
@@ -835,19 +879,19 @@ test "Parsed.verifyHostName rejects matching non-ASCII DNS identities" {
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("bücher.example"));
-    try std.testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("xn--bcher-kva.example"));
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("bücher.example"));
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("xn--bcher-kva.example"));
 }
 
 // RFC 6125 §6.4.3 and CA/B Forum BR §3.2.2.6 — wildcard certificates must
 // not match directly below a public suffix.
 test "Parsed.checkHostName rejects public suffix wildcard" {
-    try std.testing.expect(!Parsed.checkHostName("foo.com", "*.com"));
-    try std.testing.expect(Parsed.checkHostName("host.example.com", "*.example.com"));
+    try testing.expect(!Parsed.checkHostName("foo.com", "*.com"));
+    try testing.expect(Parsed.checkHostName("host.example.com", "*.example.com"));
 }
 
 test "Parsed.checkHostName RFC 6125 compliance" {
-    const expectEqual = std.testing.expectEqual;
+    const expectEqual = testing.expectEqual;
 
     // Exact match tests
     try expectEqual(true, Parsed.checkHostName("ziglang.org", "ziglang.org"));
@@ -902,12 +946,14 @@ test "Parsed.allowsKeyUsage reads digitalSignature" {
         .ext_key_usage_slice = .empty,
         .name_constraints_slice = .empty,
         .name_constraints_critical = false,
+        .is_ca = false,
+        .basic_constraints_path_len = null,
         .validity = .{ .not_before = 0, .not_after = 0 },
         .version = .v3,
     };
 
-    try std.testing.expect(try parsed.allowsKeyUsage(0));
-    try std.testing.expect(!try parsed.allowsKeyUsage(1));
+    try testing.expect(try parsed.allowsKeyUsage(0));
+    try testing.expect(!try parsed.allowsKeyUsage(1));
 }
 
 // RFC 5280 §4.2.1.3 — a BIT STRING with only the unused-bits octet and a
@@ -928,11 +974,13 @@ test "Parsed.allowsKeyUsage rejects malformed empty bit payload" {
         .ext_key_usage_slice = .empty,
         .name_constraints_slice = .empty,
         .name_constraints_critical = false,
+        .is_ca = false,
+        .basic_constraints_path_len = null,
         .validity = .{ .not_before = 0, .not_after = 0 },
         .version = .v3,
     };
 
-    try std.testing.expectError(error.CertificateHasInvalidBitString, parsed.allowsKeyUsage(0));
+    try testing.expectError(error.CertificateHasInvalidBitString, parsed.allowsKeyUsage(0));
 }
 
 // RFC 5280 §4.2.1.12 — ExtendedKeyUsage contains id-kp-serverAuth as an OID.
@@ -953,12 +1001,14 @@ test "Parsed.allowsExtKeyUsage finds serverAuth" {
         .ext_key_usage_slice = .{ .start = 0, .end = 12 },
         .name_constraints_slice = .empty,
         .name_constraints_critical = false,
+        .is_ca = false,
+        .basic_constraints_path_len = null,
         .validity = .{ .not_before = 0, .not_after = 0 },
         .version = .v3,
     };
 
-    try std.testing.expect(try parsed.allowsExtKeyUsage(&server_auth_oid));
-    try std.testing.expect(!try parsed.allowsExtKeyUsage(&.{ 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02 }));
+    try testing.expect(try parsed.allowsExtKeyUsage(&server_auth_oid));
+    try testing.expect(!try parsed.allowsExtKeyUsage(&.{ 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02 }));
 }
 
 // RFC 5280 §4.2.1.12 — ExtKeyUsageSyntax is a SEQUENCE OF KeyPurposeId.
@@ -979,11 +1029,13 @@ test "Parsed.allowsExtKeyUsage rejects non-SEQUENCE wrapper" {
         .ext_key_usage_slice = .{ .start = 0, .end = malformed_eku.len },
         .name_constraints_slice = .empty,
         .name_constraints_critical = false,
+        .is_ca = false,
+        .basic_constraints_path_len = null,
         .validity = .{ .not_before = 0, .not_after = 0 },
         .version = .v3,
     };
 
-    try std.testing.expectError(
+    try testing.expectError(
         error.CertificateFieldHasWrongDataType,
         parsed.allowsExtKeyUsage("\x2b\x06\x01\x05\x05\x07\x03\x01"),
     );
@@ -1008,17 +1060,19 @@ test "Parsed.nameConstraints extracts extension value" {
         .ext_key_usage_slice = .empty,
         .name_constraints_slice = .{ .start = 0, .end = nc_value.len },
         .name_constraints_critical = false,
+        .is_ca = false,
+        .basic_constraints_path_len = null,
         .validity = .{ .not_before = 0, .not_after = 0 },
         .version = .v3,
     };
 
-    try std.testing.expectEqualSlices(u8, nc_value, parsed.nameConstraints());
+    try testing.expectEqualSlices(u8, nc_value, parsed.nameConstraints());
 }
 
 // RFC 5280 §4.2.1.10 — absent Name Constraints returns empty slice.
 test "Parsed.nameConstraints absent returns empty" {
     const parsed = parsedForNameConstraintsTest("", .empty, .empty, .empty, false);
-    try std.testing.expectEqual(@as(usize, 0), parsed.nameConstraints().len);
+    try testing.expectEqual(@as(usize, 0), parsed.nameConstraints().len);
 }
 
 fn parsedForNameConstraintsTest(
@@ -1043,6 +1097,8 @@ fn parsedForNameConstraintsTest(
         .ext_key_usage_slice = .empty,
         .name_constraints_slice = name_constraints,
         .name_constraints_critical = critical,
+        .is_ca = false,
+        .basic_constraints_path_len = null,
         .validity = .{ .not_before = 0, .not_after = 0 },
         .version = .v3,
     };
@@ -1087,7 +1143,7 @@ test "Parsed.verifyNameConstraints: DNS permitted subtree mismatch" {
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2.1.10 — excluded dNSName subtrees override otherwise valid names.
@@ -1108,7 +1164,7 @@ test "Parsed.verifyNameConstraints: DNS excluded subtree" {
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2.1.10 — a zero-length dNSName constraint matches every DNS
@@ -1131,7 +1187,7 @@ test "Parsed.verifyNameConstraints: zero-length excluded dNSName rejects any DNS
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2.1.10 — the zero-length exclusion also binds the Common Name
@@ -1153,7 +1209,7 @@ test "Parsed.verifyNameConstraints: zero-length excluded dNSName rejects CN fall
         .{ .start = 0, .end = common_name.len },
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2.1.10 — unlike dNSName, zero-length rfc822Name and URI
@@ -1238,7 +1294,7 @@ test "Parsed.verifyNameConstraints: wildcard SAN one label under excluded dNSNam
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2.1.10 — an exclusion of the wildcard suffix itself, or of a
@@ -1263,7 +1319,7 @@ test "Parsed.verifyNameConstraints: wildcard SAN under excluded ancestors" {
             .empty,
             false,
         );
-        try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+        try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
     }
 }
 
@@ -1310,7 +1366,7 @@ test "Parsed.verifyNameConstraints: literal SAN excluded and permitted wildcard 
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca_excl.verifyNameConstraints(literal_leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca_excl.verifyNameConstraints(literal_leaf));
 
     const wild_san = "\x30\x0F\x82\x0D*.example.com";
     const wild_leaf = parsedForNameConstraintsTest(
@@ -1339,7 +1395,7 @@ test "Parsed.verifyNameConstraints: literal SAN excluded and permitted wildcard 
         .empty,
         true,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca_perm_host.verifyNameConstraints(wild_leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca_perm_host.verifyNameConstraints(wild_leaf));
 }
 
 // RFC 5280 §6.1.4 — every supported SAN value is checked, not just the name
@@ -1361,7 +1417,7 @@ test "Parsed.verifyNameConstraints: mixed DNS SAN violation is rejected" {
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2.1.10 — when subjectAltName is absent, tls applies DNS
@@ -1469,7 +1525,7 @@ test "Parsed.verifyNameConstraints: email mailbox local part is case-sensitive" 
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2.1.10 — URI constraints apply to the host portion.
@@ -1490,7 +1546,7 @@ test "Parsed.verifyNameConstraints: URI excluded subtree" {
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2.1.10 / RFC 3986 §3.2 — URI constraints use the authority host,
@@ -1512,7 +1568,7 @@ test "Parsed.verifyNameConstraints: URI strips userinfo before host matching" {
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintViolation, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2.1.10 — an explicitly encoded minimum of zero is equivalent to
@@ -1556,7 +1612,7 @@ test "Parsed.verifyNameConstraints: critical unsupported subtree is rejected" {
         .empty,
         false,
     );
-    try std.testing.expectError(error.CertificateNameConstraintUnsupported, ca.verifyNameConstraints(leaf));
+    try testing.expectError(error.CertificateNameConstraintUnsupported, ca.verifyNameConstraints(leaf));
 }
 
 // RFC 5280 §4.2 — non-critical unsupported extensions are outside the relying
@@ -1740,29 +1796,30 @@ pub fn parse(cert: Certificate) ParseError!Parsed {
         }
     }
 
-    return .{
-        .certificate = cert,
-        .common_name_slice = common_name,
-        .issuer_slice = issuer.slice,
-        .subject_slice = subject.slice,
-        .signature_slice = signature,
-        .signature_algorithm = signature_algorithm,
-        .message_slice = .{ .start = certificate.slice.start, .end = tbs_certificate.slice.end },
-        .pub_key_algo = pub_key_algo,
-        .pub_key_slice = pub_key,
-        .validity = .{
+    var parsed: Parsed = .init(
+        cert,
+        issuer.slice,
+        subject.slice,
+        common_name,
+        signature,
+        signature_algorithm,
+        pub_key_algo,
+        pub_key,
+        .{ .start = certificate.slice.start, .end = tbs_certificate.slice.end },
+        subject_alt_name_slice,
+        key_usage_slice,
+        ext_key_usage_slice,
+        name_constraints_slice,
+        name_constraints_critical,
+        .{
             .not_before = not_before_utc,
             .not_after = not_after_utc,
         },
-        .subject_alt_name_slice = subject_alt_name_slice,
-        .key_usage_slice = key_usage_slice,
-        .ext_key_usage_slice = ext_key_usage_slice,
-        .name_constraints_slice = name_constraints_slice,
-        .name_constraints_critical = name_constraints_critical,
-        .is_ca = is_ca,
-        .basic_constraints_path_len = basic_constraints_path_len,
-        .version = version,
-    };
+        version,
+    );
+    parsed.is_ca = is_ca;
+    parsed.basic_constraints_path_len = basic_constraints_path_len;
+    return parsed;
 }
 
 const BasicConstraints = struct {
@@ -1807,7 +1864,7 @@ test "parseBasicConstraints rejects pathLenConstraint without cA" {
     const encoded = "\x30\x03\x02\x01\x00";
     const extension_slice: der.Element.Slice = .{ .start = 0, .end = encoded.len };
 
-    try std.testing.expectError(
+    try testing.expectError(
         error.CertificateFieldHasInvalidLength,
         parseBasicConstraints(encoded, extension_slice),
     );
@@ -1830,7 +1887,7 @@ test "parse rejects unknown critical extension" {
     };
     const cert: Certificate = .{ .buffer = cert_der, .index = 0 };
 
-    try std.testing.expectError(error.CertificateUnsupportedCriticalExtension, cert.parse());
+    try testing.expectError(error.CertificateUnsupportedCriticalExtension, cert.parse());
 }
 
 // RFC 5280 §4.2 — a certificate must not contain duplicate extension OIDs.
@@ -1851,7 +1908,7 @@ test "parse rejects duplicate recognized extensions" {
     };
     const cert: Certificate = .{ .buffer = cert_der, .index = 0 };
 
-    try std.testing.expectError(error.CertificateHasDuplicateExtension, cert.parse());
+    try testing.expectError(error.CertificateHasDuplicateExtension, cert.parse());
 }
 
 // RFC 5280 §4.2 — recognized extensions outside tls's processing set do not
@@ -1894,7 +1951,7 @@ test "parseBitString rejects empty bit string content" {
     const cert: Certificate = .{ .buffer = "\x03\x00", .index = 0 };
     const elem = try der.Element.parse(cert.buffer, 0);
 
-    try std.testing.expectError(error.CertificateHasInvalidBitString, parseBitString(cert, elem));
+    try testing.expectError(error.CertificateHasInvalidBitString, parseBitString(cert, elem));
 }
 
 const ParseTimeError = error{ CertificateTimeInvalid, CertificateFieldHasWrongDataType };
@@ -1960,11 +2017,11 @@ test "parseTime maps UTCTime centuries and expires 1999 certificates" {
         .minute = 0,
         .second = 0,
     }));
-    try std.testing.expectError(error.CertificateExpired, parsed.verify(parsed, now_sec));
+    try testing.expectError(error.CertificateExpired, parsed.verify(parsed, now_sec));
 
     const future_cert: Certificate = .{ .buffer = "\x17\x0d490101000000Z", .index = 0 };
     const future_elem = try der.Element.parse(future_cert.buffer, 0);
-    try std.testing.expectEqual(
+    try testing.expectEqual(
         Date.toSeconds(.{
             .year = 2049,
             .month = 1,
@@ -1986,11 +2043,11 @@ test "parseTime enforces GeneralizedTime certificate grammar" {
 
     const missing_z: Certificate = .{ .buffer = "\x18\x0f202401010000000", .index = 0 };
     const missing_z_elem = try der.Element.parse(missing_z.buffer, 0);
-    try std.testing.expectError(error.CertificateTimeInvalid, parseTime(missing_z, missing_z_elem));
+    try testing.expectError(error.CertificateTimeInvalid, parseTime(missing_z, missing_z_elem));
 
     const fractional: Certificate = .{ .buffer = "\x18\x1120240101000000.3Z", .index = 0 };
     const fractional_elem = try der.Element.parse(fractional.buffer, 0);
-    try std.testing.expectError(error.CertificateTimeInvalid, parseTime(fractional, fractional_elem));
+    try testing.expectError(error.CertificateTimeInvalid, parseTime(fractional, fractional_elem));
 }
 
 // RFC 5280 §4.1.2.5.1 and §4.1.2.5.2 — certificate times must identify a
@@ -1998,7 +2055,7 @@ test "parseTime enforces GeneralizedTime certificate grammar" {
 test "parseTime rejects impossible dates and accepts leap day" {
     const february_31: Certificate = .{ .buffer = "\x17\x0d240231000000Z", .index = 0 };
     const february_31_elem = try der.Element.parse(february_31.buffer, 0);
-    try std.testing.expectError(error.CertificateTimeInvalid, parseTime(february_31, february_31_elem));
+    try testing.expectError(error.CertificateTimeInvalid, parseTime(february_31, february_31_elem));
 
     const leap_day: Certificate = .{ .buffer = "\x18\x0f20240229000000Z", .index = 0 };
     const leap_day_elem = try der.Element.parse(leap_day.buffer, 0);
@@ -2006,7 +2063,7 @@ test "parseTime rejects impossible dates and accepts leap day" {
 
     const non_leap_day: Certificate = .{ .buffer = "\x18\x0f20230229000000Z", .index = 0 };
     const non_leap_day_elem = try der.Element.parse(non_leap_day.buffer, 0);
-    try std.testing.expectError(error.CertificateTimeInvalid, parseTime(non_leap_day, non_leap_day_elem));
+    try testing.expectError(error.CertificateTimeInvalid, parseTime(non_leap_day, non_leap_day_elem));
 }
 
 fn dateToSeconds(date: Date) ParseTimeError!u64 {
@@ -2078,12 +2135,12 @@ fn parseTimeDigits(text: *const [2]u8, min: u8, max: u8) !u8 {
 }
 
 test parseTimeDigits {
-    const expectEqual = std.testing.expectEqual;
+    const expectEqual = testing.expectEqual;
     try expectEqual(@as(u8, 0), try parseTimeDigits("00", 0, 99));
     try expectEqual(@as(u8, 99), try parseTimeDigits("99", 0, 99));
     try expectEqual(@as(u8, 42), try parseTimeDigits("42", 0, 99));
 
-    const expectError = std.testing.expectError;
+    const expectError = testing.expectError;
     try expectError(error.CertificateTimeInvalid, parseTimeDigits("13", 1, 12));
     try expectError(error.CertificateTimeInvalid, parseTimeDigits("00", 1, 12));
     try expectError(error.CertificateTimeInvalid, parseTimeDigits("Di", 0, 99));
@@ -2099,12 +2156,12 @@ fn parseYear4(text: *const [4]u8) !u16 {
 }
 
 test parseYear4 {
-    const expectEqual = std.testing.expectEqual;
+    const expectEqual = testing.expectEqual;
     try expectEqual(@as(u16, 0), try parseYear4("0000"));
     try expectEqual(@as(u16, 9999), try parseYear4("9999"));
     try expectEqual(@as(u16, 1988), try parseYear4("1988"));
 
-    const expectError = std.testing.expectError;
+    const expectError = testing.expectError;
     try expectError(error.CertificateTimeInvalid, parseYear4("999b"));
     try expectError(error.CertificateTimeInvalid, parseYear4("crap"));
     try expectError(error.CertificateTimeInvalid, parseYear4("r:bQ"));
@@ -2391,7 +2448,7 @@ pub const rsa = struct {
 
             // emLen = \ceil(emBits/8)
             const emLen = ((emBit - 1) / 8) + 1;
-            std.debug.assert(emLen == em.len);
+            assert(emLen == em.len);
 
             // 2.   Let mHash = Hash(M), an octet string of length hLen.
             var mHash: [Hash.digest_length]u8 = undefined;

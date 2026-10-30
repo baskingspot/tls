@@ -35,14 +35,22 @@ pub const PrivateKey = struct {
     /// capability or non-ECDSA scheme, error.LibcryptoFailed when the
     /// provider rejects the parameter — rather than silently signing with
     /// a random nonce. Production signing keeps the default `.random`.
-    nonce_mode: NonceMode = .random,
+    nonce_mode: NonceMode,
 
     pub fn fromDer(scheme: SignatureScheme, der: []const u8) SignError!PrivateKey {
-        return .{ .scheme = scheme, .key = try backend.sign.privateKeyFromDer(der) };
+        return .{
+            .scheme = scheme,
+            .key = try backend.sign.privateKeyFromDer(der),
+            .nonce_mode = .random,
+        };
     }
 
     pub fn fromPem(scheme: SignatureScheme, pem: []const u8) SignError!PrivateKey {
-        return .{ .scheme = scheme, .key = try backend.sign.privateKeyFromPem(pem) };
+        return .{
+            .scheme = scheme,
+            .key = try backend.sign.privateKeyFromPem(pem),
+            .nonce_mode = .random,
+        };
     }
 
     /// RFC 8446 §4.2.3 — infer the CertificateVerify scheme from the loaded
@@ -59,13 +67,14 @@ pub const PrivateKey = struct {
         errdefer backend.sign.freeKey(key);
         const scheme = try backend.sign.keyScheme(key);
         if (!backend.supportsCertificateVerifyScheme(scheme)) return error.UnsupportedKeyScheme;
-        return .{ .scheme = scheme, .key = key };
+        return .{ .scheme = scheme, .key = key, .nonce_mode = .random };
     }
 
     pub fn fromP256Scalar(scalar: *const [32]u8) SignError!PrivateKey {
         return .{
             .scheme = .ecdsa_secp256r1_sha256,
             .key = try backend.sign.privateKeyFromP256Scalar(scalar),
+            .nonce_mode = .random,
         };
     }
 
@@ -200,6 +209,7 @@ test "PrivateKey.sign: deterministic ECDSA P-384 matches the RFC 6979 A.2.6 vect
     var key: PrivateKey = .{
         .scheme = .ecdsa_secp384r1_sha384,
         .key = try backend.p384.privateKeyFromSecret(&scalar),
+        .nonce_mode = .random,
     };
     defer key.deinit();
     key.nonce_mode = .deterministic;

@@ -38,6 +38,7 @@
 //! queue hygiene still applies there.
 const std = @import("std");
 const mem = std.mem;
+const print = std.debug.print;
 const tls = @import("tls");
 const fixtures = @import("fixtures");
 
@@ -152,11 +153,7 @@ fn abortKeyPairs() CheckError!tls.ClientHandshake.KeyPairs {
 }
 
 fn initAbortTicket(ticket: *tls.ClientHandshake.SessionTicket) void {
-    ticket.* = .{
-        .ticket_age_add = 0,
-        .cipher_suite = .aes_128_gcm_sha256,
-        .max_early_data_size = 1024,
-    };
+    ticket.* = .init(0, 0, .aes_128_gcm_sha256, 1024);
     ticket.identity.appendSliceAssumeCapacity("cleanup-ticket");
     ticket.psk.appendSliceAssumeCapacity(&abort_psk);
 }
@@ -166,12 +163,7 @@ fn abortEarlyClient() CheckError!void {
     var ticket: tls.ClientHandshake.SessionTicket = undefined;
     initAbortTicket(&ticket);
     defer ticket.secureZero();
-    var client: tls.ClientHandshake = .init(.{
-        .keypairs = try abortKeyPairs(),
-        .host_name = null,
-        .now_sec = 0,
-        .random = .zero,
-    });
+    var client: tls.ClientHandshake = .init(.init(try abortKeyPairs(), null, 0, .zero));
     defer client.deinit();
     var wire: [4096]u8 = undefined;
     _ = client.startWithPsk(&ticket, &wire, true) catch return error.UnexpectedBackendResult;
@@ -185,6 +177,7 @@ fn lookupAbortPsk(context: *anyopaque, identity: []const u8) ?tls.ServerHandshak
         .psk = ticket.psk.constSlice(),
         .cipher_suite = ticket.cipher_suite,
         .max_early_data_size = ticket.max_early_data_size,
+        .alpn = null,
     };
 }
 
@@ -193,22 +186,15 @@ fn abortEarlyServer() CheckError!void {
     var ticket: tls.ClientHandshake.SessionTicket = undefined;
     initAbortTicket(&ticket);
     defer ticket.secureZero();
-    var client: tls.ClientHandshake = .init(.{
-        .keypairs = try abortKeyPairs(),
-        .host_name = null,
-        .now_sec = 0,
-        .random = .zero,
-    });
+    var client: tls.ClientHandshake = .init(.init(try abortKeyPairs(), null, 0, .zero));
     defer client.deinit();
     client.keypairs.x25519.public_key = .zero;
     var client_wire: [4096]u8 = undefined;
     const hello = client.startWithPsk(&ticket, &client_wire, true) catch
         return error.UnexpectedBackendResult;
-    var server: tls.ServerHandshake = .init(.{
-        .keypairs = try abortKeyPairs(),
-        .random = .zero,
-        .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
-    });
+    var server_config: tls.ServerHandshake.Config = .init(try abortKeyPairs(), .zero);
+    server_config.psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk };
+    var server: tls.ServerHandshake = .init(server_config);
     defer server.deinit();
     var server_wire: [4096]u8 = undefined;
     _ = server.acceptClientHello(hello, &server_wire) catch |err| {
@@ -227,18 +213,11 @@ fn abortClientFinished() CheckError!void {
     var ticket: tls.ClientHandshake.SessionTicket = undefined;
     initAbortTicket(&ticket);
     defer ticket.secureZero();
-    var client: tls.ClientHandshake = .init(.{
-        .keypairs = try abortKeyPairs(),
-        .host_name = null,
-        .now_sec = 0,
-        .random = .zero,
-    });
+    var client: tls.ClientHandshake = .init(.init(try abortKeyPairs(), null, 0, .zero));
     defer client.deinit();
-    var server: tls.ServerHandshake = .init(.{
-        .keypairs = try abortKeyPairs(),
-        .random = .zero,
-        .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
-    });
+    var server_config: tls.ServerHandshake.Config = .init(try abortKeyPairs(), .zero);
+    server_config.psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk };
+    var server: tls.ServerHandshake = .init(server_config);
     defer server.deinit();
     var client_wire: [4096]u8 = undefined;
     var server_wire: [4096]u8 = undefined;
@@ -312,33 +291,33 @@ fn runChecks() CheckError!void {
 
     try abortEarlyClient();
     const client_baseline = liveCount();
-    std.debug.print("errq-alloc-check: early client abort\n", .{});
+    print("errq-alloc-check: early client abort\n", .{});
     for (0..100) |_| try checkRound(abortEarlyClient, client_baseline);
 
     try abortEarlyServer();
     const server_baseline = liveCount();
-    std.debug.print("errq-alloc-check: early server abort\n", .{});
+    print("errq-alloc-check: early server abort\n", .{});
     for (0..100) |_| try checkRound(abortEarlyServer, server_baseline);
 
     try abortClientFinished();
     const finished_baseline = liveCount();
-    std.debug.print("errq-alloc-check: client Finished abort\n", .{});
+    print("errq-alloc-check: client Finished abort\n", .{});
     for (0..100) |_| try checkRound(abortClientFinished, finished_baseline);
 }
 
 pub fn main() void {
     const active = tls.capabilities.active_backend;
     if (comptime active == .boringssl) {
-        std.debug.print("errq-alloc-check: skipped for {s}\n", .{@tagName(active)});
+        print("errq-alloc-check: skipped for {s}\n", .{@tagName(active)});
         return;
     }
 
     runChecks() catch |err| {
-        std.debug.print("errq-alloc-check: FAILED: {s}\n", .{@errorName(err)});
+        print("errq-alloc-check: FAILED: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
 
-    std.debug.print(
+    print(
         "errq-alloc-check: ok (allocs {d}, frees {d}, live {d})\n",
         .{ alloc_count, free_count, liveCount() },
     );

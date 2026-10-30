@@ -3,6 +3,7 @@
 //! each other is the strongest available proof that the completion-driven pump
 //! and the blocking drive loop agree on the protocol.
 const std = @import("std");
+const print = std.debug.print;
 const builtin = @import("builtin");
 const mem = std.mem;
 const posix = std.posix;
@@ -33,7 +34,7 @@ test "libxev backend matches the platform" {
     for (expected) |backend| {
         if (xev.backend == backend) return;
     }
-    std.debug.print("unexpected libxev backend: {t}\n", .{xev.backend});
+    print("unexpected libxev backend: {t}\n", .{xev.backend});
     return error.UnexpectedBackend;
 }
 
@@ -173,10 +174,7 @@ fn runServer(ctx: *ServerCtx) !void {
     var keypair: tls_core.x25519.KeyPair = .generate();
     defer keypair.secureZero();
 
-    var hs: tls_core.ServerHandshake = .init(.{
-        .keypairs = try .init(keypair),
-        .random = .zero,
-    });
+    var hs: tls_core.ServerHandshake = .init(.init(try .init(keypair), .zero));
     defer hs.deinit();
     hs.setCredentials(&.{test_cert_der}, key.signer());
 
@@ -417,7 +415,7 @@ test "xev client: handshake, write, read, close_notify" {
     try testing.expectEqualStrings("pong", client.received.items);
     // The server sent close_notify, so the client must report an orderly
     // shutdown rather than a truncated stream. RFC 8446 §6.1.
-    try testing.expect(mem.indexOfScalar(
+    try testing.expect(mem.findScalar(
         Client.Outcome,
         client.read_outcomes.items,
         .close_notify,
@@ -593,7 +591,7 @@ test "xev server: handshake, echo, and close against an xev client" {
 
     var watchdog: Watchdog = try .init();
     runUntil(loop, &watchdog, &pair) catch |err| {
-        std.debug.print(
+        print(
             "\nstalled: server={t} client={t} flags={any}\n",
             .{ pair.server.state(), pair.client.state(), pair.flags.bits.mask },
         );
@@ -718,7 +716,7 @@ test "xev server: a client that handshakes then leaves without speaking" {
 
     var watchdog: Watchdog = try .init();
     runUntil(loop, &watchdog, &s) catch |err| {
-        std.debug.print(
+        print(
             "\nstalled: server={t} client={t} handshake_reported={} read_outcome={?}\n",
             .{ s.server.state(), s.client.state(), s.server_handshake != null, s.server_read },
         );
@@ -791,7 +789,7 @@ test "xev server: a header-only failure ends the handshake with unexpected_messa
 
     var watchdog: Watchdog = try .init();
     runUntil(loop, &watchdog, &s) catch |err| {
-        std.debug.print(
+        print(
             "\nstalled: server={t} handshake_reported={} closed={}\n",
             .{ s.server.state(), s.handshake != null, s.closed },
         );
@@ -973,7 +971,7 @@ fn CloseWhileReading(comptime Xev: type) type {
                     }
                 }
                 if (spins == 2_000) {
-                    std.debug.print(
+                    print(
                         "\nstalled on {t}: srv={any}\n" ++
                             "  cli={t}/{t}/{t} active={d} events={any}\n",
                         .{
@@ -1245,7 +1243,7 @@ fn CloseWhileWriting(comptime Xev: type) type {
                     s.client.closeReset(s, onClientClose);
                 }
                 if (spins == 2_000) {
-                    std.debug.print(
+                    print(
                         "\nstalled on {t}: srv={any}\n" ++
                             "  cli={t}/{t}/{t} active={d} events={any}\n",
                         .{

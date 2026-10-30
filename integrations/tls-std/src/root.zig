@@ -431,7 +431,7 @@ pub const ClientOptions = struct {
     alpn: []const []const u8 = &.{},
     /// RFC 10024 hybrid supported-groups and initial key-share policy.
     /// Disabled by default; borrowed slices must outlive the handshake.
-    hybrid: tls.ClientHandshake.HybridPolicy = .{},
+    hybrid: tls.ClientHandshake.HybridPolicy = .empty,
     /// Present this certificate chain (DER, leaf first) and sign
     /// CertificateVerify when the server sends a CertificateRequest. Without
     /// credentials the client sends an empty Certificate instead. An empty
@@ -1287,14 +1287,15 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
                         };
                     }
 
-                    const hs: tls.ClientHandshake = .init(.{
-                        .keypairs = keypairs,
-                        .host_name = options.host,
-                        .now_sec = Io.Timestamp.now(io, .real).toSeconds(),
-                        .random = random,
-                        .alpn_protocols = options.alpn,
-                        .hybrid = options.hybrid,
-                    });
+                    var hs_config: tls.ClientHandshake.Config = .init(
+                        keypairs,
+                        options.host,
+                        Io.Timestamp.now(io, .real).toSeconds(),
+                        random,
+                    );
+                    hs_config.alpn_protocols = options.alpn;
+                    hs_config.hybrid = options.hybrid;
+                    const hs: tls.ClientHandshake = .init(hs_config);
 
                     // In-place init before the next fallible step, so no
                     // error path past this point leaves `s` undefined.
@@ -1381,12 +1382,10 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
                         };
                     }
 
-                    const hs: tls.ServerHandshake = .init(.{
-                        .keypairs = keypairs,
-                        .random = random,
-                        .alpn_protocols = options.alpn,
-                        .hybrid_groups = options.hybrid_groups,
-                    });
+                    var hs_config: tls.ServerHandshake.Config = .init(keypairs, random);
+                    hs_config.alpn_protocols = options.alpn;
+                    hs_config.hybrid_groups = options.hybrid_groups;
+                    const hs: tls.ServerHandshake = .init(hs_config);
 
                     s.* = .init(io, sock, hs);
                     s.finishInit();

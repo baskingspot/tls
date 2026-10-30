@@ -18,9 +18,9 @@ pub const Error = error{
     WriteOverflow,
 };
 
-pending: []const u8 = "",
+pending: []const u8,
 
-pub const init: Outbox = .{};
+pub const init: Outbox = .{ .pending = "" };
 
 const Outbox = @This();
 
@@ -148,12 +148,12 @@ const OverflowWriter = struct {
 };
 
 test "Outbox: fresh outbox is not write-blocked" {
-    const outbox: Outbox = .{};
+    const outbox: Outbox = .init;
     try testing.expect(!outbox.writeBlocked());
 }
 
 test "Outbox: send drains fully and completes write once" {
-    var outbox: Outbox = .{};
+    var outbox: Outbox = .init;
     var hs: FakeHandshake = .{};
     var writer: StepWriter = .{ .steps = &.{5} };
 
@@ -164,7 +164,7 @@ test "Outbox: send drains fully and completes write once" {
 }
 
 test "Outbox: partial send stays blocked and does not complete write" {
-    var outbox: Outbox = .{};
+    var outbox: Outbox = .init;
     var hs: FakeHandshake = .{};
     var writer: StepWriter = .{ .steps = &.{ 2, 0 } };
 
@@ -175,7 +175,7 @@ test "Outbox: partial send stays blocked and does not complete write" {
 }
 
 test "Outbox: zero-byte progress stays blocked" {
-    var outbox: Outbox = .{};
+    var outbox: Outbox = .init;
     var hs: FakeHandshake = .{};
     var writer: StepWriter = .{ .steps = &.{0} };
 
@@ -186,7 +186,7 @@ test "Outbox: zero-byte progress stays blocked" {
 }
 
 test "Outbox: idle flush is drained without completing write" {
-    var outbox: Outbox = .{};
+    var outbox: Outbox = .init;
     var hs: FakeHandshake = .{};
     var writer: StepWriter = .{ .steps = &.{} };
 
@@ -195,7 +195,7 @@ test "Outbox: idle flush is drained without completing write" {
 }
 
 test "Outbox: partial drain resumes across flush calls" {
-    var outbox: Outbox = .{};
+    var outbox: Outbox = .init;
     var hs: FakeHandshake = .{};
     var writer: StepWriter = .{ .steps = &.{ 2, 0, 0, 3 } };
 
@@ -209,13 +209,13 @@ test "Outbox: partial drain resumes across flush calls" {
 }
 
 test "Outbox: queue while blocked returns PendingWrite" {
-    var outbox: Outbox = .{};
+    var outbox: Outbox = .init;
     try outbox.queue("one");
     try testing.expectError(error.PendingWrite, outbox.queue("two"));
 }
 
 test "Outbox: writer error leaves pending tail and does not complete write" {
-    var outbox: Outbox = .{};
+    var outbox: Outbox = .init;
     var hs: FakeHandshake = .{};
     var writer: StepWriter = .{ .steps = &.{ 2, 0 }, .fail_at = 2 };
 
@@ -226,7 +226,7 @@ test "Outbox: writer error leaves pending tail and does not complete write" {
 }
 
 test "Outbox: writer over-reporting bytes returns WriteOverflow" {
-    var outbox: Outbox = .{};
+    var outbox: Outbox = .init;
     var hs: FakeHandshake = .{};
 
     const writer: OverflowWriter = .{};
@@ -236,7 +236,7 @@ test "Outbox: writer over-reporting bytes returns WriteOverflow" {
 }
 
 test "Outbox: sequential records complete once each" {
-    var outbox: Outbox = .{};
+    var outbox: Outbox = .init;
     var hs: FakeHandshake = .{};
     var writer: StepWriter = .{ .steps = &.{ 3, 3 } };
 

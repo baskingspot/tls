@@ -38,16 +38,16 @@ pub const Storage = buffer.Array(u8, recommended_storage);
 
 storage: []u8,
 /// Start of unconsumed data (records before this are handed out and done).
-pos: usize = 0,
+pos: usize,
 /// End of valid data in storage.
-filled: usize = 0,
+filled: usize,
 
 /// `storage` is caller-owned, and so is clearing it. Records are decrypted in
 /// place, so this buffer holds application plaintext; nothing here zeroes it.
 /// Zero it where it is declared. See #81.
 pub fn init(storage: []u8) RecordBuffer {
     assert(storage.len >= min_storage);
-    return .{ .storage = storage };
+    return .{ .storage = storage, .pos = 0, .filled = 0 };
 }
 
 /// Free space to read transport bytes into. Compacts first, so the returned

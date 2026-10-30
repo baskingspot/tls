@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const posix = std.posix;
 const Io = std.Io;
+const print = std.debug.print;
 const linux = std.os.linux;
 const tls = @import("tls");
 const tls_ktls = @import("tls_ktls");
@@ -44,7 +45,7 @@ const ServerContext = struct {
     suite: tls.CipherSuite,
     scenario: Scenario,
     capability: std.atomic.Value(u8) = .init(@intFromEnum(Capability.unknown)),
-    activation_gate: std.Io.Semaphore = .{},
+    activation_gate: Io.Semaphore = .{},
     outcome: Outcome = .running,
 };
 
@@ -52,7 +53,7 @@ const ServerContext = struct {
 /// by Linux kTLS. The same code is exercised by the tests below.
 pub fn main(init: std.process.Init) !void {
     try runScenario(init.io, .aes_128_gcm_sha256, .both_ktls);
-    std.debug.print("tls-ktls: loopback handoff, rekey, and closure succeeded\n", .{});
+    print("tls-ktls: loopback handoff, rekey, and closure succeeded\n", .{});
 }
 
 // RFC 8446 §4.6.3, §5.3, §6.1 — a real TCP connection crosses the exact
@@ -186,12 +187,10 @@ fn runServer(context: *ServerContext) !void {
     var random: tls.Random = undefined;
     context.io.random(&random.data);
     const supported_suites = [_]tls.CipherSuite{context.suite};
-    var handshake: tls.ServerHandshake = .init(.{
-        .keypairs = try .init(context.keypair),
-        .random = random,
-        .supported_suites = &supported_suites,
-        .alpn_protocols = &.{"h2"},
-    });
+    var handshake_config: tls.ServerHandshake.Config = .init(try .init(context.keypair), random);
+    handshake_config.supported_suites = &supported_suites;
+    handshake_config.alpn_protocols = &.{"h2"};
+    var handshake: tls.ServerHandshake = .init(handshake_config);
     defer handshake.deinit();
     var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
@@ -434,14 +433,15 @@ fn runClient(
 
     var random: tls.Random = undefined;
     context.io.random(&random.data);
-    var handshake: tls.ClientHandshake = .init(.{
-        .keypairs = try .init(keypair),
-        .host_name = server_name,
-        .now_sec = Io.Timestamp.now(context.io, .real).toSeconds(),
-        .random = random,
-        .insecure_no_chain_anchor = true,
-        .alpn_protocols = &.{"h2"},
-    });
+    var handshake_config: tls.ClientHandshake.Config = .init(
+        try .init(keypair),
+        server_name,
+        Io.Timestamp.now(context.io, .real).toSeconds(),
+        random,
+    );
+    handshake_config.insecure_no_chain_anchor = true;
+    handshake_config.alpn_protocols = &.{"h2"};
+    var handshake: tls.ClientHandshake = .init(handshake_config);
     defer handshake.deinit();
 
     var out: tls.ClientHandshake.OutBuffer = .empty;

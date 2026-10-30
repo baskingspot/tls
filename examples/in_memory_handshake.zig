@@ -33,22 +33,21 @@ pub fn main(init: std.process.Init) !void {
     io.random(&server_random.data);
 
     // ── Client setup ────────────────────────
-    var client: tls.ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
-        .host_name = "ztls.server.test",
-        .now_sec = 0,
-        .random = client_random,
-        .insecure_no_chain_anchor = true,
-        .alpn_protocols = &.{"h2"},
-    });
+    var client_config: tls.ClientHandshake.Config = .init(
+        try .init(client_keypair),
+        "ztls.server.test",
+        0,
+        client_random,
+    );
+    client_config.insecure_no_chain_anchor = true;
+    client_config.alpn_protocols = &.{"h2"};
+    var client: tls.ClientHandshake = .init(client_config);
     defer client.deinit();
 
     // ── Server setup ────────────────────────
-    var server: tls.ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = server_random,
-        .alpn_protocols = &.{"h2"},
-    });
+    var server_config: tls.ServerHandshake.Config = .init(try .init(server_keypair), server_random);
+    server_config.alpn_protocols = &.{"h2"};
+    var server: tls.ServerHandshake = .init(server_config);
     defer server.deinit();
     server.setCredentials(&.{cert_der}, signer_api);
 

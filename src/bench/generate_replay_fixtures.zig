@@ -89,14 +89,15 @@ fn captureSuite(io: Io, arena: Allocator, suite: []const u8, port: u16) ![]u8 {
     const stream = try connectWithRetry(io, port);
     defer stream.close(io);
 
-    var hs: tls.ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
-        .host_name = replay_host_name,
-        .now_sec = 0,
-        .random = client_random,
-        // Fixture capture replays bytes; the self-signed test cert has no anchor.
-        .insecure_no_chain_anchor = true,
-    });
+    var hs_config: tls.ClientHandshake.Config = .init(
+        try .init(client_keypair),
+        replay_host_name,
+        0,
+        client_random,
+    );
+    // Fixture capture replays bytes; the self-signed test cert has no anchor.
+    hs_config.insecure_no_chain_anchor = true;
+    var hs: tls.ClientHandshake = .init(hs_config);
     defer hs.deinit();
     var out: [1024]u8 = undefined;
     try tls.io.writeAll(io, stream, try hs.start(&out));

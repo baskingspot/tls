@@ -62,7 +62,7 @@ test "option preflight reports hybrid policy faults without a socket" {
     const client_options: tls.Client.Options = .{
         .host = test_host,
         .verify = .insecure,
-        .hybrid = .{ .initial_key_share = .x25519_mlkem768 },
+        .hybrid = .{ .supported_groups = &.{}, .initial_key_share = .x25519_mlkem768 },
     };
     try testing.expectError(error.InvalidHybridPolicy, client_options.validate());
 
@@ -1112,8 +1112,8 @@ test "deinit zeroes the wrapper's own buffers, including the retained chain" {
 
     // Before teardown: the DER is retained in the Stream's storage and the
     // plaintext is in its record and read buffers.
-    try testing.expect(mem.indexOf(u8, &conn.peer_chain_storage.data, test_cert_der) != null);
-    try testing.expect(mem.indexOf(u8, &conn.read_storage.data, "secret-payload") != null);
+    try testing.expect(mem.find(u8, &conn.peer_chain_storage.data, test_cert_der) != null);
+    try testing.expect(mem.find(u8, &conn.read_storage.data, "secret-payload") != null);
 
     conn.deinit();
 

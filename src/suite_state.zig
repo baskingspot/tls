@@ -29,7 +29,24 @@ pub fn HashArm(comptime Hkdf_: type, comptime Hash: type) type {
         /// post-handshake so either role can derive per-ticket PSKs from
         /// NewSessionTicket nonces. NOT in the forgetHandshakeSecrets range.
         resumption_master: Hkdf.Prk = undefined,
-        resumption_master_valid: bool = false,
+        resumption_master_valid: bool,
+
+        /// An arm for the negotiated suite with the transcript started and
+        /// every derived secret unset. `installHandshakeArm` fills the
+        /// handshake secret from the key exchange.
+        pub fn init(transcript: Hash, cipher: CipherSuite) Self {
+            return .{
+                .transcript = transcript,
+                .aead = cipher,
+                .handshake_secret = undefined,
+                .client_finished_key = undefined,
+                .server_finished_key = undefined,
+                .client_app_secret = undefined,
+                .server_app_secret = undefined,
+                .resumption_master = undefined,
+                .resumption_master_valid = false,
+            };
+        }
 
         pub inline fn secureZero(self: *Self) void {
             crypto.secureZero(u8, mem.asBytes(self));

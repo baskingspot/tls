@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const testing = std.testing;
+const print = std.debug.print;
 const cert = @import("certificate_parser.zig");
 const fuzz_compat = @import("fuzz_compat.zig");
 
@@ -755,13 +756,13 @@ test "RFC 5280 §4.2.1.10 name-constraint verdicts vs OpenSSL 3.6.3 ground truth
 
         // Regression anchor: tls verdict must not drift silently.
         testing.expectEqual(c.tls_ok, tls_ok) catch |e| {
-            std.debug.print("verdict drift for {s}\n", .{c.name});
+            print("verdict drift for {s}\n", .{c.name});
             return e;
         };
 
         // tls must agree with OpenSSL on every case (#75 resolved).
         testing.expectEqual(c.openssl_ok, tls_ok) catch |e| {
-            std.debug.print("DISAGREEMENT with OpenSSL: {s}\n", .{c.name});
+            print("DISAGREEMENT with OpenSSL: {s}\n", .{c.name});
             return e;
         };
     }
@@ -814,6 +815,8 @@ fn makeParsed(
         .ext_key_usage_slice = .empty,
         .name_constraints_slice = name_constraints,
         .name_constraints_critical = critical,
+        .is_ca = false,
+        .basic_constraints_path_len = null,
         .validity = .{ .not_before = 0, .not_after = 0 },
         .version = .v3,
     };

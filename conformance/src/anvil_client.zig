@@ -76,14 +76,15 @@ pub fn main(init: std.process.Init) !void {
     var random: tls.Random = .empty;
     io.random(&random.data);
 
-    var hs: tls.ClientHandshake = .init(.{
-        .keypairs = try .init(kp),
-        .host_name = cert_host_name,
-        .now_sec = Io.Timestamp.now(io, .real).toSeconds(),
-        .random = random,
-        .insecure_no_chain_anchor = insecure_no_chain_anchor,
-        .alpn_protocols = &.{ "h2", "http/1.1" },
-    });
+    var hs_config: tls.ClientHandshake.Config = .init(
+        try .init(kp),
+        cert_host_name,
+        Io.Timestamp.now(io, .real).toSeconds(),
+        random,
+    );
+    hs_config.insecure_no_chain_anchor = insecure_no_chain_anchor;
+    hs_config.alpn_protocols = &.{ "h2", "http/1.1" };
+    var hs: tls.ClientHandshake = .init(hs_config);
     if (insecure_no_chain_anchor) hs.policy.leaf_usage = .none;
     defer hs.deinit();
 

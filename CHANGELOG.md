@@ -15,6 +15,19 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- Public structs no longer accept a bare `.{}` or a partial literal; start from
+  the named constructor and assign any fields you override. Construction
+  changed for `ClientHandshake` (`init(Config.init(...))`),
+  `ClientHandshake.Config.init`, `ClientHandshake.HybridPolicy.empty`,
+  `ClientHandshake.SessionTicket.init`, `ServerHandshake`
+  (`init(Config.init(...))`), `ServerHandshake.Config.init`,
+  `ServerHandshake.PskEntry.init`, `ServerHandshake.TicketPsk.init`,
+  `EstablishedSession.init`, `Outbox.init`, `RecordBuffer.init`,
+  `RecordLayer.init`/`KtlsInfo.init`, `encrypted_extensions.Options.init`/
+  `Parsed.empty`, `client_hello.Parsed.init`/`SupportedGroups.empty`,
+  `certificate.Policy.init`, `certificate_parser.Parsed.init`,
+  `signature.PrivateKey` loaders, `handshake_key_pairs.KeyPairs` constructors,
+  and `frame.Header.init`.
 - C ABI names are `baskingspot_tls_*`, with `include/baskingspot_tls.h` and
   `libbaskingspot_tls.a`. Rename every `ztls_*` call, `ZTLS_*` enumerator, and
   `#include "ztls.h"`, and link `-lbaskingspot_tls`. The C surface has never

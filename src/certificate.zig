@@ -5,6 +5,7 @@ const std = @import("std");
 const Io = std.Io;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const testing = std.testing;
+const mem = std.mem;
 const fixtures = @import("fixtures");
 const fuzz_compat = @import("fuzz_compat.zig");
 
@@ -21,6 +22,28 @@ const ExtensionType = extension_type.ExtensionType;
 const handshake = @import("handshake.zig");
 pub const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 const wire = @import("wire.zig");
+
+/// Test-only overrides for the fields a certificate test varies.
+const PolicyOverrides = struct {
+    bundle: ?*const Certificate.Bundle = null,
+    insecure_no_chain_anchor: bool = false,
+    now_sec: i64 = 0,
+    host_name: ?[]const u8 = null,
+    leaf_usage: LeafUsage = .server_auth,
+    certificate_signature_schemes: ?[]const SignatureScheme = null,
+};
+
+fn testPolicy(overrides: PolicyOverrides) Policy {
+    var policy: Policy = .init;
+    policy.bundle = overrides.bundle;
+    policy.insecure_no_chain_anchor = overrides.insecure_no_chain_anchor;
+    policy.now_sec = overrides.now_sec;
+    policy.host_name = overrides.host_name;
+    policy.leaf_usage = overrides.leaf_usage;
+    if (overrides.certificate_signature_schemes) |schemes|
+        policy.certificate_signature_schemes = schemes;
+    return policy;
+}
 
 pub const ParseError = error{
     UnexpectedEof,
@@ -119,7 +142,7 @@ pub fn parseClientCertificate(
     const ctx_len = r.assumeRead(u8);
     if (r.remaining().len < @as(usize, ctx_len) + 3) return error.UnexpectedEof;
     const request_context = r.assumeReadSlice(ctx_len);
-    if (!std.mem.eql(u8, request_context, expected_request_context))
+    if (!mem.eql(u8, request_context, expected_request_context))
         return error.UnexpectedCertificateRequestContext;
 
     const list_len = r.assumeRead(u24);
@@ -162,7 +185,7 @@ pub fn parseClientChain(
     const ctx_len = r.assumeRead(u8);
     if (r.remaining().len < @as(usize, ctx_len) + 3) return error.UnexpectedEof;
     const request_context = r.assumeReadSlice(ctx_len);
-    if (!std.mem.eql(u8, request_context, expected_request_context))
+    if (!mem.eql(u8, request_context, expected_request_context))
         return error.UnexpectedCertificateRequestContext;
 
     const list_len = r.assumeRead(u24);
@@ -266,7 +289,7 @@ fn anchorChain(
     bundle: *const Certificate.Bundle,
     chain: []const Certificate.Parsed,
     now_sec: i64,
-    leaf_usage: certificate_policy.LeafUsage,
+    leaf_usage: LeafUsage,
 ) certificate_policy.VerifyAgainstBundleError!AnchoredChain {
     var i = chain.len;
     while (i > 0) {
@@ -321,7 +344,7 @@ fn verifyChainPathLength(
         // §6.1: self-issued certificates are not counted when evaluating
         // path length. §6.1.4(l): verify max_path_length is greater than
         // zero, then decrement.
-        if (!std.mem.eql(u8, cert.subject(), cert.issuer())) {
+        if (!mem.eql(u8, cert.subject(), cert.issuer())) {
             if (max_path_length == 0) return error.CertificatePathLengthExceeded;
             max_path_length -= 1;
         }
@@ -431,7 +454,7 @@ fn verifyChainCertificateSignatureAlgorithms(
     certificate_signature_schemes: []const SignatureScheme,
 ) PolicyError!void {
     for (chain) |cert| {
-        if (std.mem.eql(u8, cert.subject(), cert.issuer())) continue;
+        if (mem.eql(u8, cert.subject(), cert.issuer())) continue;
         try certificate_policy.verifyCertificateSignatureAlgorithm(
             cert.signature_algorithm,
             certificate_signature_schemes,
@@ -491,7 +514,7 @@ fn verifyIssuerNameConstraints(
     // where RFC 5280 does not allow the self-issued intermediate exemption.
     for (subjects, 0..) |subject, subject_index| {
         const leaf = subject_index == 0;
-        if (!leaf and std.mem.eql(u8, subject.subject(), subject.issuer())) continue;
+        if (!leaf and mem.eql(u8, subject.subject(), subject.issuer())) continue;
         try issuer.verifyNameConstraints(subject);
     }
 }
@@ -570,7 +593,7 @@ pub fn verifyServerSignatureWithSchemes(
     offered_schemes: []const SignatureScheme,
 ) VerifyError!void {
     const scheme = try certificateVerifyScheme(msg);
-    if (std.mem.indexOfScalar(SignatureScheme, offered_schemes, scheme) == null)
+    if (mem.findScalar(SignatureScheme, offered_schemes, scheme) == null)
         return error.UnsupportedSignatureScheme;
     return verifyServerSignature(msg, pub_key, transcript_hash);
 }
@@ -595,7 +618,7 @@ pub fn verifyClientSignatureWithSchemes(
     offered_schemes: []const SignatureScheme,
 ) VerifyError!void {
     const scheme = try certificateVerifyScheme(msg);
-    if (std.mem.indexOfScalar(SignatureScheme, offered_schemes, scheme) == null)
+    if (mem.findScalar(SignatureScheme, offered_schemes, scheme) == null)
         return error.UnsupportedSignatureScheme;
     return verifyClientSignature(msg, pub_key, transcript_hash);
 }
@@ -932,7 +955,7 @@ const test_transcript_hash = blk: {
 test "parse: oversized cert_len does not overflow bounds check" {
     // 11-byte Certificate: type=0x0b, body_len=7, list_len=3, cert_len=0xFFFFFF
     const msg = [_]u8{ 0x0b, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x03, 0xff, 0xff, 0xff };
-    const result = parse(&msg, .{});
+    const result = parse(&msg, .init);
     _ = result catch return; // any error is fine; a panic is the bug
 }
 
@@ -948,7 +971,8 @@ test "parseClientCertificate: oversized ctx_len does not overflow" {
 test "parse: extracts public key from ECDSA P-256 certificate" {
     var buf: [1024]u8 = undefined;
     const msg = buildCertMsg(&buf, fixtureCertDer());
-    const policy: Policy = .{ .insecure_no_chain_anchor = true };
+    var policy: Policy = .init;
+    policy.insecure_no_chain_anchor = true;
     const pub_key = try parse(msg, policy);
     try testing.expect(pub_key.len > 0);
 
@@ -963,7 +987,7 @@ test "parse: wrong handshake type" {
     var buf: [1024]u8 = undefined;
     _ = buildCertMsg(&buf, fixtureCertDer());
     buf[0] = 0x01;
-    try testing.expectError(error.InvalidHandshakeType, parse(&buf, .{}));
+    try testing.expectError(error.InvalidHandshakeType, parse(&buf, .init));
 }
 
 // RFC 8446 §4.4 — the handshake header length must exactly match the
@@ -972,7 +996,8 @@ test "parse: rejects mismatched Certificate handshake body length" {
     var buf: [1024]u8 = undefined;
     const msg = buildCertMsg(&buf, fixtureCertDer());
     buf[1..4].* = .{ 0x00, 0x00, 0x00 };
-    const policy: Policy = .{ .insecure_no_chain_anchor = true };
+    var policy: Policy = .init;
+    policy.insecure_no_chain_anchor = true;
 
     try testing.expectError(error.InvalidHandshakeLength, parse(msg, policy));
     try testing.expectError(
@@ -1032,7 +1057,7 @@ test "parse: rejects non-empty server certificate request context" {
     incrementU24(buf[1..4], 1);
     try testing.expectError(
         error.UnexpectedCertificateRequestContext,
-        parse(buf[0 .. encoded.len + 1], .{ .insecure_no_chain_anchor = true }),
+        parse(buf[0 .. encoded.len + 1], testPolicy(.{ .insecure_no_chain_anchor = true })),
     );
 }
 
@@ -1042,7 +1067,7 @@ test "parse: rejects empty certificate list" {
         @intFromEnum(handshake.Type.certificate), 0x00, 0x00, 0x04,
         0x00,                                     0x00, 0x00, 0x00,
     };
-    try testing.expectError(error.EmptyCertificateList, parse(&msg, .{}));
+    try testing.expectError(error.EmptyCertificateList, parse(&msg, .init));
 }
 
 // RFC 8446 §4.4.2 — Certificate.certificate_list is a uint24-length vector;
@@ -1058,7 +1083,7 @@ test "parse: rejects certificate list length shorter than entries" {
     };
     try testing.expectError(
         error.UnexpectedEof,
-        parse(msg, .{ .insecure_no_chain_anchor = true }),
+        parse(msg, testPolicy(.{ .insecure_no_chain_anchor = true })),
     );
 }
 
@@ -1066,11 +1091,11 @@ test "encode: round trips certificate chain" {
     var buf: [4096]u8 = undefined;
     const msg = try encode(&buf, &.{ chainLeafDer(), chainIntermediateDer() });
     try testing.expectEqual(encodedLen(&.{ chainLeafDer(), chainIntermediateDer() }), msg.len);
-    const pub_key = try parse(msg, .{
+    const pub_key = try parse(msg, testPolicy(.{
         .host_name = "chain.test",
         .now_sec = 1_780_300_000,
         .insecure_no_chain_anchor = true,
-    });
+    }));
     try testing.expect(pub_key.len > 0);
 }
 
@@ -1083,7 +1108,7 @@ test "parse: rejects unsupported CertificateEntry status_request" {
     const with_ext = appendLeafCertificateExtensions(&buf, msg.len, &ext);
     try testing.expectError(
         error.UnsupportedExtension,
-        parse(with_ext, .{ .insecure_no_chain_anchor = true }),
+        parse(with_ext, testPolicy(.{ .insecure_no_chain_anchor = true })),
     );
 }
 
@@ -1096,7 +1121,7 @@ test "parse: rejects unsupported CertificateEntry SCT" {
     const with_ext = appendLeafCertificateExtensions(&buf, msg.len, &ext);
     try testing.expectError(
         error.UnsupportedExtension,
-        parse(with_ext, .{ .insecure_no_chain_anchor = true }),
+        parse(with_ext, testPolicy(.{ .insecure_no_chain_anchor = true })),
     );
 }
 
@@ -1109,7 +1134,7 @@ test "parse: rejects forbidden CertificateEntry status_request_v2" {
     const with_ext = appendLeafCertificateExtensions(&buf, msg.len, &ext);
     try testing.expectError(
         error.UnexpectedExtension,
-        parse(with_ext, .{ .insecure_no_chain_anchor = true }),
+        parse(with_ext, testPolicy(.{ .insecure_no_chain_anchor = true })),
     );
 }
 
@@ -1124,7 +1149,7 @@ test "parse: rejects duplicate CertificateEntry status_request" {
     const with_ext = appendLeafCertificateExtensions(&buf, msg.len, &ext);
     try testing.expectError(
         error.DuplicateExtension,
-        parse(with_ext, .{ .insecure_no_chain_anchor = true }),
+        parse(with_ext, testPolicy(.{ .insecure_no_chain_anchor = true })),
     );
 }
 
@@ -1136,7 +1161,7 @@ test "parse: rejects malformed CertificateEntry extension length" {
     const with_ext = appendLeafCertificateExtensions(&buf, msg.len, &ext);
     try testing.expectError(
         error.InvalidExtensionLength,
-        parse(with_ext, .{ .insecure_no_chain_anchor = true }),
+        parse(with_ext, testPolicy(.{ .insecure_no_chain_anchor = true })),
     );
 }
 
@@ -1147,16 +1172,16 @@ test "parse: ignores unknown CertificateEntry extension" {
     const msg = buildCertMsg(&buf, fixtureCertDer());
     const ext = [_]u8{ 0xbe, 0xef, 0x00, 0x01, 0xaa };
     const with_ext = appendLeafCertificateExtensions(&buf, msg.len, &ext);
-    const pub_key = try parse(with_ext, .{ .insecure_no_chain_anchor = true });
+    const pub_key = try parse(with_ext, testPolicy(.{ .insecure_no_chain_anchor = true }));
     try testing.expect(pub_key.len > 0);
 }
 
 test "parse: validates hostname" {
     var buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&buf, fixtureCertDer()), testPolicy(.{
         .host_name = "test.local",
         .insecure_no_chain_anchor = true,
-    });
+    }));
     try testing.expect(pub_key.len > 0);
 }
 
@@ -1164,7 +1189,7 @@ test "parse: rejects hostname mismatch" {
     var buf: [1024]u8 = undefined;
     try testing.expectError(
         error.CertificateHostMismatch,
-        parse(buildCertMsg(&buf, fixtureCertDer()), .{ .host_name = "wrong.local" }),
+        parse(buildCertMsg(&buf, fixtureCertDer()), testPolicy(.{ .host_name = "wrong.local" })),
     );
 }
 
@@ -1172,7 +1197,7 @@ test "parse: rejects missing trust anchor by default" {
     var buf: [1024]u8 = undefined;
     try testing.expectError(
         error.MissingTrustAnchor,
-        parse(buildCertMsg(&buf, fixtureCertDer()), .{ .host_name = "test.local" }),
+        parse(buildCertMsg(&buf, fixtureCertDer()), testPolicy(.{ .host_name = "test.local" })),
     );
 }
 
@@ -1194,11 +1219,11 @@ test "parse: validates leaf against trust bundle" {
     try addCertsFromFixturePath(&bundle, "tests/fixtures/server.crt");
 
     var buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&buf, fixtureCertDer()), testPolicy(.{
         .bundle = &bundle,
         .now_sec = 1_780_300_000,
         .host_name = "test.local",
-    });
+    }));
     try testing.expect(pub_key.len > 0);
 }
 
@@ -1210,7 +1235,7 @@ test "parse: validates leaf-intermediate-root chain" {
     var buf: [4096]u8 = undefined;
     const pub_key = try parse(
         buildCertChainMsg(&buf, &.{ chainLeafDer(), chainIntermediateDer() }),
-        .{ .bundle = &bundle, .now_sec = 1_780_300_000, .host_name = "chain.test" },
+        testPolicy(.{ .bundle = &bundle, .now_sec = 1_780_300_000, .host_name = "chain.test" }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1227,7 +1252,11 @@ test "parse: rejects end-entity certificate used as issuer" {
         error.CertificateIssuerNotCa,
         parse(
             buildCertChainMsg(&buf, &.{ auditS5LeafDer(), auditS5IssuerDer() }),
-            .{ .bundle = &bundle, .now_sec = 1_800_000_000, .host_name = "victim.test" },
+            testPolicy(.{
+                .bundle = &bundle,
+                .now_sec = 1_800_000_000,
+                .host_name = "victim.test",
+            }),
         ),
     );
 }
@@ -1243,7 +1272,7 @@ test "parse: rejects chain with intermediate before leaf" {
         error.CertificateKeyUsageRejected,
         parse(
             buildCertChainMsg(&buf, &.{ chainIntermediateDer(), chainLeafDer() }),
-            .{ .bundle = &bundle, .now_sec = 1_780_300_000, .host_name = "chain.test" },
+            testPolicy(.{ .bundle = &bundle, .now_sec = 1_780_300_000, .host_name = "chain.test" }),
         ),
     );
 }
@@ -1265,7 +1294,7 @@ test "parse: anchors chain below a cross-signed root" {
             crosssignedIntermediateDer(),
             crosssignedRootCrossDer(),
         }),
-        .{ .bundle = &bundle, .now_sec = 1_800_000_000, .host_name = "cross.test" },
+        testPolicy(.{ .bundle = &bundle, .now_sec = 1_800_000_000, .host_name = "cross.test" }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1284,7 +1313,7 @@ test "parse: rejects cross-signed root without a bundle anchor below it" {
                 crosssignedIntermediateDer(),
                 crosssignedRootCrossDer(),
             }),
-            .{ .bundle = &bundle, .now_sec = 1_800_000_000, .host_name = "cross.test" },
+            testPolicy(.{ .bundle = &bundle, .now_sec = 1_800_000_000, .host_name = "cross.test" }),
         ),
     );
 }
@@ -1299,7 +1328,7 @@ test "parse: rejects chain with missing intermediate" {
         error.CertificateIssuerNotFound,
         parse(
             buildCertChainMsg(&buf, &.{chainLeafDer()}),
-            .{ .bundle = &bundle, .now_sec = 1_780_300_000, .host_name = "chain.test" },
+            testPolicy(.{ .bundle = &bundle, .now_sec = 1_780_300_000, .host_name = "chain.test" }),
         ),
     );
 }
@@ -1314,7 +1343,11 @@ test "parse: rejects chain hostname mismatch" {
         error.CertificateHostMismatch,
         parse(
             buildCertChainMsg(&buf, &.{ chainLeafDer(), chainIntermediateDer() }),
-            .{ .bundle = &bundle, .now_sec = 1_780_300_000, .host_name = "wrong.chain.test" },
+            testPolicy(.{
+                .bundle = &bundle,
+                .now_sec = 1_780_300_000,
+                .host_name = "wrong.chain.test",
+            }),
         ),
     );
 }
@@ -1324,10 +1357,10 @@ test "parse: rejects untrusted leaf when bundle misses issuer" {
     var buf: [1024]u8 = undefined;
     try testing.expectError(
         error.CertificateIssuerNotFound,
-        parse(buildCertMsg(&buf, fixtureCertDer()), .{
+        parse(buildCertMsg(&buf, fixtureCertDer()), testPolicy(.{
             .bundle = &bundle,
             .now_sec = 1_780_300_000,
-        }),
+        })),
     );
 }
 
@@ -1346,7 +1379,7 @@ test "parse: accepts chain with matching DNS name constraints" {
     var buf: [4096]u8 = undefined;
     const pub_key = try parse(
         buildCertChainMsg(&buf, &.{ ncLeafAllowedDer(), ncIntermediateDer() }),
-        .{ .bundle = &bundle, .now_sec = 1_782_864_000, .host_name = "ok.example.com" },
+        testPolicy(.{ .bundle = &bundle, .now_sec = 1_782_864_000, .host_name = "ok.example.com" }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1361,7 +1394,11 @@ test "parse: rejects chain with excluded DNS name constraints" {
         error.CertificateNameConstraintViolation,
         parse(
             buildCertChainMsg(&buf, &.{ ncLeafExcludedDer(), ncIntermediateDer() }),
-            .{ .bundle = &bundle, .now_sec = 1_782_864_000, .host_name = "bad.example.com" },
+            testPolicy(.{
+                .bundle = &bundle,
+                .now_sec = 1_782_864_000,
+                .host_name = "bad.example.com",
+            }),
         ),
     );
 }
@@ -1377,7 +1414,7 @@ test "parse: rejects chain outside permitted DNS name constraints" {
         error.CertificateNameConstraintViolation,
         parse(
             buildCertChainMsg(&buf, &.{ ncLeafOutsideDer(), ncIntermediateDer() }),
-            .{ .bundle = &bundle, .now_sec = 1_782_864_000, .host_name = "other.test" },
+            testPolicy(.{ .bundle = &bundle, .now_sec = 1_782_864_000, .host_name = "other.test" }),
         ),
     );
 }
@@ -1390,11 +1427,11 @@ test "parse: insecure no-anchor path still enforces name constraints" {
         error.CertificateNameConstraintViolation,
         parse(
             buildCertChainMsg(&buf, &.{ ncLeafExcludedDer(), ncIntermediateDer() }),
-            .{
+            testPolicy(.{
                 .insecure_no_chain_anchor = true,
                 .now_sec = 1_782_864_000,
                 .host_name = "bad.example.com",
-            },
+            }),
         ),
     );
 }
@@ -1424,7 +1461,7 @@ test "parse: rejects server-auth chain through emailProtection-only sub-CA" {
         error.CertificateExtendedKeyUsageRejected,
         parse(
             buildCertChainMsg(&buf, &.{ ekuLeafServerDer(), ekuInterEmailDer() }),
-            .{ .bundle = &bundle, .now_sec = eku_now_sec, .host_name = "victim.test" },
+            testPolicy(.{ .bundle = &bundle, .now_sec = eku_now_sec, .host_name = "victim.test" }),
         ),
     );
 }
@@ -1444,7 +1481,7 @@ test "parse: accepts server-auth chains through no-EKU and anyEKU sub-CAs" {
         var buf: [4096]u8 = undefined;
         const pub_key = try parse(
             buildCertChainMsg(&buf, &chain_der),
-            .{ .bundle = &bundle, .now_sec = eku_now_sec, .host_name = "victim.test" },
+            testPolicy(.{ .bundle = &bundle, .now_sec = eku_now_sec, .host_name = "victim.test" }),
         );
         try testing.expect(pub_key.len > 0);
     }
@@ -1462,7 +1499,7 @@ test "parseClientChain: rejects client-auth chain through serverAuth-only sub-CA
         parseClientChain(
             buildCertChainMsg(&buf, &.{ ekuLeafClientDer(), ekuInterServerauthDer() }),
             &.{},
-            .{ .bundle = &bundle, .now_sec = eku_now_sec, .leaf_usage = .client_auth },
+            testPolicy(.{ .bundle = &bundle, .now_sec = eku_now_sec, .leaf_usage = .client_auth }),
         ),
     );
 }
@@ -1476,7 +1513,7 @@ test "parseClientChain: accepts client-auth chain through no-EKU sub-CA" {
     const verified = try parseClientChain(
         buildCertChainMsg(&buf, &.{ ekuLeafClientPlainDer(), ekuInterPlainDer() }),
         &.{},
-        .{ .bundle = &bundle, .now_sec = eku_now_sec, .leaf_usage = .client_auth },
+        testPolicy(.{ .bundle = &bundle, .now_sec = eku_now_sec, .leaf_usage = .client_auth }),
     );
     try testing.expect(verified.pub_key.len > 0);
 }
@@ -1494,7 +1531,7 @@ test "parse: rejects chain anchored by an emailProtection-only root" {
         error.CertificateExtendedKeyUsageRejected,
         parse(
             buildCertChainMsg(&buf, &.{ ekuAnchorEmailLeafDer(), ekuAnchorEmailInterDer() }),
-            .{ .bundle = &bundle, .now_sec = eku_now_sec, .host_name = "victim.test" },
+            testPolicy(.{ .bundle = &bundle, .now_sec = eku_now_sec, .host_name = "victim.test" }),
         ),
     );
 }
@@ -1506,7 +1543,9 @@ test "parse: rejects signed unprocessed critical extension for both roles" {
     try addCertsFromFixturePath(&bundle, "tests/fixtures/critical/root.crt");
     var buf: [2048]u8 = undefined;
     const msg = buildCertChainMsg(&buf, &.{&fixtures.extension_critical_der});
-    const policy: Policy = .{ .bundle = &bundle, .now_sec = 1_800_000_000 };
+    var policy: Policy = .init;
+    policy.bundle = &bundle;
+    policy.now_sec = 1_800_000_000;
     try testing.expectError(error.CertificateUnsupportedCriticalExtension, parse(msg, policy));
     try testing.expectError(
         error.CertificateUnsupportedCriticalExtension,
@@ -1522,11 +1561,10 @@ test "parse: accepts signed noncritical extension and supported critical extensi
     for ([_][]const u8{ &fixtures.extension_valid_der, &fixtures.extension_ignored_der }) |cert| {
         var buf: [2048]u8 = undefined;
         const msg = buildCertChainMsg(&buf, &.{cert});
-        const policy: Policy = .{
-            .bundle = &bundle,
-            .now_sec = 1_800_000_000,
-            .host_name = "critical.test",
-        };
+        var policy: Policy = .init;
+        policy.bundle = &bundle;
+        policy.now_sec = 1_800_000_000;
+        policy.host_name = "critical.test";
         try testing.expect((try parse(msg, policy)).len > 0);
         _ = try parseClientChain(msg, &.{}, policy);
     }
@@ -1547,7 +1585,11 @@ test "parse: rejects signed SAN with an invalid wrapper" {
         var buf: [2048]u8 = undefined;
         try testing.expectError(error.CertificateFieldHasWrongDataType, parse(
             buildCertChainMsg(&buf, &.{cert}),
-            .{ .bundle = &bundle, .now_sec = 1_800_000_000, .host_name = "critical.test" },
+            testPolicy(.{
+                .bundle = &bundle,
+                .now_sec = 1_800_000_000,
+                .host_name = "critical.test",
+            }),
         ));
     }
 }
@@ -1583,11 +1625,11 @@ test "parse: rejects chain exceeding pathLenConstraint zero" {
                 pathlenBelowZeroInterDer(),
                 pathlenZeroInterDer(),
             }),
-            .{
+            testPolicy(.{
                 .bundle = &bundle,
                 .now_sec = pathlen_now_sec,
                 .host_name = "below-zero.test",
-            },
+            }),
         ),
     );
 }
@@ -1602,11 +1644,11 @@ test "parse: accepts pathLenConstraint zero with a CA target" {
     var buf: [4096]u8 = undefined;
     const pub_key = try parse(
         buildCertChainMsg(&buf, &.{ pathlenCaTargetDer(), pathlenZeroInterDer() }),
-        .{
+        testPolicy(.{
             .bundle = &bundle,
             .now_sec = pathlen_now_sec,
             .host_name = "catarget.test",
-        },
+        }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1627,11 +1669,11 @@ test "parse: rejects chain exceeding pathLenConstraint one" {
                 pathlenOneMidInterDer(),
                 pathlenOneInterDer(),
             }),
-            .{
+            testPolicy(.{
                 .bundle = &bundle,
                 .now_sec = pathlen_now_sec,
                 .host_name = "one-deep.test",
-            },
+            }),
         ),
     );
 }
@@ -1649,11 +1691,11 @@ test "parse: accepts chain at pathLenConstraint one" {
             pathlenOneMidInterDer(),
             pathlenOneInterDer(),
         }),
-        .{
+        testPolicy(.{
             .bundle = &bundle,
             .now_sec = pathlen_now_sec,
             .host_name = "one.test",
-        },
+        }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1672,11 +1714,11 @@ test "parse: imposes no path-length limit when pathLenConstraint is absent" {
             pathlenAbsentBInterDer(),
             pathlenAbsentAInterDer(),
         }),
-        .{
+        testPolicy(.{
             .bundle = &bundle,
             .now_sec = pathlen_now_sec,
             .host_name = "absent.test",
-        },
+        }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1699,11 +1741,11 @@ test "parse: enforces the tightest of multiple pathLenConstraints" {
                 pathlenMultiInnerInterDer(),
                 pathlenMultiOuterInterDer(),
             }),
-            .{
+            testPolicy(.{
                 .bundle = &bundle,
                 .now_sec = pathlen_now_sec,
                 .host_name = "multi-deep.test",
-            },
+            }),
         ),
     );
 }
@@ -1722,11 +1764,11 @@ test "parse: accepts multiple satisfied pathLenConstraints" {
             pathlenMultiInnerInterDer(),
             pathlenMultiOuterInterDer(),
         }),
-        .{
+        testPolicy(.{
             .bundle = &bundle,
             .now_sec = pathlen_now_sec,
             .host_name = "multi.test",
-        },
+        }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1746,11 +1788,11 @@ test "parse: self-issued intermediate does not consume path length" {
             pathlenSelfIssuedInterDer(),
             pathlenZeroInterDer(),
         }),
-        .{
+        testPolicy(.{
             .bundle = &bundle,
             .now_sec = pathlen_now_sec,
             .host_name = "selfissued.test",
-        },
+        }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1773,11 +1815,11 @@ test "parse: intermediate below a self-issued certificate still counts" {
                 pathlenSelfIssuedInterDer(),
                 pathlenZeroInterDer(),
             }),
-            .{
+            testPolicy(.{
                 .bundle = &bundle,
                 .now_sec = pathlen_now_sec,
                 .host_name = "below-si.test",
-            },
+            }),
         ),
     );
 }
@@ -1800,11 +1842,11 @@ test "parse: trust anchor pathLenConstraint limits intermediates below it" {
                 pathlenAnchorDeepInterDer(),
                 pathlenAnchorMidInterDer(),
             }),
-            .{
+            testPolicy(.{
                 .bundle = &bundle,
                 .now_sec = pathlen_now_sec,
                 .host_name = "anchor-deep.test",
-            },
+            }),
         ),
     );
 }
@@ -1818,11 +1860,11 @@ test "parse: trust anchor pathLenConstraint satisfied" {
     var buf: [4096]u8 = undefined;
     const pub_key = try parse(
         buildCertChainMsg(&buf, &.{ pathlenAnchorLeafDer(), pathlenAnchorMidInterDer() }),
-        .{
+        testPolicy(.{
             .bundle = &bundle,
             .now_sec = pathlen_now_sec,
             .host_name = "anchor.test",
-        },
+        }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1843,11 +1885,11 @@ test "parse: certificates above the anchored path are outside the path" {
             pathlenCrossMidInterDer(),
             pathlenCrossRootCrossDer(),
         }),
-        .{
+        testPolicy(.{
             .bundle = &bundle,
             .now_sec = pathlen_now_sec,
             .host_name = "cross.test",
-        },
+        }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1869,11 +1911,11 @@ test "parse: cross-signed root constraint binds inside the anchored path" {
                 pathlenCrossMidInterDer(),
                 pathlenCrossRootCrossDer(),
             }),
-            .{
+            testPolicy(.{
                 .bundle = &bundle,
                 .now_sec = pathlen_now_sec,
                 .host_name = "cross.test",
-            },
+            }),
         ),
     );
 }
@@ -1894,11 +1936,11 @@ test "parseClientChain: rejects client chain exceeding pathLenConstraint zero" {
                 pathlenZeroInterDer(),
             }),
             &.{},
-            .{
+            testPolicy(.{
                 .bundle = &bundle,
                 .now_sec = pathlen_now_sec,
                 .leaf_usage = .client_auth,
-            },
+            }),
         ),
     );
 }
@@ -1913,11 +1955,11 @@ test "parseClientChain: accepts client chain at pathLenConstraint zero" {
     const verified = try parseClientChain(
         buildCertChainMsg(&buf, &.{ pathlenClientZeroLeafDer(), pathlenZeroInterDer() }),
         &.{},
-        .{
+        testPolicy(.{
             .bundle = &bundle,
             .now_sec = pathlen_now_sec,
             .leaf_usage = .client_auth,
-        },
+        }),
     );
     try testing.expect(verified.pub_key.len > 0);
 }
@@ -1935,11 +1977,11 @@ test "parse: insecure no-anchor path still enforces pathLenConstraint" {
                 pathlenBelowZeroInterDer(),
                 pathlenZeroInterDer(),
             }),
-            .{
+            testPolicy(.{
                 .insecure_no_chain_anchor = true,
                 .now_sec = pathlen_now_sec,
                 .host_name = "below-zero.test",
-            },
+            }),
         ),
     );
 }
@@ -1955,11 +1997,11 @@ test "parse: insecure no-anchor path accepts constrained chain with self-issued 
             pathlenSelfIssuedInterDer(),
             pathlenZeroInterDer(),
         }),
-        .{
+        testPolicy(.{
             .insecure_no_chain_anchor = true,
             .now_sec = pathlen_now_sec,
             .host_name = "selfissued.test",
-        },
+        }),
     );
     try testing.expect(pub_key.len > 0);
 }
@@ -1973,7 +2015,7 @@ test "parse: malformed DER length is rejected, not crashed" {
         0x30, 0x82, 0x01, 0xd3, 0x00, // SEQUENCE claims 467 content bytes, has 1
         0x00, 0x00, // extensions length
     };
-    try testing.expectError(error.CertificateFieldHasInvalidLength, parse(&msg, .{}));
+    try testing.expectError(error.CertificateFieldHasInvalidLength, parse(&msg, .init));
 }
 
 // Build a Parsed leaf carrying only the fields certificate_policy.verifyServerAuth reads,
@@ -2015,6 +2057,8 @@ fn policyLeafWithVersion(
         .ext_key_usage_slice = ext_key_usage,
         .name_constraints_slice = .empty,
         .name_constraints_critical = false,
+        .is_ca = false,
+        .basic_constraints_path_len = null,
         .validity = .{ .not_before = 0, .not_after = 0 },
         .version = version,
     };
@@ -2163,11 +2207,11 @@ test "certificate_policy: Ed25519 chain signature algorithm rejected when not ad
 // used because this is a self-signed fixture without a trust bundle.
 test "parse: Ed25519 self-signed certificate verified via std.crypto" {
     var buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&buf, ed25519CertDer()), .{
+    const pub_key = try parse(buildCertMsg(&buf, ed25519CertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
         .now_sec = 1_790_000_000,
         .host_name = "ed25519.server.test",
-    });
+    }));
     try testing.expect(pub_key.len > 0);
 }
 
@@ -2244,9 +2288,9 @@ test "encodeCertificateVerify: wraps signature" {
 
 test "verifySignature: valid ECDSA P-256 signature" {
     var cert_buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     try verifyServerSignature(buildCvMsg(&cv_buf, fixtureCvSig()), pub_key, &test_transcript_hash);
 }
@@ -2255,9 +2299,9 @@ test "verifySignature: valid ECDSA P-256 signature" {
 // MGF1(SHA-256), and salt length equal to the digest length.
 test "verifySignature: valid RSA-PSS SHA-256 signature" {
     var cert_buf: [2048]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     const cv = try encodeCertificateVerify(
         &cv_buf,
@@ -2271,9 +2315,9 @@ test "verifySignature: valid RSA-PSS SHA-256 signature" {
 // length, not an arbitrary PSS salt length accepted by generic RSA-PSS.
 test "verifySignature: rejects RSA-PSS signature with wrong salt length" {
     var cert_buf: [2048]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     const cv = try encodeCertificateVerify(
         &cv_buf,
@@ -2288,9 +2332,9 @@ test "verifySignature: rejects RSA-PSS signature with wrong salt length" {
 
 test "verifySignature: wrong transcript hash" {
     var cert_buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     const bad_hash: [32]u8 = @splat(0);
     try testing.expectError(
@@ -2303,9 +2347,9 @@ test "verifySignature: wrong transcript hash" {
 // signature_algorithms extension, not just any scheme tls globally supports.
 test "verifySignature: rejects scheme absent from offered list" {
     var cert_buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     const offered = [_]SignatureScheme{.rsa_pss_rsae_sha256};
     try testing.expectError(
@@ -2325,9 +2369,9 @@ test "verifySignature: rejects scheme absent from offered list" {
 // defensive guard the server uses against malicious client CVs.
 test "verifySignature: client CV rejects scheme absent from offered list" {
     var cert_buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     const offered = [_]SignatureScheme{.rsa_pss_rsae_sha256};
     try testing.expectError(
@@ -2369,9 +2413,9 @@ test "verifySignature: rejects RSA leaf key with exponent 1" {
 // in TLS 1.3 and must not be accepted for CertificateVerify.
 test "verifySignature: rejects RSA PKCS1 CertificateVerify scheme" {
     var cert_buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     const cv = try encodeCertificateVerify(&cv_buf, .rsa_pkcs1_sha256, fixtureCvSig());
     try testing.expectError(
@@ -2384,9 +2428,9 @@ test "verifySignature: rejects RSA PKCS1 CertificateVerify scheme" {
 // with the certificate public key parameters.
 test "verifySignature: rejects certificate key and scheme mismatch" {
     var cert_buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     const cv = try encodeCertificateVerify(&cv_buf, .ecdsa_secp384r1_sha384, fixtureCvSig());
     try testing.expectError(
@@ -2398,9 +2442,9 @@ test "verifySignature: rejects certificate key and scheme mismatch" {
 // RFC 8446 §4.4.3 — CertificateVerify context string binds the endpoint role.
 test "verifySignature: server signature is not valid for client context" {
     var cert_buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     try testing.expectError(
         error.SignatureVerificationFailed,
@@ -2410,9 +2454,9 @@ test "verifySignature: server signature is not valid for client context" {
 
 test "verifySignature: wrong handshake type" {
     var cert_buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), .{
+    const pub_key = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     var cv_buf: [512]u8 = undefined;
     _ = buildCvMsg(&cv_buf, fixtureCvSig());
     cv_buf[0] = 0x01;
@@ -2427,9 +2471,9 @@ test "verifySignature: wrong handshake type" {
 // enforcement is not yet implemented.
 test "parse: extracts critical name constraints" {
     var buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&buf, nameConstraintsDer()), .{
+    const pub_key = try parse(buildCertMsg(&buf, nameConstraintsDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     try testing.expect(pub_key.len > 0);
 
     // Verify the extension was extracted by parsing the leaf directly.
@@ -2444,9 +2488,9 @@ test "parse: extracts critical name constraints" {
 // RFC 5280 §4.2.1.10 — non-critical Name Constraints are also parsed.
 test "parse: extracts non-critical name constraints" {
     var buf: [1024]u8 = undefined;
-    const pub_key = try parse(buildCertMsg(&buf, nameConstraintsNoncriticalDer()), .{
+    const pub_key = try parse(buildCertMsg(&buf, nameConstraintsNoncriticalDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
-    });
+    }));
     try testing.expect(pub_key.len > 0);
 
     const cert: Certificate = .{ .buffer = nameConstraintsNoncriticalDer(), .index = 0 };
@@ -2460,7 +2504,7 @@ test "parse: extracts non-critical name constraints" {
 // never crash. Exercises our framing plus certificate_parser's X.509 parser.
 // Run with `zig build test --fuzz`.
 fn fuzzParse(_: void, input: []const u8) anyerror!void {
-    _ = parse(input, .{}) catch return;
+    _ = parse(input, .init) catch return;
 }
 
 test "fuzz: parse handles arbitrary input" {

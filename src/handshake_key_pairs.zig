@@ -17,12 +17,12 @@ pub const KeyPairs = struct {
     x25519: x25519.KeyPair,
     /// Only `secret_key` is meaningful until `derived` contains `.p256`.
     p256: p256.KeyPair,
-    p384: ?p384.KeyPair = null,
+    p384: ?p384.KeyPair,
     /// The public keys that hold their scalar's point. A server can defer
     /// one: it stays all zero until `deriveFor` fills it. Every byte zero
     /// reads as nothing derived, so a wiped keypair cannot pass for one
     /// whose all-zero keys are real. P-384 is never deferred.
-    derived: std.EnumSet(Public) = .initFull(),
+    derived: std.EnumSet(Public),
 
     pub const Public = enum { x25519, p256 };
     pub const DeriveError = x25519.Error || p256.Error;
@@ -32,14 +32,24 @@ pub const KeyPairs = struct {
     /// (shed this handshake), not this function's to hide behind a retry
     /// (#88).
     pub fn init(x25519_keypair: x25519.KeyPair) p256.Error!KeyPairs {
-        return .{ .x25519 = x25519_keypair, .p256 = try .generate() };
+        return .{
+            .x25519 = x25519_keypair,
+            .p256 = try .generate(),
+            .p384 = null,
+            .derived = .initFull(),
+        };
     }
 
     pub fn initWithP256(
         x25519_keypair: x25519.KeyPair,
         p256_keypair: p256.KeyPair,
     ) KeyPairs {
-        return .{ .x25519 = x25519_keypair, .p256 = p256_keypair };
+        return .{
+            .x25519 = x25519_keypair,
+            .p256 = p256_keypair,
+            .p384 = null,
+            .derived = .initFull(),
+        };
     }
 
     /// Server only: defer the P-256 public key. It is a fixed-base scalar
@@ -54,6 +64,7 @@ pub const KeyPairs = struct {
         return .{
             .x25519 = x25519_keypair,
             .p256 = .{ .secret_key = p256_secret, .public_key = .init(@splat(0)) },
+            .p384 = null,
             .derived = .init(.{ .x25519 = true }),
         };
     }
@@ -66,6 +77,7 @@ pub const KeyPairs = struct {
         return .{
             .x25519 = .{ .secret_key = x25519_secret, .public_key = .init(@splat(0)) },
             .p256 = .{ .secret_key = p256_secret, .public_key = .init(@splat(0)) },
+            .p384 = null,
             .derived = .initEmpty(),
         };
     }
@@ -108,7 +120,7 @@ pub const KeyPairs = struct {
         };
         defer fresh.secureZero();
         // A redrawn keypair replaces a rejected caller scalar: wipe it first.
-        std.crypto.secureZero(u8, std.mem.asBytes(&self.p256));
+        std.crypto.secureZero(u8, mem.asBytes(&self.p256));
         self.p256 = fresh;
         self.derived.insert(.p256);
     }
@@ -118,7 +130,12 @@ pub const KeyPairs = struct {
         p256_keypair: p256.KeyPair,
         p384_keypair: p384.KeyPair,
     ) KeyPairs {
-        return .{ .x25519 = x25519_keypair, .p256 = p256_keypair, .p384 = p384_keypair };
+        return .{
+            .x25519 = x25519_keypair,
+            .p256 = p256_keypair,
+            .p384 = p384_keypair,
+            .derived = .initFull(),
+        };
     }
 
     pub fn secureZero(self: *KeyPairs) void {
@@ -129,7 +146,7 @@ pub const KeyPairs = struct {
         // why it only showed up in CI). Clear first, zero second: a zeroed tag
         // byte is `null`, which the whole-struct zeroing already relies on.
         self.p384 = null;
-        std.crypto.secureZero(u8, std.mem.asBytes(self));
+        std.crypto.secureZero(u8, mem.asBytes(self));
     }
 };
 

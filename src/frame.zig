@@ -64,7 +64,7 @@ pub const Header = extern struct {
     /// Always 0x0303 on the wire for TLS 1.3. Frozen for middlebox compatibility;
     /// actual version negotiation happens in the supported_versions extension.
     /// Not exposed — no caller should branch on this.
-    legacy_version_be: [2]u8 = memx.toBytes(u16, @intFromEnum(legacy_record_version)),
+    legacy_version_be: [2]u8,
     /// Big-endian payload length. Use length() to read as native u16.
     length_be: [2]u8,
 
@@ -84,6 +84,7 @@ pub const Header = extern struct {
     pub fn init(content_type: ContentType, len: u16) Header {
         var h: Header = .{
             .content_type = content_type,
+            .legacy_version_be = memx.toBytes(u16, @intFromEnum(legacy_record_version)),
             .length_be = undefined,
         };
         memx.writeInt(u16, &h.length_be, len);

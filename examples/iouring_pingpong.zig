@@ -73,11 +73,9 @@ fn serverRun(ctx: *ServerCtx) !void {
     var random: tls.Random = undefined;
     io.random(&random.data);
 
-    var hs: tls.ServerHandshake = .init(.{
-        .keypairs = try .init(ctx.keypair),
-        .random = random,
-        .alpn_protocols = &.{alpn},
-    });
+    var hs_config: tls.ServerHandshake.Config = .init(try .init(ctx.keypair), random);
+    hs_config.alpn_protocols = &.{alpn};
+    var hs: tls.ServerHandshake = .init(hs_config);
     defer hs.deinit();
 
     var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
@@ -161,14 +159,15 @@ fn clientRun(io: Io, client_keypair: tls.x25519.KeyPair, actual_port: u16) !void
     var random: tls.Random = undefined;
     io.random(&random.data);
 
-    var hs: tls.ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
-        .host_name = server_name,
-        .now_sec = Io.Timestamp.now(io, .real).toSeconds(),
-        .random = random,
-        .insecure_no_chain_anchor = true,
-        .alpn_protocols = &.{alpn},
-    });
+    var hs_config: tls.ClientHandshake.Config = .init(
+        try .init(client_keypair),
+        server_name,
+        Io.Timestamp.now(io, .real).toSeconds(),
+        random,
+    );
+    hs_config.insecure_no_chain_anchor = true;
+    hs_config.alpn_protocols = &.{alpn};
+    var hs: tls.ClientHandshake = .init(hs_config);
     defer hs.deinit();
 
     var out: tls.ClientHandshake.OutBuffer = .empty;

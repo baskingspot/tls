@@ -2,6 +2,7 @@
 //!
 //! RFC 8446 §4.4.2.2
 const std = @import("std");
+const mem = std.mem;
 const backend = @import("crypto/backend.zig");
 const Certificate = @import("certificate_parser.zig");
 const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
@@ -31,27 +32,38 @@ pub const Policy = struct {
     /// unless insecure_no_chain_anchor is set. That opt-in still extracts the
     /// leaf public key and lets CertificateVerify prove key possession, but it
     /// does not authenticate the chain to any trust root.
-    bundle: ?*const Certificate.Bundle = null,
+    bundle: ?*const Certificate.Bundle,
     /// Explicit test/demo escape hatch for self-signed fixtures. Production
     /// clients should leave this false and provide bundle.
-    insecure_no_chain_anchor: bool = false,
+    insecure_no_chain_anchor: bool,
     /// Current time in seconds since the Unix epoch, for validity checks.
-    now_sec: i64 = 0,
+    now_sec: i64,
     /// This ASCII DNS reference identifies the expected DNS-ID SAN.
     /// The caller owns IDNA conversion to A-labels. null disables the check.
     /// ClientHandshake.Config.host_name supplies the default value.
-    host_name: ?[]const u8 = null,
+    host_name: ?[]const u8,
     /// Enforce TLS 1.3 certificate residual policy for the leaf's intended use.
     /// `.server_auth` requires KeyUsage.digitalSignature when KeyUsage is present,
     /// EKU serverAuth when EKU is present, and a TLS 1.3-compatible certificate
     /// signature algorithm. `.client_auth` mirrors that with EKU clientAuth.
     /// `.none` skips all leaf policy checks.
-    leaf_usage: LeafUsage = .server_auth,
+    leaf_usage: LeafUsage,
     /// Algorithms accepted for signatures appearing in certificates. This is the
     /// `signature_algorithms_cert` policy; when that extension is omitted, RFC
     /// 8446 §4.2.3 says `signature_algorithms` applies to certificates too.
-    certificate_signature_schemes: []const SignatureScheme =
-        backend.capabilities.certificate_signature_schemes,
+    certificate_signature_schemes: []const SignatureScheme,
+
+    /// The default policy: no trust anchor, no insecure opt-in, no hostname
+    /// check, epoch time, server-auth leaf usage, and the backend's
+    /// certificate signature schemes.
+    pub const init: Policy = .{
+        .bundle = null,
+        .insecure_no_chain_anchor = false,
+        .now_sec = 0,
+        .host_name = null,
+        .leaf_usage = .server_auth,
+        .certificate_signature_schemes = backend.capabilities.certificate_signature_schemes,
+    };
 };
 
 // RFC 5280 §4.2.1.12 — id-kp-serverAuth (1.3.6.1.5.5.7.3.1).
@@ -144,7 +156,7 @@ pub fn verifyCertificateSignatureAlgorithm(
         .curveEd25519 => .ed25519,
         else => return error.CertificateSignatureAlgorithmRejected,
     };
-    if (std.mem.indexOfScalar(SignatureScheme, certificate_signature_schemes, scheme) == null)
+    if (mem.findScalar(SignatureScheme, certificate_signature_schemes, scheme) == null)
         return error.CertificateSignatureAlgorithmRejected;
 }
 

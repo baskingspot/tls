@@ -339,7 +339,7 @@ pub fn encodeRetryAfterHrrWithHybridAndPsk(
     if (selected_group == .secp384r1 and p384_public_key == null) return error.UnsupportedGroup;
     try validateHybridGroups(hybrid_groups, hybrid_share);
     if (selected_group.hybridSpec() != null and
-        mem.indexOfScalar(NamedGroup, hybrid_groups, selected_group) == null)
+        mem.findScalar(NamedGroup, hybrid_groups, selected_group) == null)
     {
         return error.UnsupportedGroup;
     }
@@ -532,7 +532,7 @@ fn validateHybridGroups(
     share: ?KemShare,
 ) capabilities.HybridPolicyError!void {
     if (share) |value| {
-        if (mem.indexOfScalar(NamedGroup, groups, value.group) == null)
+        if (mem.findScalar(NamedGroup, groups, value.group) == null)
             return error.InvalidHybridPolicy;
         const expected_len = value.group.publicKeyLen() orelse
             return error.InvalidHybridPolicy;
@@ -995,31 +995,53 @@ pub const ParseError = error{
 
 pub const Parsed = struct {
     cipher_suites: []const u8,
-    legacy_session_id: []const u8 = &.{},
-    signature_schemes: []const u8 = &.{},
-    server_name: ?[]const u8 = null,
-    alpn_protocols: []const u8 = &.{},
-    groups: SupportedGroups = .{},
-    public_key: ?x25519.PublicKey = null,
-    public_key_p256: ?p256.PublicKey = null,
-    public_key_p384: ?p384.PublicKey = null,
+    legacy_session_id: []const u8,
+    signature_schemes: []const u8,
+    server_name: ?[]const u8,
+    alpn_protocols: []const u8,
+    groups: SupportedGroups,
+    public_key: ?x25519.PublicKey,
+    public_key_p256: ?p256.PublicKey,
+    public_key_p384: ?p384.PublicKey,
     /// RFC 10024 hybrid key_share values borrowed from the ClientHello.
-    hybrid_key_shares: buffer.Array(ParsedKemKeyShare, 3) = .empty,
+    hybrid_key_shares: buffer.Array(ParsedKemKeyShare, 3),
     /// Offered ClientHello extensions tracked for validating server responses.
-    offered_extensions: OfferedExtensions = .initEmpty(),
+    offered_extensions: OfferedExtensions,
     /// pre_shared_key extension (RFC 8446 §4.2.11), if present. `psk_ext`
     /// points at the full extension ext_data (identities + binders) in the
     /// ClientHello buffer; `binders_offset` is the byte offset within the
     /// ClientHello message where the binders list begins (the binder hash
     /// covers msg[0..binders_offset]). Null when the client did not offer PSK.
-    psk_ext: ?[]const u8 = null,
-    binders_offset: usize = 0,
+    psk_ext: ?[]const u8,
+    binders_offset: usize,
     /// psk_key_exchange_modes (RFC 8446 §4.2.9), if present. Slice into the
     /// ClientHello buffer (the modes list, after the list-length byte).
-    psk_key_exchange_modes: ?[]const u8 = null,
+    psk_key_exchange_modes: ?[]const u8,
     /// Whether the client offered the early_data extension (0-RTT).
     /// RFC 8446 §4.2.10.
-    offered_early_data: bool = false,
+    offered_early_data: bool,
+
+    /// A ClientHello with the given cipher-suite vector and every optional
+    /// extension absent.
+    pub fn init(cipher_suites: []const u8) Parsed {
+        return .{
+            .cipher_suites = cipher_suites,
+            .legacy_session_id = &.{},
+            .signature_schemes = &.{},
+            .server_name = null,
+            .alpn_protocols = &.{},
+            .groups = .empty,
+            .public_key = null,
+            .public_key_p256 = null,
+            .public_key_p384 = null,
+            .hybrid_key_shares = .empty,
+            .offered_extensions = .initEmpty(),
+            .psk_ext = null,
+            .binders_offset = 0,
+            .psk_key_exchange_modes = null,
+            .offered_early_data = false,
+        };
+    }
 
     pub fn offersSuite(self: Parsed, suite: CipherSuite) bool {
         var i: usize = 0;
@@ -1332,11 +1354,8 @@ pub fn parse(msg: []const u8) ParseError!Parsed {
     const extensions_end = r.end + extensions_len;
     try extension_type.rejectDuplicateExtensions(msg[r.end..extensions_end]);
 
-    var parsed: Parsed = .{
-        .cipher_suites = cipher_suites,
-        .legacy_session_id = legacy_session_id,
-        .public_key = null,
-    };
+    var parsed: Parsed = .init(cipher_suites);
+    parsed.legacy_session_id = legacy_session_id;
     var got_supported_versions = false;
     var got_key_share = false;
     var got_server_name = false;
@@ -1599,7 +1618,10 @@ comptime {
 }
 
 pub const SupportedGroups = struct {
-    set: std.EnumSet(KnownGroup) = .initEmpty(),
+    set: std.EnumSet(KnownGroup),
+
+    /// No groups supported.
+    pub const empty: SupportedGroups = .{ .set = .initEmpty() };
 
     pub fn contains(self: SupportedGroups, group: NamedGroup) bool {
         const known = KnownGroup.fromNamed(group) orelse return false;
@@ -1633,7 +1655,7 @@ fn parseSupportedGroups(ext: []const u8) ParseError!SupportedGroups {
     var r: wire.Reader = .init(ext);
     const list_len = r.assumeRead(u16);
     if (list_len != ext.len - 2 or list_len % 2 != 0) return error.InvalidVectorLength;
-    var groups: SupportedGroups = .{};
+    var groups: SupportedGroups = .empty;
     while (r.end < ext.len) groups.insert(r.assumeRead(NamedGroup));
     if (!groups.hasImplemented()) return error.UnsupportedKeyShare;
     return groups;
@@ -1834,7 +1856,7 @@ test "parse: ClientHello with pre_shared_key round-trips" {
     // of the binders list within the message).
     try testing.expectEqual(r.prefix_len, parsed.binders_offset);
     // The identity appears in the parsed ext_data.
-    try testing.expect(std.mem.indexOf(u8, parsed.psk_ext.?, &identity) != null);
+    try testing.expect(mem.find(u8, parsed.psk_ext.?, &identity) != null);
 }
 
 // RFC 8446 §4.2.8 — encodedLenWithP256 accounts for the second key share.
@@ -1860,7 +1882,7 @@ test "encode: cipher suites match backend capabilities" {
     const encoded = try encode(&buf, .zero, .zero, null, &.{});
     const cs_offset = 39; // header(4) + version(2) + random(32) + session_id(1)
     try testing.expectEqual(
-        @as(u16, @intCast(supported_cipher_suites.len * 2)),
+        @as(u16, @intCast(cipher_suite_count * 2)),
         memx.readInt(u16, encoded[cs_offset..][0..2]),
     );
     inline for (supported_cipher_suites, 0..) |suite, i| {
