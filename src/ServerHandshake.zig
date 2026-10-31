@@ -320,6 +320,7 @@ pub const ClientAuthPolicy = enum {
     required,
 };
 
+// ast-grep-ignore: public-struct-field-default -- options bag: call sites override one knob
 pub const Config = struct {
     pub const ValidationError = capabilities.HybridPolicyError || error{MissingP384KeyPair};
 
@@ -329,38 +330,38 @@ pub const Config = struct {
     /// ServerHello random field (RFC 8446 §4.1.3). Stored and used once.
     random: Random,
     /// Cipher suites offered by this server, in server preference order.
-    supported_suites: []const CipherSuite,
+    supported_suites: []const CipherSuite = default_supported_suites,
     /// ALPN protocols supported by this server. Caller-owned.
-    alpn_protocols: root.AlpnProtocols,
+    alpn_protocols: root.AlpnProtocols = &.{},
     /// Server-side handshake-time client certificate policy.
-    client_auth: ClientAuthPolicy,
+    client_auth: ClientAuthPolicy = .none,
     /// Trust anchors for client certificate chain validation. Required when
     /// client_auth is .optional or .required and the client sends a non-empty
     /// certificate. If null, the server rejects non-empty client certificates
     /// unless insecure_no_client_chain_anchor is set.
-    client_auth_bundle: ?*const std.crypto.Certificate.Bundle,
+    client_auth_bundle: ?*const std.crypto.Certificate.Bundle = null,
     /// Test/demo opt-out from trust-anchor verification for client certs.
     /// Production servers should leave this false and provide
     /// client_auth_bundle.
-    insecure_no_client_chain_anchor: bool,
+    insecure_no_client_chain_anchor: bool = false,
     /// Current time in seconds since the Unix epoch for client certificate
     /// validity checks. Required when client_auth is non-none.
-    client_auth_now_sec: i64,
+    client_auth_now_sec: i64 = 0,
     /// Optional caller-owned ClientHello reassembly storage.
-    reassembly: ?[]u8,
+    reassembly: ?[]u8 = null,
     /// Optional caller-owned storage for retaining the verified client leaf
     /// certificate DER. The storage must outlive the handshake.
-    client_cert_buffer: ?[]u8,
+    client_cert_buffer: ?[]u8 = null,
     /// Optional caller-owned PSK lookup for session resumption (RFC 8446
     /// §4.2.11). When set, the server verifies offered PSK binders and, if one
     /// verifies, resumes with that PSK (psk_dhe_ke) instead of a full
     /// handshake. Caller-owned: tls stores no heap state.
-    psk_lookup: ?PskLookup,
+    psk_lookup: ?PskLookup = null,
     /// RFC 10024 hybrid groups accepted by this server, in preference order.
     /// Empty keeps hybrid negotiation disabled. A listed group with no client
     /// key_share may be selected through HelloRetryRequest. Caller-owned; the
     /// slice must remain valid through any ClientHello2 processing.
-    hybrid_groups: []const NamedGroup,
+    hybrid_groups: []const NamedGroup = &.{},
     /// RFC 8446 §4.2.10 — wire-byte budget for skipping already-in-flight
     /// 0-RTT records after this server declines an early_data offer, on both
     /// decline paths: the regular 1-RTT response (trial-deprotection with the
@@ -373,28 +374,7 @@ pub const Config = struct {
     /// `EarlyDataSkipLimitExceeded` (bad_record_mac). Size it above the
     /// largest total early data your tickets can put in flight; zero restores
     /// abort-on-first-failure.
-    early_data_skip_limit: u32,
-
-    /// A server config with no ALPN, no client auth, no reassembly or
-    /// retention storage, no PSK lookup, no hybrid groups, and the default
-    /// early-data skip budget.
-    pub fn init(keypairs: KeyPairs, random: Random) Config {
-        return .{
-            .keypairs = keypairs,
-            .random = random,
-            .supported_suites = default_supported_suites,
-            .alpn_protocols = &.{},
-            .client_auth = .none,
-            .client_auth_bundle = null,
-            .insecure_no_client_chain_anchor = false,
-            .client_auth_now_sec = 0,
-            .reassembly = null,
-            .client_cert_buffer = null,
-            .psk_lookup = null,
-            .hybrid_groups = &.{},
-            .early_data_skip_limit = default_early_data_skip_limit,
-        };
-    }
+    early_data_skip_limit: u32 = default_early_data_skip_limit,
 
     /// Validate local hybrid policy before handshake construction or wire I/O.
     pub fn validate(self: *const Config) ValidationError!void {

@@ -201,6 +201,7 @@ pub const HybridPolicy = struct {
     }
 };
 
+// ast-grep-ignore: public-struct-field-default -- options bag: call sites override one knob
 pub const Config = struct {
     pub const ValidationError = HybridPolicyError || error{MissingP384KeyPair};
 
@@ -222,40 +223,19 @@ pub const Config = struct {
     random: Random,
     /// Trust anchors for chain validation. null rejects the server Certificate
     /// unless `insecure_no_chain_anchor` is set.
-    bundle: ?*const crypto.Certificate.Bundle,
+    bundle: ?*const crypto.Certificate.Bundle = null,
     /// Test/demo opt-out from trust-anchor verification. Production clients
     /// should leave this false and provide `bundle`.
-    insecure_no_chain_anchor: bool,
+    insecure_no_chain_anchor: bool = false,
     /// ALPN protocols offered in ClientHello. Caller-owned; must live through
     /// ClientHello2 because HelloRetryRequest reuses them.
-    alpn_protocols: AlpnProtocols,
+    alpn_protocols: AlpnProtocols = &.{},
     /// RFC 10024 hybrid-group policy. Disabled by default so existing caller
     /// buffer sizes and ClientHello shape remain unchanged.
-    hybrid: HybridPolicy,
+    hybrid: HybridPolicy = .empty,
     /// Optional caller-owned storage for handshake-message reassembly. When
     /// non-null, the engine reassembles flight messages that span records.
-    reassembly: ?[]u8,
-
-    /// A client config with no trust anchor, no insecure opt-in, no ALPN, no
-    /// hybrid policy, and no reassembly storage.
-    pub fn init(
-        keypairs: KeyPairs,
-        host_name: ?[]const u8,
-        now_sec: i64,
-        random: Random,
-    ) Config {
-        return .{
-            .keypairs = keypairs,
-            .host_name = host_name,
-            .now_sec = now_sec,
-            .random = random,
-            .bundle = null,
-            .insecure_no_chain_anchor = false,
-            .alpn_protocols = &.{},
-            .hybrid = .empty,
-            .reassembly = null,
-        };
-    }
+    reassembly: ?[]u8 = null,
 
     /// Validate local hybrid policy before handshake construction or wire I/O.
     pub fn validate(self: *const Config) ValidationError!void {
