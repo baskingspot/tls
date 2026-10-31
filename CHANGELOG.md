@@ -5,6 +5,16 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `ClientHandshake.Config` and `ServerHandshake.Config` are options bags
+  again: build them as a struct literal with the required fields named, and
+  drop `Config.init`. The client's `bundle`, `insecure_no_chain_anchor`,
+  `alpn_protocols`, `hybrid`, and `reassembly`, and the server's optional
+  fields, carry their defaults again. `ClientHandshake.init(.{ ... })` reads
+  as one value instead of an argument order plus post-construction writes.
+
+
 ## [0.1.0] - 2026-10-30
 
 ### Added
