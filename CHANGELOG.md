@@ -5,6 +5,8 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-31
+
 ### Changed
 
 - `ClientHandshake.Config` and `ServerHandshake.Config` are options bags
@@ -13,7 +15,6 @@ All notable changes to tls are recorded here. The format follows
   `alpn_protocols`, `hybrid`, and `reassembly`, and the server's optional
   fields, carry their defaults again. `ClientHandshake.init(.{ ... })` reads
   as one value instead of an argument order plus post-construction writes.
-
 
 ## [0.1.0] - 2026-10-30
 
