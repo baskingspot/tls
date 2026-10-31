@@ -187,10 +187,12 @@ fn runServer(context: *ServerContext) !void {
     var random: tls.Random = undefined;
     context.io.random(&random.data);
     const supported_suites = [_]tls.CipherSuite{context.suite};
-    var handshake_config: tls.ServerHandshake.Config = .init(try .init(context.keypair), random);
-    handshake_config.supported_suites = &supported_suites;
-    handshake_config.alpn_protocols = &.{"h2"};
-    var handshake: tls.ServerHandshake = .init(handshake_config);
+    var handshake: tls.ServerHandshake = .init(.{
+        .keypairs = try .init(context.keypair),
+        .random = random,
+        .supported_suites = &supported_suites,
+        .alpn_protocols = &.{"h2"},
+    });
     defer handshake.deinit();
     var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
@@ -433,15 +435,14 @@ fn runClient(
 
     var random: tls.Random = undefined;
     context.io.random(&random.data);
-    var handshake_config: tls.ClientHandshake.Config = .init(
-        try .init(keypair),
-        server_name,
-        Io.Timestamp.now(context.io, .real).toSeconds(),
-        random,
-    );
-    handshake_config.insecure_no_chain_anchor = true;
-    handshake_config.alpn_protocols = &.{"h2"};
-    var handshake: tls.ClientHandshake = .init(handshake_config);
+    var handshake: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(keypair),
+        .host_name = server_name,
+        .now_sec = Io.Timestamp.now(context.io, .real).toSeconds(),
+        .random = random,
+        .insecure_no_chain_anchor = true,
+        .alpn_protocols = &.{"h2"},
+    });
     defer handshake.deinit();
 
     var out: tls.ClientHandshake.OutBuffer = .empty;

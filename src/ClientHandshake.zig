@@ -256,8 +256,16 @@ test "HybridPolicy.validate rejects an initial share outside its group list" {
 test "Config.validate reports unavailable groups and missing P-384 material" {
     var keypairs: KeyPairs = try .init(.generate());
     defer keypairs.secureZero();
-    var config: Config = .init(keypairs, null, 0, .zero);
-    config.hybrid = .{ .supported_groups = &.{.secp384r1_mlkem1024}, .initial_key_share = null };
+    const config: Config = .{
+        .keypairs = keypairs,
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .hybrid = .{
+            .supported_groups = &.{.secp384r1_mlkem1024},
+            .initial_key_share = null,
+        },
+    };
     if (capabilities.supportsHybridGroup(.client, .secp384r1_mlkem1024)) {
         try testing.expectError(error.MissingP384KeyPair, config.validate());
     } else {
@@ -268,12 +276,16 @@ test "Config.validate reports unavailable groups and missing P-384 material" {
 test "start validates hybrid policy before key generation and output" {
     var keypairs: KeyPairs = try .init(.generate());
     defer keypairs.secureZero();
-    var client_config: Config = .init(keypairs, null, 0, .zero);
-    client_config.hybrid = .{
-        .supported_groups = &.{.x25519_mlkem768},
-        .initial_key_share = .secp256r1_mlkem768,
-    };
-    var client: ClientHandshake = .init(client_config);
+    var client: ClientHandshake = .init(.{
+        .keypairs = keypairs,
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .hybrid = .{
+            .supported_groups = &.{.x25519_mlkem768},
+            .initial_key_share = .secp256r1_mlkem768,
+        },
+    });
     defer client.deinit();
 
     var out: [max_out_len]u8 = @splat(0xaa);
@@ -2418,7 +2430,7 @@ test "deriveHandshakeKeys: RFC 8448 §3 server handshake key/iv/finished" {
 // RFC 8448 §3 client ephemeral X25519 keypair (secret + the public from the
 // ClientHello key_share).
 fn testConfig(keypair: x25519.KeyPair) !Config {
-    return .init(try .init(keypair), null, 0, .zero);
+    return .{ .keypairs = try .init(keypair), .host_name = null, .now_sec = 0, .random = .zero };
 }
 
 const p256_client_seed: p256.SecretKey = .init(.{
@@ -2473,12 +2485,12 @@ test "processServerHello: RFC 8448 §3 installs server handshake keys" {
 test "processServerHello: accepts secp256r1 key_share" {
     const client_p256 = try p256.KeyPair.generateDeterministic(p256_client_seed);
     const server_p256 = try p256.KeyPair.generateDeterministic(p256_server_seed);
-    var hs: ClientHandshake = .init(.init(
-        .initWithP256(rfc8448_client_keypair, client_p256),
-        null,
-        0,
-        .zero,
-    ));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = .initWithP256(rfc8448_client_keypair, client_p256),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try client_hello.encodeWithP256(
@@ -2509,12 +2521,12 @@ test "processServerHello: rejects invalid secp256r1 point" {
     const client_p256 = try p256.KeyPair.generateDeterministic(p256_client_seed);
     var bad_p256: p256.PublicKey = .init(@splat(0));
     bad_p256.data[0] = 0x04;
-    var hs: ClientHandshake = .init(.init(
-        .initWithP256(rfc8448_client_keypair, client_p256),
-        null,
-        0,
-        .zero,
-    ));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = .initWithP256(rfc8448_client_keypair, client_p256),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try client_hello.encodeWithP256(
@@ -4121,7 +4133,12 @@ test "clientFinished: RFC 8448 §4 resumption_master_secret over the live transc
 // with the binder computed over the truncated prefix and patched in. Verify
 // the binder matches an independent HMAC over the same prefix.
 test "startWithPsk: binder matches an independent HMAC over the prefix" {
-    var hs: ClientHandshake = .init(.init(try .init(.generate()), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     // Use the RFC 8448 §4 PSK (nonce 00 00 from the §3 resumption master) so
     // the binder key chain is the vector-tested one.
@@ -4170,12 +4187,16 @@ test "startWithPsk: advertises configured RFC 10024 key share" {
     ticket.identity.appendSliceAssumeCapacity("ticket");
     ticket.psk.appendSliceAssumeCapacity(&psk);
 
-    var hs_config: Config = .init(try .init(.generate()), null, 0, .zero);
-    hs_config.hybrid = .{
-        .supported_groups = &.{.secp256r1_mlkem768},
-        .initial_key_share = .secp256r1_mlkem768,
-    };
-    var hs: ClientHandshake = .init(hs_config);
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .hybrid = .{
+            .supported_groups = &.{.secp256r1_mlkem768},
+            .initial_key_share = .secp256r1_mlkem768,
+        },
+    });
     defer hs.deinit();
 
     var out: [4096]u8 = undefined;
@@ -4313,7 +4334,12 @@ test "processServerHello rejects selected PSK with incompatible cipher suite has
     const identity = [_]u8{ 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59 };
     const client_keypair = x25519.KeyPair.generate();
     const server_keypair = x25519.KeyPair.generate();
-    var client: ClientHandshake = .init(.init(try .init(client_keypair), null, 0, .zero));
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(client_keypair),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer client.deinit();
     var ticket: SessionTicket = .init(0, 0, .aes_256_gcm_sha384, null);
     ticket.identity.appendSliceAssumeCapacity(&identity);
@@ -4356,7 +4382,12 @@ test "handleRecord: PSK-offering client rejects bare Finished unless server sele
     const fake_finished: [4 + 32]u8 = .{ 0x14, 0x00, 0x00, 0x20 } ++ @as([32]u8, @splat(0xaa));
 
     // ---- Adversarial case: server declines the PSK but tries a bare Finished. ----
-    var client: ClientHandshake = .init(.init(try .init(client_kp), null, 0, .zero));
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(client_kp),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     client.policy.insecure_no_chain_anchor = true;
     defer client.deinit();
 
@@ -4403,7 +4434,12 @@ test "handleRecord: PSK-offering client rejects bare Finished unless server sele
     try testing.expect(client.state != .connected);
 
     // ---- Legitimate case: server selects the PSK and sends a valid bare Finished. ----
-    var client2: ClientHandshake = .init(.init(try .init(client_kp), null, 0, .zero));
+    var client2: ClientHandshake = .init(.{
+        .keypairs = try .init(client_kp),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     client2.policy.insecure_no_chain_anchor = true;
     defer client2.deinit();
 
@@ -4630,12 +4666,12 @@ test "handleRecord: KeyUpdate flood cap fires despite empty app-data interleavin
 // RFC 8446 §4.1.2, §4.4.2.2 — Config.host_name is the single source for SNI
 // (server_name extension) and certificate SAN validation.
 test "start: uses Config host_name for SNI and policy" {
-    var hs: ClientHandshake = .init(.init(
-        try .init(rfc8448_client_keypair),
-        "example.com",
-        0,
-        .{ .data = @splat(0xaa) },
-    ));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try .init(rfc8448_client_keypair),
+        .host_name = "example.com",
+        .now_sec = 0,
+        .random = .{ .data = @splat(0xaa) },
+    });
     defer hs.deinit();
     var out: [256]u8 = undefined;
     _ = try hs.start(&out);
@@ -4902,12 +4938,16 @@ fn setupZeroRttClientForFuzz(
     ticket: *const SessionTicket,
     alpn_protocols: AlpnProtocols,
 ) !ClientHandshake {
-    var hs_config: Config = .init(.initWithP256(
-        rfc8448_client_keypair,
-        try p256.KeyPair.generateDeterministic(p256_client_seed),
-    ), null, 0, .zero);
-    hs_config.alpn_protocols = alpn_protocols;
-    var hs: ClientHandshake = .init(hs_config);
+    var hs: ClientHandshake = .init(.{
+        .keypairs = .initWithP256(
+            rfc8448_client_keypair,
+            try p256.KeyPair.generateDeterministic(p256_client_seed),
+        ),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .alpn_protocols = alpn_protocols,
+    });
     errdefer hs.deinit();
 
     // Build a ClientHello with PSK + early_data but no P-256 key_share entry,
@@ -5140,7 +5180,12 @@ fn hrrTestKeyPairs() !KeyPairs {
 // RFC 8446 §4.2.8 — HRR selected_group must not be a group that already had a
 // KeyShareEntry in ClientHello1.
 test "processHelloRetryRequest: rejects already-offered key_share group" {
-    var hs: ClientHandshake = .init(.init(try hrrTestKeyPairs(), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try client_hello.encodeWithP256(
@@ -5164,12 +5209,12 @@ test "processHelloRetryRequest: rejects already-offered key_share group" {
 // the secp256r1 key_share.
 test "processHelloRetryRequest: secp256r1 selected produces ClientHello2" {
     const client_p256 = try p256.KeyPair.generateDeterministic(p256_client_seed);
-    var hs: ClientHandshake = .init(.init(
-        .initWithP256(rfc8448_client_keypair, client_p256),
-        null,
-        0,
-        .zero,
-    ));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = .initWithP256(rfc8448_client_keypair, client_p256),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
@@ -5192,7 +5237,12 @@ test "processHelloRetryRequest: secp256r1 selected produces ClientHello2" {
 //   Hash(message_hash || 00 00 Hash.length || Hash(ClientHello1) || HRR || CH2)
 // Verify the collapse by computing the expected transcript independently.
 test "processHelloRetryRequest: transcript collapse matches §4.4.1" {
-    var hs: ClientHandshake = .init(.init(try hrrTestKeyPairs(), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
@@ -5226,9 +5276,13 @@ test "processHelloRetryRequest: removes PSK with incompatible hash" {
     const group: NamedGroup = .x25519_mlkem768;
     if (!backend.supportsClientHybridGroup(group)) return error.SkipZigTest;
 
-    var hs_config: Config = .init(try hrrTestKeyPairs(), null, 0, .zero);
-    hs_config.hybrid = .{ .supported_groups = &.{group}, .initial_key_share = null };
-    var hs: ClientHandshake = .init(hs_config);
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .hybrid = .{ .supported_groups = &.{group}, .initial_key_share = null },
+    });
     defer hs.deinit();
     var ticket: SessionTicket = .init(0, 0, .aes_256_gcm_sha384, null);
     ticket.identity.appendSliceAssumeCapacity(&.{0x01});
@@ -5250,7 +5304,12 @@ test "processHelloRetryRequest: removes PSK with incompatible hash" {
 // RFC 8446 §4.1.4 — a second HelloRetryRequest is illegal; the client must
 // abort with unexpected_message.
 test "processHelloRetryRequest: rejects second HRR" {
-    var hs: ClientHandshake = .init(.init(try hrrTestKeyPairs(), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
@@ -5271,7 +5330,12 @@ test "processHelloRetryRequest: rejects second HRR" {
 
 // RFC 8446 §4.1.4 — HRR selected_group must be one the client offered.
 test "processHelloRetryRequest: rejects unoffered selected_group" {
-    var hs: ClientHandshake = .init(.init(try hrrTestKeyPairs(), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
@@ -5290,7 +5354,12 @@ test "processHelloRetryRequest: rejects unoffered selected_group" {
 
 // RFC 8446 §4.1.3 — after HRR, the ServerHello cipher suite must match the HRR.
 test "processServerHello: post-HRR rejects mismatched cipher suite" {
-    var hs: ClientHandshake = .init(.init(try hrrTestKeyPairs(), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
@@ -5317,7 +5386,12 @@ test "processServerHello: post-HRR rejects mismatched cipher suite" {
 // RFC 8446 §4.1.3 — after HRR, the ServerHello key_share group must match the
 // HRR selected_group.
 test "processServerHello: post-HRR rejects mismatched key_share group" {
-    var hs: ClientHandshake = .init(.init(try hrrTestKeyPairs(), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
@@ -5346,7 +5420,12 @@ test "processServerHello: post-HRR rejects mismatched key_share group" {
 // matching cipher suite and secp256r1 key_share is accepted and derives keys.
 test "processServerHello: post-HRR accepts matching ServerHello" {
     const server_p256 = try p256.KeyPair.generateDeterministic(p256_server_seed);
-    var hs: ClientHandshake = .init(.init(try hrrTestKeyPairs(), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
@@ -5375,7 +5454,12 @@ test "processServerHello: post-HRR accepts matching ServerHello" {
 // RFC 8446 §4.1.4 — handleRecord with an HRR record returns ClientHello2 as
 // a .write event, and the client stays in wait_sh.
 test "handleRecord: HRR returns ClientHello2 as write event" {
-    var hs: ClientHandshake = .init(.init(try hrrTestKeyPairs(), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
@@ -5426,7 +5510,12 @@ test "processHelloRetryRequest: returns null for normal ServerHello" {
 // RFC 8446 §4.2.2 — HRR with a cookie produces ClientHello2 that echoes the
 // cookie verbatim in the cookie extension.
 test "processHelloRetryRequest: HRR with cookie echoes cookie in CH2" {
-    var hs: ClientHandshake = .init(.init(try hrrTestKeyPairs(), null, 0, .zero));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try hrrTestKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);
@@ -5608,12 +5697,12 @@ test "processServerHello: failed key exchange rolls back the transcript union" {
 // the length check, so the retry read the inactive .buffering arm.
 test "processHelloRetryRequest: BufferTooShort rolls back; retry succeeds" {
     const client_p256 = try p256.KeyPair.generateDeterministic(p256_client_seed);
-    var hs: ClientHandshake = .init(.init(
-        .initWithP256(rfc8448_client_keypair, client_p256),
-        null,
-        0,
-        .zero,
-    ));
+    var hs: ClientHandshake = .init(.{
+        .keypairs = .initWithP256(rfc8448_client_keypair, client_p256),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloMissingP256ShareForTest(&ch_buf, &hs);

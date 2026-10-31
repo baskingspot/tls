@@ -100,9 +100,13 @@ pub fn main(init: std.process.Init) !void {
     var flight_buf: [1024]u8 = undefined;
     const server_flight_record = fixture("server_flight_record.b64", &flight_buf);
 
-    var hs_config: tls.ClientHandshake.Config = .init(try .init(client_keypair), null, 0, .zero);
-    hs_config.insecure_no_chain_anchor = true;
-    var hs: tls.ClientHandshake = .init(hs_config);
+    var hs: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(client_keypair),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .insecure_no_chain_anchor = true,
+    });
     defer hs.deinit();
     // We replay the fixed §3 ClientHello (so the transcript matches the trace),
     // so inject it rather than encoding a fresh one via start().

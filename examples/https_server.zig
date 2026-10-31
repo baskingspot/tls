@@ -61,9 +61,11 @@ pub fn main(init: std.process.Init) !void {
     const server_keypair: tls.x25519.KeyPair = .generate();
     var random: tls.Random = undefined;
     io.random(&random.data);
-    var hs_config: tls.ServerHandshake.Config = .init(try .init(server_keypair), random);
-    hs_config.alpn_protocols = &.{"http/1.1"};
-    var hs: tls.ServerHandshake = .init(hs_config);
+    var hs: tls.ServerHandshake = .init(.{
+        .keypairs = try .init(server_keypair),
+        .random = random,
+        .alpn_protocols = &.{"http/1.1"},
+    });
     defer hs.deinit();
 
     var signer = try tls.signature.PrivateKey.fromP256Scalar(scalar[0..32]);

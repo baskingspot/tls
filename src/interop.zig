@@ -357,7 +357,10 @@ test "tls-to-tls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
 
             var random: tls.Random = .empty;
             entropy.fill(&random.data);
-            var hs: tls.ServerHandshake = .init(.init(try .init(c.server_keypair), random));
+            var hs: tls.ServerHandshake = .init(.{
+                .keypairs = try .init(c.server_keypair),
+                .random = random,
+            });
             defer hs.deinit();
             const suites = [_]tls.CipherSuite{.chacha20_poly1305_sha256};
             hs.supportSuites(&suites);
@@ -467,14 +470,13 @@ test "tls-to-tls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
 
     var random: tls.Random = .empty;
     entropy.fill(&random.data);
-    var hs_config: tls.ClientHandshake.Config = .init(
-        try .init(client_keypair),
-        "ztls.server.test",
-        0,
-        random,
-    );
-    hs_config.insecure_no_chain_anchor = true;
-    var hs: tls.ClientHandshake = .init(hs_config);
+    var hs: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(client_keypair),
+        .host_name = "ztls.server.test",
+        .now_sec = 0,
+        .random = random,
+        .insecure_no_chain_anchor = true,
+    });
     defer hs.deinit();
 
     var out: tls.ClientHandshake.OutBuffer = .empty;
@@ -709,9 +711,14 @@ fn clientInterop(stream: Stream, group: ?tls.kex.NamedGroup) !void {
     else
         null;
     const groups = [_]tls.kex.NamedGroup{hybrid_group orelse .x25519_mlkem768};
-    var hs_config: tls.ClientHandshake.Config = .init(keypairs, "localhost", 0, random);
-    hs_config.insecure_no_chain_anchor = true;
-    hs_config.alpn_protocols = &.{alpn_protocol};
+    var hs_config: tls.ClientHandshake.Config = .{
+        .keypairs = keypairs,
+        .host_name = "localhost",
+        .now_sec = 0,
+        .random = random,
+        .insecure_no_chain_anchor = true,
+        .alpn_protocols = &.{alpn_protocol},
+    };
     hs_config.hybrid = if (hybrid_group) |selected| .{
         .supported_groups = &groups,
         .initial_key_share = selected,
@@ -784,10 +791,14 @@ fn clientInteropCaptureTicket(stream: Stream) !tls.ClientHandshake.SessionTicket
     var random: tls.Random = .empty;
     entropy.fill(&random.data);
 
-    var hs_config: tls.ClientHandshake.Config = .init(try .init(kp), "localhost", 0, random);
-    hs_config.insecure_no_chain_anchor = true;
-    hs_config.alpn_protocols = &.{alpn_protocol};
-    var hs: tls.ClientHandshake = .init(hs_config);
+    var hs: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(kp),
+        .host_name = "localhost",
+        .now_sec = 0,
+        .random = random,
+        .insecure_no_chain_anchor = true,
+        .alpn_protocols = &.{alpn_protocol},
+    });
     defer hs.deinit();
 
     var out: [4096]u8 = undefined;
@@ -864,10 +875,14 @@ fn clientInteropResume(stream: Stream, ticket: *const tls.ClientHandshake.Sessio
     var random: tls.Random = .empty;
     entropy.fill(&random.data);
 
-    var hs_config: tls.ClientHandshake.Config = .init(try .init(kp), "localhost", 0, random);
-    hs_config.insecure_no_chain_anchor = true;
-    hs_config.alpn_protocols = &.{alpn_protocol};
-    var hs: tls.ClientHandshake = .init(hs_config);
+    var hs: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(kp),
+        .host_name = "localhost",
+        .now_sec = 0,
+        .random = random,
+        .insecure_no_chain_anchor = true,
+        .alpn_protocols = &.{alpn_protocol},
+    });
     defer hs.deinit();
 
     var out: [4096]u8 = undefined;
@@ -936,10 +951,14 @@ fn clientEarlyDataInterop(
     var random: tls.Random = .empty;
     entropy.fill(&random.data);
 
-    var hs_config: tls.ClientHandshake.Config = .init(try .init(kp), "localhost", 0, random);
-    hs_config.insecure_no_chain_anchor = true;
-    hs_config.alpn_protocols = &.{alpn_protocol};
-    var hs: tls.ClientHandshake = .init(hs_config);
+    var hs: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(kp),
+        .host_name = "localhost",
+        .now_sec = 0,
+        .random = random,
+        .insecure_no_chain_anchor = true,
+        .alpn_protocols = &.{alpn_protocol},
+    });
     defer hs.deinit();
 
     var out: [4096]u8 = undefined;
@@ -1307,7 +1326,7 @@ fn serve(
     else
         null;
     const groups = [_]tls.kex.NamedGroup{hybrid_group orelse .x25519_mlkem768};
-    var hs_config: tls.ServerHandshake.Config = .init(keypairs, server_random);
+    var hs_config: tls.ServerHandshake.Config = .{ .keypairs = keypairs, .random = server_random };
     hs_config.psk_lookup = if (ticket_phase == .reuse) .{
         .context = ticket_state.?,
         .lookup = ServerTicketState.lookup,
@@ -1473,10 +1492,12 @@ fn serveClientAuth(stream: Stream) !void {
     var server_random: tls.Random = .empty;
     entropy.fill(&server_random.data);
 
-    var hs_config: tls.ServerHandshake.Config = .init(try .init(server_keypair), server_random);
-    hs_config.client_auth = .required;
-    hs_config.insecure_no_client_chain_anchor = true;
-    var hs: tls.ServerHandshake = .init(hs_config);
+    var hs: tls.ServerHandshake = .init(.{
+        .keypairs = try .init(server_keypair),
+        .random = server_random,
+        .client_auth = .required,
+        .insecure_no_client_chain_anchor = true,
+    });
     defer hs.deinit();
     hs.supportAlpn(&.{alpn_protocol});
     const supported = [_]tls.CipherSuite{.aes_128_gcm_sha256};
@@ -1625,10 +1646,14 @@ fn clientInteropWithCreds(stream: Stream) !void {
     var random: tls.Random = .empty;
     entropy.fill(&random.data);
 
-    var hs_config: tls.ClientHandshake.Config = .init(try .init(kp), "localhost", 0, random);
-    hs_config.insecure_no_chain_anchor = true;
-    hs_config.alpn_protocols = &.{alpn_protocol};
-    var hs: tls.ClientHandshake = .init(hs_config);
+    var hs: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(kp),
+        .host_name = "localhost",
+        .now_sec = 0,
+        .random = random,
+        .insecure_no_chain_anchor = true,
+        .alpn_protocols = &.{alpn_protocol},
+    });
     defer hs.deinit();
     // Present the self-signed ECDSA fixture as the client certificate.
     var client_signer = try tls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);

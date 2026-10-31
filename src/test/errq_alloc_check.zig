@@ -163,7 +163,12 @@ fn abortEarlyClient() CheckError!void {
     var ticket: tls.ClientHandshake.SessionTicket = undefined;
     initAbortTicket(&ticket);
     defer ticket.secureZero();
-    var client: tls.ClientHandshake = .init(.init(try abortKeyPairs(), null, 0, .zero));
+    var client: tls.ClientHandshake = .init(.{
+        .keypairs = try abortKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer client.deinit();
     var wire: [4096]u8 = undefined;
     _ = client.startWithPsk(&ticket, &wire, true) catch return error.UnexpectedBackendResult;
@@ -186,15 +191,22 @@ fn abortEarlyServer() CheckError!void {
     var ticket: tls.ClientHandshake.SessionTicket = undefined;
     initAbortTicket(&ticket);
     defer ticket.secureZero();
-    var client: tls.ClientHandshake = .init(.init(try abortKeyPairs(), null, 0, .zero));
+    var client: tls.ClientHandshake = .init(.{
+        .keypairs = try abortKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer client.deinit();
     client.keypairs.x25519.public_key = .zero;
     var client_wire: [4096]u8 = undefined;
     const hello = client.startWithPsk(&ticket, &client_wire, true) catch
         return error.UnexpectedBackendResult;
-    var server_config: tls.ServerHandshake.Config = .init(try abortKeyPairs(), .zero);
-    server_config.psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk };
-    var server: tls.ServerHandshake = .init(server_config);
+    var server: tls.ServerHandshake = .init(.{
+        .keypairs = try abortKeyPairs(),
+        .random = .zero,
+        .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
+    });
     defer server.deinit();
     var server_wire: [4096]u8 = undefined;
     _ = server.acceptClientHello(hello, &server_wire) catch |err| {
@@ -213,11 +225,18 @@ fn abortClientFinished() CheckError!void {
     var ticket: tls.ClientHandshake.SessionTicket = undefined;
     initAbortTicket(&ticket);
     defer ticket.secureZero();
-    var client: tls.ClientHandshake = .init(.init(try abortKeyPairs(), null, 0, .zero));
+    var client: tls.ClientHandshake = .init(.{
+        .keypairs = try abortKeyPairs(),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
     defer client.deinit();
-    var server_config: tls.ServerHandshake.Config = .init(try abortKeyPairs(), .zero);
-    server_config.psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk };
-    var server: tls.ServerHandshake = .init(server_config);
+    var server: tls.ServerHandshake = .init(.{
+        .keypairs = try abortKeyPairs(),
+        .random = .zero,
+        .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
+    });
     defer server.deinit();
     var client_wire: [4096]u8 = undefined;
     var server_wire: [4096]u8 = undefined;
