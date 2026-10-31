@@ -29,7 +29,7 @@ The [API reference](api/) documents every public declaration.
 ## Install
 
 ```sh
-zig fetch --save git+https://github.com/baskingspot/tls
+zig fetch --save https://baskingspot.dev/tls/v0.1.0.tar.gz
 ```
 
 Add the module to your build:
