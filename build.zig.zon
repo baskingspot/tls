@@ -7,14 +7,14 @@
         // Production: fixed-capacity containers and memory scans shared with
         // the rest of the baskingspot tree. Not lazy — the library imports it.
         .stdx = .{
-            .url = "https://baskingspot.dev/stdx/v0.1.0.tar.gz",
-            .hash = "stdx-0.1.0-CcWegpvnCwDIxwtqeK-gIprxGwAjg4z4C5diOhw3px_n",
+            .url = "https://baskingspot.dev/stdx/v0.2.0.tar.gz",
+            .hash = "stdx-0.2.0-CcWeggcIDwBIs7R6BX4h5bDz5Cd-SrTSTIBms3j-71oA",
         },
         // Development-only: the test runner, benchmarks, and comptime txtar
         // fixtures. Lazy so consumers of the library never fetch it.
         .testingx = .{
-            .url = "https://baskingspot.dev/testingx/v0.2.0.tar.gz",
-            .hash = "testingx-0.2.0-ib95-5lNAwA8WZQH6Q6eDm2hgfC3ixFJuhkOrR8gcZAm",
+            .url = "https://baskingspot.dev/testingx/v0.3.0.tar.gz",
+            .hash = "testingx-0.3.0-ib95-2tXAwAmz8ZshsAcHR2UiaNfHqG_mzBe0JTTPLs4",
             .lazy = true,
         },
         // Integration-only: fetched when a consumer opts into tls_xev.

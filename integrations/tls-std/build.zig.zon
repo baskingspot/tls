@@ -26,8 +26,8 @@
         // Development-only: test runner and comptime fixtures. Lazy so
         // consumers of this package never fetch it.
         .testingx = .{
-            .url = "https://baskingspot.dev/testingx/v0.2.0.tar.gz",
-            .hash = "testingx-0.2.0-ib95-5lNAwA8WZQH6Q6eDm2hgfC3ixFJuhkOrR8gcZAm",
+            .url = "https://baskingspot.dev/testingx/v0.3.0.tar.gz",
+            .hash = "testingx-0.3.0-ib95-2tXAwAmz8ZshsAcHR2UiaNfHqG_mzBe0JTTPLs4",
             .lazy = true,
         },
     },
