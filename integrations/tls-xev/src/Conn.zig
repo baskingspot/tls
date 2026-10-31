@@ -312,20 +312,21 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
             }
 
             const engine: Handshake = if (role == .client) blk: {
-                var client_config: tls.ClientHandshake.Config = .init(
-                    keypairs,
-                    host,
-                    std.Io.Timestamp.now(io, .real).toSeconds(),
-                    random,
-                );
-                client_config.alpn_protocols = config.alpn;
-                client_config.hybrid = config.hybrid;
-                break :blk .init(client_config);
+                break :blk .init(.{
+                    .keypairs = keypairs,
+                    .host_name = host,
+                    .now_sec = std.Io.Timestamp.now(io, .real).toSeconds(),
+                    .random = random,
+                    .alpn_protocols = config.alpn,
+                    .hybrid = config.hybrid,
+                });
             } else blk: {
-                var server_config: tls.ServerHandshake.Config = .init(keypairs, random);
-                server_config.alpn_protocols = config.alpn;
-                server_config.hybrid_groups = config.hybrid_groups;
-                break :blk .init(server_config);
+                break :blk .init(.{
+                    .keypairs = keypairs,
+                    .random = random,
+                    .alpn_protocols = config.alpn,
+                    .hybrid_groups = config.hybrid_groups,
+                });
             };
 
             self.* = .{

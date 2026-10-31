@@ -89,12 +89,12 @@ pub fn benchmarkRecordBufferNext(b: *testingx.B) !void {
 }
 
 fn replayHandshake(records: []const u8, out: []u8) !void {
-    var hs: tls.ClientHandshake = .init(.init(
-        try .init(rfc8448.client_keypair),
-        rfc8448.replay_host_name,
-        0,
-        rfc8448.client_random,
-    ));
+    var hs: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(rfc8448.client_keypair),
+        .host_name = rfc8448.replay_host_name,
+        .now_sec = 0,
+        .random = rfc8448.client_random,
+    });
     defer hs.deinit();
     _ = try hs.start(out);
     hs.completeWrite();
@@ -149,51 +149,49 @@ fn deterministicServerKeypair() !tls.x25519.KeyPair {
 }
 
 fn deterministicClientHandshake() tls.ClientHandshake {
-    var config: tls.ClientHandshake.Config = .init(
-        // Bench-only setup on fixed seeds; the calls cannot fail for these
-        // inputs, but they are fallible now (#88), so a failure must be a
-        // loud panic, not `unreachable` UB in ReleaseFast.
-        KeyPairs.init(
+    // Bench-only setup on fixed seeds; the calls cannot fail for these inputs,
+    // but they are fallible now (#88), so a failure must be a loud panic, not
+    // `unreachable` UB in ReleaseFast.
+    return .init(.{
+        .keypairs = KeyPairs.init(
             deterministicClientKeypair() catch @panic("x25519 keygen failed"),
         ) catch @panic("p256 keygen failed"),
-        "ztls.server.test",
-        0,
-        rfc8448.client_random,
-    );
-    config.insecure_no_chain_anchor = true;
-    return .init(config);
+        .host_name = "ztls.server.test",
+        .now_sec = 0,
+        .random = rfc8448.client_random,
+        .insecure_no_chain_anchor = true,
+    });
 }
 
 fn deterministicServerHandshake() tls.ServerHandshake {
-    return .init(.init(
-        KeyPairs.init(
+    return .init(.{
+        .keypairs = KeyPairs.init(
             deterministicServerKeypair() catch @panic("x25519 keygen failed"),
         ) catch @panic("p256 keygen failed"),
-        rfc8448.server_random,
-    ));
+        .random = rfc8448.server_random,
+    });
 }
 
 fn connectPair(comptime suite: Suite) !struct {
     client: tls.ClientHandshake,
     server: tls.ServerHandshake,
 } {
-    var client_config: tls.ClientHandshake.Config = .init(
-        try .init(try deterministicClientKeypair()),
-        "ztls.server.test",
-        0,
-        rfc8448.client_random,
-    );
-    client_config.insecure_no_chain_anchor = true;
-    var client: tls.ClientHandshake = .init(client_config);
+    var client: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(try deterministicClientKeypair()),
+        .host_name = "ztls.server.test",
+        .now_sec = 0,
+        .random = rfc8448.client_random,
+        .insecure_no_chain_anchor = true,
+    });
     errdefer client.deinit();
     var client_out: [4096]u8 = undefined;
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: tls.ServerHandshake = .init(.init(
-        try .init(try deterministicServerKeypair()),
-        rfc8448.server_random,
-    ));
+    var server: tls.ServerHandshake = .init(.{
+        .keypairs = try .init(try deterministicServerKeypair()),
+        .random = rfc8448.server_random,
+    });
     errdefer server.deinit();
     const suites = [_]tls.CipherSuite{suite.cipherSuite()};
     server.supportSuites(&suites);

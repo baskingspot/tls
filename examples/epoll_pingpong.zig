@@ -441,10 +441,12 @@ fn serverRun(
     var random: tls.Random = .empty;
     io.random(&random.data);
     var hs_storage: tls.ServerHandshake.Storage = .empty;
-    var hs_config: tls.ServerHandshake.Config = .init(try .init(.generate()), random);
-    hs_config.alpn_protocols = &.{alpn};
-    hs_config.reassembly = &hs_storage.buffer;
-    var hs: tls.ServerHandshake = .init(hs_config);
+    var hs: tls.ServerHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .random = random,
+        .alpn_protocols = &.{alpn},
+        .reassembly = &hs_storage.buffer,
+    });
     defer hs.deinit();
     hs.setCredentials(certs, private_key.signer());
 
@@ -554,16 +556,15 @@ fn clientRun(io: Io, arena: Allocator, args: *const Args, port: u16) !void {
     io.random(&random.data);
     var hs_storage: tls.ClientHandshake.Storage = .empty;
 
-    var hs_config: tls.ClientHandshake.Config = .init(
-        try .init(.generate()),
-        args.host,
-        now_sec,
-        random,
-    );
-    hs_config.alpn_protocols = &.{alpn};
-    hs_config.bundle = &bundle;
-    hs_config.reassembly = &hs_storage.buffer;
-    var hs: tls.ClientHandshake = .init(hs_config);
+    var hs: tls.ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = args.host,
+        .now_sec = now_sec,
+        .random = random,
+        .alpn_protocols = &.{alpn},
+        .bundle = &bundle,
+        .reassembly = &hs_storage.buffer,
+    });
     defer hs.deinit();
 
     var out: tls.ClientHandshake.OutBuffer = .empty;
