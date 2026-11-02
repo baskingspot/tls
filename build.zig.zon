@@ -13,8 +13,8 @@
         // Development-only: the test runner, benchmarks, and comptime txtar
         // fixtures. Lazy so consumers of the library never fetch it.
         .testingx = .{
-            .url = "https://baskingspot.dev/testingx/v0.3.0.tar.gz",
-            .hash = "testingx-0.3.0-ib95-2tXAwAmz8ZshsAcHR2UiaNfHqG_mzBe0JTTPLs4",
+            .url = "https://baskingspot.dev/testingx/v0.4.0.tar.gz",
+            .hash = "testingx-0.4.0-ib95-2JkAwDVM639ma-akYafT4bdewLfpFaAEnLBzQXG",
             .lazy = true,
         },
         // Integration-only: fetched when a consumer opts into tls_xev.
