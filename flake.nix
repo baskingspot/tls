@@ -25,8 +25,8 @@
       ...
     }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      # imports and inputsFrom below mirror each other, except the toolchain
-      # version: pick that once, in the import.
+      # imports and inputsFrom below mirror each other, including the
+      # toolchain version: pick that once, in the import.
       imports = with inputs.baskingspot.flakeModules; [
         base
         docs
@@ -69,7 +69,7 @@
             config.devShells.base
             config.devShells.shell
             config.devShells.terraform
-            config.devShells.zig
+            config.devShells."zig-0-16"
           ];
         in
         {
