@@ -12,7 +12,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: baskingspot/gh-actions/.github/workflows/ci.yml@4ccb53bba1ec32679c602a218c2cb6a7fb2a0738 # v0.12.0
+    uses: baskingspot/gh-actions/.github/workflows/ci.yml@a26279caa6babcb0b548e6c55ced2aac9ee9a5b9 # v0.12.1
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
@@ -24,7 +24,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && vars.CLOUDFLARE_ACCOUNT_ID != ''
     permissions:
       contents: read
-    uses: baskingspot/gh-actions/.github/workflows/deploy-docs.yml@4ccb53bba1ec32679c602a218c2cb6a7fb2a0738 # v0.12.0
+    uses: baskingspot/gh-actions/.github/workflows/deploy-docs.yml@a26279caa6babcb0b548e6c55ced2aac9ee9a5b9 # v0.12.1
     with:
       account-id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     secrets:
