@@ -357,10 +357,13 @@ test "tls-to-tls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
 
             var random: tls.Random = .empty;
             entropy.fill(&random.data);
-            var hs: tls.ServerHandshake = .init(.{
-                .keypairs = try .init(c.server_keypair),
-                .random = random,
-            });
+            var hs: tls.ServerHandshake = .init(
+                .{},
+                .{
+                    .keypairs = try .init(c.server_keypair),
+                    .random = random,
+                },
+            );
             defer hs.deinit();
             const suites = [_]tls.CipherSuite{.chacha20_poly1305_sha256};
             hs.supportSuites(&suites);
@@ -1326,13 +1329,17 @@ fn serve(
     else
         null;
     const groups = [_]tls.kex.NamedGroup{hybrid_group orelse .x25519_mlkem768};
-    var hs_config: tls.ServerHandshake.Config = .{ .keypairs = keypairs, .random = server_random };
-    hs_config.psk_lookup = if (ticket_phase == .reuse) .{
+    var server_config: tls.ServerHandshake.ServerConfig = .{};
+    server_config.psk_lookup = if (ticket_phase == .reuse) .{
         .context = ticket_state.?,
         .lookup = ServerTicketState.lookup,
     } else null;
-    hs_config.hybrid_groups = if (hybrid_group != null) &groups else &.{};
-    var hs: tls.ServerHandshake = .init(hs_config);
+    server_config.hybrid_groups = if (hybrid_group != null) &groups else &.{};
+    const hs_config: tls.ServerHandshake.Config = .{
+        .keypairs = keypairs,
+        .random = server_random,
+    };
+    var hs: tls.ServerHandshake = .init(server_config, hs_config);
     defer hs.deinit();
     hs.supportAlpn(&.{alpn_protocol});
     const supported = [_]tls.CipherSuite{suite};
@@ -1492,12 +1499,16 @@ fn serveClientAuth(stream: Stream) !void {
     var server_random: tls.Random = .empty;
     entropy.fill(&server_random.data);
 
-    var hs: tls.ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = server_random,
-        .client_auth = .required,
-        .insecure_no_client_chain_anchor = true,
-    });
+    var hs: tls.ServerHandshake = .init(
+        .{
+            .client_auth = .required,
+            .insecure_no_client_chain_anchor = true,
+        },
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = server_random,
+        },
+    );
     defer hs.deinit();
     hs.supportAlpn(&.{alpn_protocol});
     const supported = [_]tls.CipherSuite{.aes_128_gcm_sha256};

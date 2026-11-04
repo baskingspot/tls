@@ -322,10 +322,11 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
                 });
             } else blk: {
                 break :blk .init(.{
-                    .keypairs = keypairs,
-                    .random = random,
                     .alpn_protocols = config.alpn,
                     .hybrid_groups = config.hybrid_groups,
+                }, .{
+                    .keypairs = keypairs,
+                    .random = random,
                 });
             };
 

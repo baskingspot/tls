@@ -174,7 +174,13 @@ fn runServer(ctx: *ServerCtx) !void {
     var keypair: tls_core.x25519.KeyPair = .generate();
     defer keypair.secureZero();
 
-    var hs: tls_core.ServerHandshake = .init(.{ .keypairs = try .init(keypair), .random = .zero });
+    var hs: tls_core.ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = try .init(keypair),
+            .random = .zero,
+        },
+    );
     defer hs.deinit();
     hs.setCredentials(&.{test_cert_der}, key.signer());
 

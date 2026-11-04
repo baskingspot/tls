@@ -187,12 +187,16 @@ fn runServer(context: *ServerContext) !void {
     var random: tls.Random = undefined;
     context.io.random(&random.data);
     const supported_suites = [_]tls.CipherSuite{context.suite};
-    var handshake: tls.ServerHandshake = .init(.{
-        .keypairs = try .init(context.keypair),
-        .random = random,
-        .supported_suites = &supported_suites,
-        .alpn_protocols = &.{"h2"},
-    });
+    var handshake: tls.ServerHandshake = .init(
+        .{
+            .supported_suites = &supported_suites,
+            .alpn_protocols = &.{"h2"},
+        },
+        .{
+            .keypairs = try .init(context.keypair),
+            .random = random,
+        },
+    );
     defer handshake.deinit();
     var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();

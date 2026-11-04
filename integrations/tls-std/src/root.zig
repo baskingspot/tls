@@ -1381,12 +1381,16 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
                         };
                     }
 
-                    const hs: tls.ServerHandshake = .init(.{
-                        .keypairs = keypairs,
-                        .random = random,
-                        .alpn_protocols = options.alpn,
-                        .hybrid_groups = options.hybrid_groups,
-                    });
+                    const hs: tls.ServerHandshake = .init(
+                        .{
+                            .alpn_protocols = options.alpn,
+                            .hybrid_groups = options.hybrid_groups,
+                        },
+                        .{
+                            .keypairs = keypairs,
+                            .random = random,
+                        },
+                    );
 
                     s.* = .init(io, sock, hs);
                     s.finishInit();

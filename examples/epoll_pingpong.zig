@@ -441,12 +441,16 @@ fn serverRun(
     var random: tls.Random = .empty;
     io.random(&random.data);
     var hs_storage: tls.ServerHandshake.Storage = .empty;
-    var hs: tls.ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = random,
-        .alpn_protocols = &.{alpn},
-        .reassembly = &hs_storage.buffer,
-    });
+    var hs: tls.ServerHandshake = .init(
+        .{
+            .alpn_protocols = &.{alpn},
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = random,
+            .reassembly = &hs_storage.buffer,
+        },
+    );
     defer hs.deinit();
     hs.setCredentials(certs, private_key.signer());
 

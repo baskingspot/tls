@@ -440,10 +440,13 @@ test "capi: full client handshake through the C ABI" {
     }
 
     // Server setup (native Zig)
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = server_random,
-    });
+    var server: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = server_random,
+        },
+    );
     defer server.deinit();
     server.setCredentials(&.{cert_der}, signer_api);
 
@@ -638,10 +641,13 @@ fn connectClientAndServerForTest(
     );
     try testing.expectEqual(.ok, init_result);
 
-    server.* = .init(.{
-        .keypairs = try .init(tls.x25519.KeyPair.generate()),
-        .random = .{ .data = @splat(0x37) },
-    });
+    server.* = .init(
+        .{},
+        .{
+            .keypairs = try .init(tls.x25519.KeyPair.generate()),
+            .random = .{ .data = @splat(0x37) },
+        },
+    );
     server.setCredentials(&.{&fixtures.server_ecdsa_cert_der}, signer.signer());
 
     var client_out: [frame.max_wire_record_len]u8 = undefined;
@@ -862,10 +868,13 @@ fn expectCapiClientConnects(client_storage: anytype) !void {
     var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .{ .data = @splat(0x37) },
-    });
+    var server: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .{ .data = @splat(0x37) },
+        },
+    );
     defer server.deinit();
     server.setCredentials(&.{cert_der}, signer.signer());
 

@@ -10,10 +10,10 @@ const frame = tls.frame;
 const alert = tls.alert;
 const Server = @This();
 
+/// Listener-wide configuration. It is safe to copy and reuse for every accept.
+/// Referenced policy storage and credentials must outlive every connection.
 pub const Options = struct {
-    /// Supplies fresh ephemeral keys, random, ALPN, and optional client policy.
-    /// Referenced storage and credentials must outlive this connection.
-    handshake: Handshake.Config,
+    handshake: Handshake.ServerConfig = .{},
     cert_chain: []const []const u8,
     signer: tls.signature.Signer,
 };
@@ -67,16 +67,22 @@ flags: EnumSet(Flag),
 failure: ?Error,
 fatal_alert: ?alert.Description,
 
-/// Initialize in its final slot. This performs no handshake or transport I/O.
-/// A failed init acquires no resources. Call deinit only after successful init.
-/// The caller owns buffer erasure, including Config.reassembly/client_cert_buffer.
-pub fn init(self: *Server, options: *const Options, buffers: Buffers) InitError!void {
-    try options.handshake.validate();
+/// Initialize in its final slot with one connection's fresh keys and storage.
+/// This performs no handshake or transport I/O. A failed init acquires no resources.
+/// Call deinit only after successful init. The caller owns buffer erasure,
+/// including Config.reassembly and Config.client_cert_buffer.
+pub fn init(
+    self: *Server,
+    options: *const Options,
+    config: Handshake.Config,
+    buffers: Buffers,
+) InitError!void {
+    try options.handshake.validate(&config.keypairs);
     if (options.cert_chain.len == 0) return error.MissingCredentials;
     if (buffers.record.len < RecordBuffer.min_storage) return error.BufferTooSmall;
     if (buffers.out.len < frame.max_wire_record_len) return error.BufferTooSmall;
     self.* = .{
-        .hs = .init(options.handshake),
+        .hs = .init(options.handshake, config),
         .records = .init(buffers.record),
         .out = buffers.out,
         .pending_send = &.{},

@@ -47,17 +47,21 @@ fn handleConnection(io: Io, stream: harness.Stream) !void {
     const random = harness.randomBytes(io);
     // RFC 8446 §5.1 — provide storage for fragmented ClientHello reassembly.
     var reassembly_buf: [tls.ServerHandshake.ch_reassembly_buffer_size]u8 = undefined;
-    var hs: tls.ServerHandshake = .init(.{
-        .keypairs = .initWithP256P384(
-            .generate(),
-            try .generate(),
-            try .generate(),
-        ),
-        .random = random,
-        .hybrid_groups = &hybrid_groups,
-        .alpn_protocols = &.{ "http/1.1", "h2" },
-        .reassembly = &reassembly_buf,
-    });
+    var hs: tls.ServerHandshake = .init(
+        .{
+            .alpn_protocols = &.{ "http/1.1", "h2" },
+            .hybrid_groups = &hybrid_groups,
+        },
+        .{
+            .keypairs = .initWithP256P384(
+                .generate(),
+                try .generate(),
+                try .generate(),
+            ),
+            .random = random,
+            .reassembly = &reassembly_buf,
+        },
+    );
     defer hs.deinit();
     hs.setCredentials(&.{harness.testCertDer()}, signer.signer());
 

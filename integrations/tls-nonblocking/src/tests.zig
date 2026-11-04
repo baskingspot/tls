@@ -3,6 +3,7 @@ const std = @import("std");
 const testing = std.testing;
 const tls = @import("tls");
 const Server = @import("tls_nonblocking").Server;
+const PrivateKey = tls.signature.PrivateKey;
 const fixtures = @import("fixtures");
 const interop_tests = @import("interop_tests.zig");
 
@@ -16,7 +17,7 @@ const scalar = &fixtures.server_ecdsa_scalar;
 const Pair = struct {
     server: Server,
     client: tls.ClientHandshake,
-    key: tls.signature.PrivateKey,
+    key: ?PrivateKey,
     record: [tls.RecordBuffer.min_storage]u8,
     out: [frame.max_wire_record_len]u8,
     reassembly: [tls.ServerHandshake.ch_reassembly_buffer_size]u8,
@@ -28,7 +29,35 @@ const Pair = struct {
 
     fn init(self: *Pair, supported_suites: []const tls.CipherSuite) !void {
         self.key = try .fromP256Scalar(scalar);
-        errdefer self.key.deinit();
+        errdefer if (self.key) |*key| key.deinit();
+        try self.initClient();
+        errdefer self.client.deinit();
+        try self.initServer(.{
+            .supported_suites = supported_suites,
+            .alpn_protocols = &.{"h2"},
+        }, .{
+            .keypairs = try .init(.generate()),
+            .random = .init(@splat(0x72)),
+            .reassembly = &self.reassembly,
+        });
+    }
+
+    fn initWithOptions(
+        self: *Pair,
+        options: *const Server.Options,
+        config: tls.ServerHandshake.Config,
+    ) !void {
+        self.key = null;
+        try self.initClient();
+        errdefer self.client.deinit();
+        try self.server.init(
+            options,
+            config,
+            .{ .record = &self.record, .out = &self.out },
+        );
+    }
+
+    fn initClient(self: *Pair) !void {
         self.client = .init(.{
             .keypairs = try .init(.generate()),
             .host_name = "ztls.server.test",
@@ -38,30 +67,26 @@ const Pair = struct {
             .alpn_protocols = &.{ "http/1.1", "h2" },
             .reassembly = &self.client_reassembly,
         });
-        errdefer self.client.deinit();
-        try self.initServer(.{
-            .keypairs = try .init(.generate()),
-            .random = .init(@splat(0x72)),
-            .supported_suites = supported_suites,
-            .alpn_protocols = &.{"h2"},
-            .reassembly = &self.reassembly,
-        });
         self.client_rb = .init(&self.client_record);
         self.client_pending = &.{};
     }
 
-    fn initServer(self: *Pair, config: tls.ServerHandshake.Config) !void {
+    fn initServer(
+        self: *Pair,
+        server_config: tls.ServerHandshake.ServerConfig,
+        config: tls.ServerHandshake.Config,
+    ) !void {
         try self.server.init(&.{
-            .handshake = config,
+            .handshake = server_config,
             .cert_chain = &.{cert},
-            .signer = self.key.signer(),
-        }, .{ .record = &self.record, .out = &self.out });
+            .signer = self.key.?.signer(),
+        }, config, .{ .record = &self.record, .out = &self.out });
     }
 
     fn deinit(self: *Pair) void {
         self.server.deinit();
         self.client.deinit();
-        self.key.deinit();
+        if (self.key) |*key| key.deinit();
         std.crypto.secureZero(u8, &self.record);
         std.crypto.secureZero(u8, &self.out);
         std.crypto.secureZero(u8, &self.reassembly);
@@ -182,10 +207,24 @@ test "handshake: one-byte reads and writes, each cipher suite, and coalesced app
     }
 }
 
-// RFC 8446 §4.1, §4.4.4. A stalled slot cannot prevent a second handshake.
-test "fixed slots: one stalled ClientHello does not block another connection" {
+// RFC 8446 §4.1, §4.4.4. Static listener policy never carries connection state.
+test "fixed slots: one listener config and disjoint connection state" {
+    var key: PrivateKey = try .fromP256Scalar(scalar);
+    defer key.deinit();
+    const options: Server.Options = .{
+        .handshake = .{
+            .supported_suites = &suites,
+            .alpn_protocols = &.{"h2"},
+        },
+        .cert_chain = &.{cert},
+        .signer = key.signer(),
+    };
     var slow: Pair = undefined;
-    try slow.init(&suites);
+    try slow.initWithOptions(&options, .{
+        .keypairs = try .init(.generate()),
+        .random = .init(@splat(0x72)),
+        .reassembly = &slow.reassembly,
+    });
     defer slow.deinit();
     slow.client_pending = try slow.client.start(&slow.client_out);
     try slow.input(slow.client_pending[0..1]);
@@ -193,7 +232,11 @@ test "fixed slots: one stalled ClientHello does not block another connection" {
     try testing.expectEqual(.need_input, try slow.server.next());
 
     var ready: Pair = undefined;
-    try ready.init(&suites);
+    try ready.initWithOptions(&options, .{
+        .keypairs = try .init(.generate()),
+        .random = .init(@splat(0x73)),
+        .reassembly = &ready.reassembly,
+    });
     defer ready.deinit();
     try ready.handshake(7, null);
     try testing.expect(ready.server.isConnected());
@@ -221,10 +264,11 @@ test "0-RTT: separate borrowed event and input backpressure before client Finish
     pair.server.deinit();
     var context: u8 = 0;
     try pair.initServer(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
         .alpn_protocols = &.{"h2"},
         .psk_lookup = .{ .context = &context, .lookup = Lookup.lookup },
+    }, .{
+        .keypairs = try .init(.generate()),
+        .random = .zero,
         .reassembly = &pair.reassembly,
     });
     var ticket: tls.ClientHandshake.SessionTicket = .init(0, 0, .aes_128_gcm_sha256, 1024);
@@ -526,21 +570,27 @@ test "init: reject short buffers and absent credentials without resources" {
     var keys: tls.ServerHandshake.KeyPairs = try .init(.generate());
     defer keys.secureZero();
     var options: Server.Options = .{
-        .handshake = .{ .keypairs = keys, .random = .init(@splat(0x19)) },
         .cert_chain = &.{cert},
-        .signer = pair.key.signer(),
+        .signer = pair.key.?.signer(),
+    };
+    const config: tls.ServerHandshake.Config = .{
+        .keypairs = keys,
+        .random = .init(@splat(0x19)),
     };
     try testing.expectError(error.BufferTooSmall, server.init(
         &options,
+        config,
         .{ .record = &.{}, .out = &pair.out },
     ));
     try testing.expectError(error.BufferTooSmall, server.init(
         &options,
+        config,
         .{ .record = &pair.record, .out = &.{} },
     ));
     options.cert_chain = &.{};
     try testing.expectError(error.MissingCredentials, server.init(
         &options,
+        config,
         .{ .record = &pair.record, .out = &pair.out },
     ));
 }

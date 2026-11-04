@@ -164,12 +164,15 @@ fn deterministicClientHandshake() tls.ClientHandshake {
 }
 
 fn deterministicServerHandshake() tls.ServerHandshake {
-    return .init(.{
-        .keypairs = KeyPairs.init(
-            deterministicServerKeypair() catch @panic("x25519 keygen failed"),
-        ) catch @panic("p256 keygen failed"),
-        .random = rfc8448.server_random,
-    });
+    return .init(
+        .{},
+        .{
+            .keypairs = KeyPairs.init(
+                deterministicServerKeypair() catch @panic("x25519 keygen failed"),
+            ) catch @panic("p256 keygen failed"),
+            .random = rfc8448.server_random,
+        },
+    );
 }
 
 fn connectPair(comptime suite: Suite) !struct {
@@ -188,10 +191,13 @@ fn connectPair(comptime suite: Suite) !struct {
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: tls.ServerHandshake = .init(.{
-        .keypairs = try .init(try deterministicServerKeypair()),
-        .random = rfc8448.server_random,
-    });
+    var server: tls.ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = try .init(try deterministicServerKeypair()),
+            .random = rfc8448.server_random,
+        },
+    );
     errdefer server.deinit();
     const suites = [_]tls.CipherSuite{suite.cipherSuite()};
     server.supportSuites(&suites);

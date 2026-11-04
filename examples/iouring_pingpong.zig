@@ -73,11 +73,15 @@ fn serverRun(ctx: *ServerCtx) !void {
     var random: tls.Random = undefined;
     io.random(&random.data);
 
-    var hs: tls.ServerHandshake = .init(.{
-        .keypairs = try .init(ctx.keypair),
-        .random = random,
-        .alpn_protocols = &.{alpn},
-    });
+    var hs: tls.ServerHandshake = .init(
+        .{
+            .alpn_protocols = &.{alpn},
+        },
+        .{
+            .keypairs = try .init(ctx.keypair),
+            .random = random,
+        },
+    );
     defer hs.deinit();
 
     var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);

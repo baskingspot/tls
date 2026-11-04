@@ -44,11 +44,15 @@ pub fn main(init: std.process.Init) !void {
     defer client.deinit();
 
     // ── Server setup ────────────────────────
-    var server: tls.ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = server_random,
-        .alpn_protocols = &.{"h2"},
-    });
+    var server: tls.ServerHandshake = .init(
+        .{
+            .alpn_protocols = &.{"h2"},
+        },
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = server_random,
+        },
+    );
     defer server.deinit();
     server.setCredentials(&.{cert_der}, signer_api);
 

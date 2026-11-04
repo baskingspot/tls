@@ -32,14 +32,13 @@ const Context = struct {
         defer std.crypto.secureZero(u8, &reassembly);
         var server: Server = undefined;
         try server.init(&.{
-            .handshake = .{
-                .keypairs = try .init(.generate()),
-                .random = .init(@splat(0x87)),
-                .alpn_protocols = &.{"h2"},
-                .reassembly = &reassembly,
-            },
+            .handshake = .{ .alpn_protocols = &.{"h2"} },
             .cert_chain = &.{&fixtures.server_ecdsa_cert_der},
             .signer = key.signer(),
+        }, .{
+            .keypairs = try .init(.generate()),
+            .random = .init(@splat(0x87)),
+            .reassembly = &reassembly,
         }, .{ .record = &record, .out = &out });
         defer server.deinit();
         try echo(&server, socket.socket.handle);

@@ -28,8 +28,8 @@ The caller supplies these disjoint buffers:
 
 - `Buffers.record`: at least `tls.RecordBuffer.min_storage` bytes for input records and in-place decryption.
 - `Buffers.out`: at least `tls.frame.max_wire_record_len` bytes for one outbound record.
-- `Options.handshake.reassembly`: storage for fragmented ClientHello messages. The core's default capacity is `tls.ServerHandshake.ch_reassembly_buffer_size`.
-- `Options.handshake.client_cert_buffer`: storage for an optional client certificate chain, when the client-auth policy requires it.
+- `ServerHandshake.Config.reassembly`: storage for fragmented ClientHello messages. The core's default capacity is `tls.ServerHandshake.ch_reassembly_buffer_size`.
+- `ServerHandshake.Config.client_cert_buffer`: storage for an optional client certificate chain, when the client-auth policy requires it.
 
 A fixed connection slot can contain the buffers beside `Server`:
 
@@ -46,9 +46,14 @@ Initialize `Server` in its final slot. Do not move or copy a live connection.
 Keep the credentials and all referenced configuration storage alive until `deinit()`.
 Supply fresh ephemeral keys and random bytes for each connection.
 
-`Server.init()` accepts `Options` and `Buffers`. `Options.handshake` is the core's
-`ServerHandshake.Config`. `Options.cert_chain` and `Options.signer` supply the
-server credentials. Initialization performs no handshake or transport I/O.
+Build `Options` once for the listener. Reuse it for every accepted connection.
+`Options` contains no keypairs, random values, or connection buffers.
+
+`Server.init()` accepts `Options`, `ServerHandshake.Config`, and `Buffers`.
+`Options.handshake` is the core's `ServerHandshake.ServerConfig`. It contains
+listener policy. `Options.cert_chain` and `Options.signer` supply the server
+credentials. `ServerHandshake.Config` supplies one connection's keypairs, random,
+and optional buffers. Initialization performs no handshake or transport I/O.
 
 `Server.deinit()` releases backend handles and erases inline secrets. Repeated calls
 are harmless. It does not erase borrowed buffers. Erase those buffers before reuse

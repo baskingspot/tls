@@ -319,9 +319,10 @@ The server loop is identical in shape, with two differences:
 var random: tls.Random = undefined;
 std.crypto.random.bytes(&random.data);
 var hs: tls.ServerHandshake = .init(.{
+    .alpn_protocols = &.{"h2"},
+}, .{
     .keypairs = try .init(server_keypair),
     .random = random,
-    .alpn_protocols = &.{"h2"},
 });
 
 var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
@@ -656,13 +657,15 @@ defer client.deinit();
 
 var server_keypairs: tls.ServerHandshake.KeyPairs = try .init(.generate());
 defer server_keypairs.secureZero();
-const server_config: tls.ServerHandshake.Config = .{
-    .keypairs = server_keypairs,
-    .random = server_random,
+const server_config: tls.ServerHandshake.ServerConfig = .{
     .hybrid_groups = &hybrid_groups,
 };
-try server_config.validate();
-var server: tls.ServerHandshake = .init(server_config);
+try server_config.validate(&server_keypairs);
+const connection_config: tls.ServerHandshake.Config = .{
+    .keypairs = server_keypairs,
+    .random = server_random,
+};
+var server: tls.ServerHandshake = .init(server_config, connection_config);
 defer server.deinit();
 ```
 

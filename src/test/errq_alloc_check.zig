@@ -202,11 +202,15 @@ fn abortEarlyServer() CheckError!void {
     var client_wire: [4096]u8 = undefined;
     const hello = client.startWithPsk(&ticket, &client_wire, true) catch
         return error.UnexpectedBackendResult;
-    var server: tls.ServerHandshake = .init(.{
-        .keypairs = try abortKeyPairs(),
-        .random = .zero,
-        .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
-    });
+    var server: tls.ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
+        },
+        .{
+            .keypairs = try abortKeyPairs(),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_wire: [4096]u8 = undefined;
     _ = server.acceptClientHello(hello, &server_wire) catch |err| {
@@ -232,11 +236,15 @@ fn abortClientFinished() CheckError!void {
         .random = .zero,
     });
     defer client.deinit();
-    var server: tls.ServerHandshake = .init(.{
-        .keypairs = try abortKeyPairs(),
-        .random = .zero,
-        .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
-    });
+    var server: tls.ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &ticket, .lookup = lookupAbortPsk },
+        },
+        .{
+            .keypairs = try abortKeyPairs(),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var client_wire: [4096]u8 = undefined;
     var server_wire: [4096]u8 = undefined;

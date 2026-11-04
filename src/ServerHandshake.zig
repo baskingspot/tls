@@ -320,15 +320,13 @@ pub const ClientAuthPolicy = enum {
     required,
 };
 
+/// Listener-wide server policy. This value contains no per-connection secrets
+/// or storage, so a caller can build it once and copy it for every handshake.
+/// Borrowed slices and PSK callback context must outlive each connection.
 // ast-grep-ignore: public-struct-field-default -- options bag: call sites override one knob
-pub const Config = struct {
+pub const ServerConfig = struct {
     pub const ValidationError = capabilities.HybridPolicyError || error{MissingP384KeyPair};
 
-    /// Ephemeral keypairs used for ServerHello key_share entries. X25519 and
-    /// P-256 are present by default; P-384 is opt-in.
-    keypairs: KeyPairs,
-    /// ServerHello random field (RFC 8446 §4.1.3). Stored and used once.
-    random: Random,
     /// Cipher suites offered by this server, in server preference order.
     supported_suites: []const CipherSuite = default_supported_suites,
     /// ALPN protocols supported by this server. Caller-owned.
@@ -347,11 +345,6 @@ pub const Config = struct {
     /// Current time in seconds since the Unix epoch for client certificate
     /// validity checks. Required when client_auth is non-none.
     client_auth_now_sec: i64 = 0,
-    /// Optional caller-owned ClientHello reassembly storage.
-    reassembly: ?[]u8 = null,
-    /// Optional caller-owned storage for retaining the verified client leaf
-    /// certificate DER. The storage must outlive the handshake.
-    client_cert_buffer: ?[]u8 = null,
     /// Optional caller-owned PSK lookup for session resumption (RFC 8446
     /// §4.2.11). When set, the server verifies offered PSK binders and, if one
     /// verifies, resumes with that PSK (psk_dhe_ke) instead of a full
@@ -376,26 +369,41 @@ pub const Config = struct {
     /// abort-on-first-failure.
     early_data_skip_limit: u32 = default_early_data_skip_limit,
 
-    /// Validate local hybrid policy before handshake construction or wire I/O.
-    pub fn validate(self: *const Config) ValidationError!void {
-        try validateHybridPolicy(self.hybrid_groups, &self.keypairs);
+    /// Validate local hybrid policy against one connection's key material.
+    pub fn validate(self: *const ServerConfig, keypairs: *const KeyPairs) ValidationError!void {
+        try validateHybridPolicy(self.hybrid_groups, keypairs);
     }
 };
 
-pub const ConfigError = Config.ValidationError;
+/// Inputs whose values and borrowed storage belong to exactly one connection.
+// ast-grep-ignore: public-struct-field-default -- optional caller-owned buffers
+pub const Config = struct {
+    /// Ephemeral keypairs used for ServerHello key_share entries. X25519 and
+    /// P-256 are present by default; P-384 is opt-in.
+    keypairs: KeyPairs,
+    /// ServerHello random field (RFC 8446 §4.1.3). Stored and used once.
+    random: Random,
+    /// Optional caller-owned ClientHello reassembly storage.
+    reassembly: ?[]u8 = null,
+    /// Optional caller-owned storage for retaining the verified client leaf
+    /// certificate DER. The storage must outlive the handshake.
+    client_cert_buffer: ?[]u8 = null,
+};
 
-test "Config.validate reports invalid lists and missing P-384 material" {
+pub const ConfigError = ServerConfig.ValidationError;
+
+test "ServerConfig.validate reports invalid lists and missing P-384 material" {
     var keypairs: KeyPairs = try .init(.generate());
     defer keypairs.secureZero();
-    var config: Config = .{ .keypairs = keypairs, .random = .zero };
+    var config: ServerConfig = .{};
     config.hybrid_groups = &.{ .x25519_mlkem768, .x25519_mlkem768 };
-    try testing.expectError(error.InvalidHybridPolicy, config.validate());
+    try testing.expectError(error.InvalidHybridPolicy, config.validate(&keypairs));
 
     config.hybrid_groups = &.{.secp384r1_mlkem1024};
     if (capabilities.supportsHybridGroup(.server, .secp384r1_mlkem1024)) {
-        try testing.expectError(error.MissingP384KeyPair, config.validate());
+        try testing.expectError(error.MissingP384KeyPair, config.validate(&keypairs));
     } else {
-        try testing.expectError(error.HybridGroupUnavailable, config.validate());
+        try testing.expectError(error.HybridGroupUnavailable, config.validate(&keypairs));
     }
 }
 
@@ -414,7 +422,7 @@ supported_suites: []const CipherSuite,
 hybrid_groups: []const NamedGroup,
 alpn_protocols: root.AlpnProtocols,
 client_auth: ClientAuthPolicy,
-/// Policy for verifying client certificate chains. Initialized from Config.
+/// Policy for verifying client certificate chains. Initialized from ServerConfig.
 client_cert_policy: certificate.Policy,
 /// Leaf public key extracted from the client Certificate, retained until
 /// CertificateVerify verification. Copied so it survives across records.
@@ -521,11 +529,11 @@ fin_frag: FinishedFragmentBuffer,
 /// header plus a 1-byte request body. RFC 8446 §5.1, §4.6.3.
 ku_frag: KeyUpdateFragmentBuffer,
 
-pub fn init(config: Config) ServerHandshake {
+pub fn init(server_config: ServerConfig, config: Config) ServerHandshake {
     var client_cert_policy: certificate.Policy = .init;
-    client_cert_policy.bundle = config.client_auth_bundle;
-    client_cert_policy.insecure_no_chain_anchor = config.insecure_no_client_chain_anchor;
-    client_cert_policy.now_sec = config.client_auth_now_sec;
+    client_cert_policy.bundle = server_config.client_auth_bundle;
+    client_cert_policy.insecure_no_chain_anchor = server_config.insecure_no_client_chain_anchor;
+    client_cert_policy.now_sec = server_config.client_auth_now_sec;
     client_cert_policy.leaf_usage = .client_auth;
     return .{
         .state = .wait_ch,
@@ -534,10 +542,10 @@ pub fn init(config: Config) ServerHandshake {
         .negotiated_group = .x25519,
         .suite = .aes_128_gcm_sha256,
         .suite_state = undefined,
-        .supported_suites = config.supported_suites,
-        .hybrid_groups = config.hybrid_groups,
-        .alpn_protocols = config.alpn_protocols,
-        .client_auth = config.client_auth,
+        .supported_suites = server_config.supported_suites,
+        .hybrid_groups = server_config.hybrid_groups,
+        .alpn_protocols = server_config.alpn_protocols,
+        .client_auth = server_config.client_auth,
         .client_cert_policy = client_cert_policy,
         // Spelled out, not left to a `.empty` constant: a default (or a
         // decl constant) with an undefined buffer lowers to one aggregate
@@ -571,8 +579,8 @@ pub fn init(config: Config) ServerHandshake {
         .end_of_early_data_received = false,
         .early_data_skip = .off,
         .early_data_skip_bytes = 0,
-        .early_data_skip_limit = config.early_data_skip_limit,
-        .psk_lookup = config.psk_lookup,
+        .early_data_skip_limit = server_config.early_data_skip_limit,
+        .psk_lookup = server_config.psk_lookup,
         .server_credentials = null,
         .server_flight_sent = false,
         .ch_buf = if (config.reassembly) |buf| .init(buf) else .empty,
@@ -3105,7 +3113,7 @@ fn testConfig(keypair: x25519.KeyPair) !Config {
 
 // RFC 8446 §6 — alerts before handshake protection are plaintext records.
 test "sendAlert: plaintext fatal alert before ClientHello" {
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [16]u8 = undefined;
     const rec = try hs.sendAlert(.decode_error, &out);
@@ -3131,7 +3139,7 @@ test "sendAlert: encrypted close_notify after handshake" {
 
 // RFC 8446 §D.4 — CCS before ClientHello is outside the compatibility window.
 test "handleRecord: rejects ChangeCipherSpec before ClientHello" {
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var ccs = [_]u8{ 0x14, 0x03, 0x03, 0x00, 0x01, 0x01 };
     var out: [64]u8 = undefined;
@@ -3149,7 +3157,7 @@ test "handleRecord: drops valid ChangeCipherSpec while waiting for client Finish
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     _ = try hs.handleRecord(record[0 .. frame.header_len + ch.len], &out);
@@ -3169,7 +3177,7 @@ test "handleRecord: rejects malformed ChangeCipherSpec payload" {
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     _ = try hs.handleRecord(record[0 .. frame.header_len + ch.len], &out);
@@ -3189,7 +3197,7 @@ test "handleRecord: ClientHello returns ServerHello write and enforces pending w
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     const ev = try hs.handleRecord(record[0 .. frame.header_len + ch.len], &out);
@@ -3206,7 +3214,7 @@ test "handleRecord: ClientHello returns ServerHello write and enforces pending w
 
 // RFC 8446 §5.1 — handshake records cannot carry zero-length fragments.
 test "handleRecord: zero-length plaintext handshake is rejected" {
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var rec = [_]u8{ 0x16, 0x03, 0x03, 0x00, 0x00 };
     var out: [64]u8 = undefined;
@@ -3215,7 +3223,7 @@ test "handleRecord: zero-length plaintext handshake is rejected" {
 
 // RFC 8446 §5.1 — application_data is invalid before the handshake completes.
 test "handleRecord: rejects application_data before connected" {
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var rec = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x05 } ++ [_]u8{0} ** 5;
     var out: [64]u8 = undefined;
@@ -3238,7 +3246,7 @@ test "acceptClientHello: emits ServerHello and installs handshake keys" {
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    var hs: ServerHandshake = .init(try testConfig(server_keypair));
+    var hs: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer hs.deinit();
     hs.supportAlpn(&.{"http/1.1"});
     var out: [256]u8 = undefined;
@@ -3288,10 +3296,13 @@ test "acceptClientHello: negotiates secp256r1 key share" {
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..p256_ch.len], p256_ch);
 
-    var hs: ServerHandshake = .init(.{
-        .keypairs = .initWithP256(server_x25519, server_p256),
-        .random = .zero,
-    });
+    var hs: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = .initWithP256(server_x25519, server_p256),
+            .random = .zero,
+        },
+    );
     defer hs.deinit();
     var out: [512]u8 = undefined;
     const sh_record = try hs.acceptClientHello(
@@ -3353,10 +3364,13 @@ fn deferredServerHello(
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    hs.* = .init(.{
-        .keypairs = .initDeferred(.init(test_x25519_seed), server_p256_secret),
-        .random = .zero,
-    });
+    hs.* = .init(
+        .{},
+        .{
+            .keypairs = .initDeferred(.init(test_x25519_seed), server_p256_secret),
+            .random = .zero,
+        },
+    );
     const sh_record = try hs.acceptClientHello(record[0 .. frame.header_len + ch.len], out);
     const hdr = try frame.parseHeader(sh_record);
     return server_hello.parse(sh_record[frame.header_len..][0..hdr.length()]);
@@ -3422,10 +3436,13 @@ test "acceptClientHello: negotiates secp384r1 key share" {
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..p384_ch.len], p384_ch);
 
-    var hs: ServerHandshake = .init(.{
-        .keypairs = .initWithP256P384(server_x25519, server_p256, server_p384),
-        .random = .zero,
-    });
+    var hs: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = .initWithP256P384(server_x25519, server_p256, server_p384),
+            .random = .zero,
+        },
+    );
     defer hs.deinit();
     var out: [512]u8 = undefined;
     const sh_record = try hs.acceptClientHello(
@@ -3467,7 +3484,7 @@ test "acceptClientHello: emits HelloRetryRequest for missing secp256r1 key share
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..p256_ch.len], p256_ch);
 
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var out: [256]u8 = undefined;
     const hrr_record = try server.acceptClientHello(
@@ -3523,7 +3540,7 @@ test "acceptClientHello: rejects ClientHello2 with changed SNI or ALPN after HRR
         ch1_header.write(ch1_record[0..frame.header_len]);
         @memcpy(ch1_record[frame.header_len..][0..ch1.len], ch1);
 
-        var server: ServerHandshake = .init(try testConfig(.generate()));
+        var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
         defer server.deinit();
         server.supportAlpn(&.{ "h2", "http/1.1" });
         var out: [512]u8 = undefined;
@@ -3583,11 +3600,15 @@ test "acceptClientHello: rejects early_data in ClientHello2 after HRR" {
     @memcpy(ch1_record[frame.header_len..][0..ch1.len], ch1);
 
     var lookup_context: u8 = 0;
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var out: [1024]u8 = undefined;
     _ = try server.acceptClientHello(ch1_record[0 .. frame.header_len + ch1.len], &out);
@@ -3909,11 +3930,15 @@ test "acceptClientHello: rejects replaced PSK identity in ClientHello2 despite v
     } };
     const client_keypair: x25519.KeyPair = .generate();
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     server.supportSuites(&.{.aes_128_gcm_sha256});
 
@@ -3991,11 +4016,15 @@ test "acceptClientHello: rejects added, reordered, or dropped PSK identities in 
     };
 
     for (cases) |case| {
-        var server: ServerHandshake = .init(.{
-            .keypairs = try .init(.generate()),
-            .random = .zero,
-            .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
-        });
+        var server: ServerHandshake = .init(
+            .{
+                .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
+            },
+            .{
+                .keypairs = try .init(.generate()),
+                .random = .zero,
+            },
+        );
         defer server.deinit();
         server.supportSuites(&.{.aes_128_gcm_sha256});
 
@@ -4063,11 +4092,15 @@ test "acceptClientHello: accepts permitted ClientHello2 PSK updates after HRR" {
     };
 
     for (cases) |case| {
-        var server: ServerHandshake = .init(.{
-            .keypairs = try .init(.generate()),
-            .random = .zero,
-            .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
-        });
+        var server: ServerHandshake = .init(
+            .{
+                .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
+            },
+            .{
+                .keypairs = try .init(.generate()),
+                .random = .zero,
+            },
+        );
         defer server.deinit();
         server.supportSuites(&.{.aes_128_gcm_sha256});
 
@@ -4110,7 +4143,7 @@ test "acceptClientHello: bounded PSK identity admission before HelloRetryRequest
 
     // No usable key_share: the server would have to retain all 9 identities
     // across the retry, exceeding the fixed capacity — reject before the HRR.
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var harness: RetryPskHarness = .{};
     const ch1_record = try harness.buildCh1Record(client_keypair, &identities, 0, 0x6a6a);
@@ -4122,7 +4155,7 @@ test "acceptClientHello: bounded PSK identity admission before HelloRetryRequest
 
     // Usable key_share: no retry, no retention — the same offer count is
     // fine and the handshake proceeds (no PSK selected, full DHE).
-    var server2: ServerHandshake = .init(try testConfig(.generate()));
+    var server2: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server2.deinit();
     const ch1_usable = try harness.buildCh1Record(
         client_keypair,
@@ -4155,11 +4188,15 @@ test "acceptClientHello: rejects removal of an unknown identity whose binder cla
     } };
     const client_keypair: x25519.KeyPair = .generate();
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     server.supportSuites(&.{.aes_128_gcm_sha256});
 
@@ -4187,7 +4224,7 @@ test "acceptClientHello: HRR path rejects a slack-byte identities vector in CH1"
     const client_keypair: x25519.KeyPair = .generate();
     // No psk_lookup: PSK selection is skipped, so the malformed vector first
     // reaches the HRR-time identity capture.
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var harness: RetryPskHarness = .{};
     const ch1_record = try harness.buildCh1Record(
@@ -4209,7 +4246,7 @@ test "acceptClientHello: HRR path rejects a slack-byte identities vector in CH1"
 // iterator.
 test "acceptClientHello: HRR path rejects a slack-byte identities vector in CH2" {
     const client_keypair: x25519.KeyPair = .generate();
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var harness: RetryPskHarness = .{};
     try harness.sendCh1(&server, client_keypair, &.{.{ .identity = "a" }});
@@ -4232,11 +4269,15 @@ test "acceptClientHello: PSK selection rejects a slack-byte identities vector" {
     // Empty table: the lookup resolves nothing, so the walk reaches the
     // slack byte instead of returning on a verified binder.
     var table: RetryPskTable = .{ .entries = &.{} };
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &table, .lookup = RetryPskTable.lookup },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var harness: RetryPskHarness = .{};
     const ch1_record = try harness.buildCh1Record(
@@ -4268,7 +4309,7 @@ test "acceptClientHello: rejects ClientHello2 that ignores HRR selected group" {
     ch1_header.write(ch1_record[0..frame.header_len]);
     @memcpy(ch1_record[frame.header_len..][0..hrr_ch1.len], hrr_ch1);
 
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var out: [512]u8 = undefined;
     _ = try server.acceptClientHello(ch1_record[0 .. frame.header_len + hrr_ch1.len], &out);
@@ -4304,7 +4345,7 @@ test "acceptClientHello: rejects ClientHello2 with extra key share" {
     ch1_header.write(ch1_record[0..frame.header_len]);
     @memcpy(ch1_record[frame.header_len..][0..hrr_ch1.len], hrr_ch1);
 
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var out: [512]u8 = undefined;
     _ = try server.acceptClientHello(ch1_record[0 .. frame.header_len + hrr_ch1.len], &out);
@@ -4341,7 +4382,7 @@ test "acceptClientHello: HRR sends at most one compatibility ChangeCipherSpec" {
     ch1_header.write(ch1_record[0..frame.header_len]);
     @memcpy(ch1_record[frame.header_len..][0..hrr_ch1.len], hrr_ch1);
 
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var hrr_out: [256]u8 = undefined;
     const hrr_record = try server.acceptClientHello(
@@ -4401,7 +4442,7 @@ test "acceptClientHello: emits compatibility ChangeCipherSpec for non-empty lega
     record_header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..compat_ch.len], compat_ch);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     const written = try hs.acceptClientHello(
@@ -4443,7 +4484,7 @@ test "sendAnonymousFlightForTest: client decrypts EncryptedExtensions and Finish
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     server.supportAlpn(&.{"h2"});
     var sh_out: [256]u8 = undefined;
@@ -4504,7 +4545,7 @@ test "sendPreparedServerFlight: credentials and pending write are enforced" {
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server_without_credentials: ServerHandshake = .init(try testConfig(.generate()));
+    var server_without_credentials: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server_without_credentials.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server_without_credentials.acceptClientHello(
@@ -4520,7 +4561,7 @@ test "sendPreparedServerFlight: credentials and pending write are enforced" {
 
     var signer: signature.PrivateKey = try .fromP256Scalar(serverEcdsaScalar()[0..32]);
     defer signer.deinit();
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     server.setCredentials(&.{serverEcdsaCertDer()}, signer.signer());
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -4561,7 +4602,7 @@ test "sendPreparedServerFlight: encryption failure preserves handshake write epo
     defer signer.deinit();
     const signer_api = signer.signer();
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     server.setCredentials(&.{serverEcdsaCertDer()}, signer_api);
     var server_sh: [256]u8 = undefined;
@@ -4623,7 +4664,7 @@ test "sendAuthenticatedFlight: client decrypts authenticated server flight" {
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     server.supportAlpn(&.{"h2"});
     var sh_out: [256]u8 = undefined;
@@ -4683,11 +4724,15 @@ test "sendAuthenticatedFlight: optional client auth sends CertificateRequest" {
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = .zero,
-        .client_auth = .optional,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .client_auth = .optional,
+        },
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     const sh_record = try server.acceptClientHello(
@@ -4770,7 +4815,7 @@ fn connectedTestServerConfigure(suites_patch: ?[6]u8) !ServerHandshake {
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     errdefer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -4826,7 +4871,7 @@ fn connectedTestPair() !ConnectedTestPair {
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     errdefer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -4996,11 +5041,15 @@ test "server-issued NewSessionTicket resumes and can be renewed" {
         .psk = session.psk.constSlice(),
         .cipher_suite = session.cipher_suite,
     };
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     server.supportSuites(&.{session.cipher_suite});
 
@@ -5250,12 +5299,16 @@ test "processClientFinished: optional client auth accepts empty Certificate" {
     client.completeWrite();
 
     var client_cert_storage: [1024]u8 = undefined;
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = .zero,
-        .client_auth = .optional,
-        .client_cert_buffer = &client_cert_storage,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .client_auth = .optional,
+        },
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = .zero,
+            .client_cert_buffer = &client_cert_storage,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -5313,11 +5366,15 @@ test "processClientFinished: required client auth rejects empty Certificate" {
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = .zero,
-        .client_auth = .required,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .client_auth = .required,
+        },
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -5396,13 +5453,17 @@ test "processClientFinished: required client auth verifies real client Certifica
     client.completeWrite();
 
     var client_cert_storage: [1024]u8 = undefined;
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = .zero,
-        .client_auth = .required,
-        .insecure_no_client_chain_anchor = true,
-        .client_cert_buffer = &client_cert_storage,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .client_auth = .required,
+            .insecure_no_client_chain_anchor = true,
+        },
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = .zero,
+            .client_cert_buffer = &client_cert_storage,
+        },
+    );
     defer server.deinit();
     try testing.expectEqual(@as(?[]const u8, null), server.clientCertificateDer());
     try testing.expectEqual(@as(?Certificate.Parsed, null), server.clientCertificate());
@@ -5515,13 +5576,17 @@ test "processClientFinished: bad client Finished does not retain identity" {
     client.completeWrite();
 
     var client_cert_storage: [1024]u8 = undefined;
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = .zero,
-        .client_auth = .required,
-        .insecure_no_client_chain_anchor = true,
-        .client_cert_buffer = &client_cert_storage,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .client_auth = .required,
+            .insecure_no_client_chain_anchor = true,
+        },
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = .zero,
+            .client_cert_buffer = &client_cert_storage,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -5584,12 +5649,16 @@ test "processClientFinished: client identity requires caller-owned storage" {
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = .zero,
-        .client_auth = .required,
-        .insecure_no_client_chain_anchor = true,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .client_auth = .required,
+            .insecure_no_client_chain_anchor = true,
+        },
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -5643,12 +5712,16 @@ test "processClientFinished: required client auth rejects forged CertificateVeri
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(server_keypair),
-        .random = .zero,
-        .client_auth = .required,
-        .insecure_no_client_chain_anchor = true,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .client_auth = .required,
+            .insecure_no_client_chain_anchor = true,
+        },
+        .{
+            .keypairs = try .init(server_keypair),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -5694,7 +5767,7 @@ test "sendAuthenticatedFlight: client processes CertificateVerify and Finished" 
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     server.supportAlpn(&.{"h2"});
     var sh_out: [256]u8 = undefined;
@@ -5742,7 +5815,7 @@ test "processClientFinished: verifies Finished and installs app keys" {
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -5790,7 +5863,7 @@ test "public Finished paths reject trailing and non-Finished handshake messages"
     const entries: []const enum { direct, record } = &.{ .direct, .record };
     for (placements) |placement| {
         for (entries) |entry| {
-            var server: ServerHandshake = .init(try testConfig(.generate()));
+            var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
             defer server.deinit();
             try advanceToClientFinishedForTest(&server);
             var plain: [64]u8 = undefined;
@@ -5857,7 +5930,7 @@ test "handleRecord: rejects disjoint ALPN offers with the required alert" {
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     server.supportAlpn(&.{"http/1.1"});
     var out: [512]u8 = undefined;
@@ -5881,11 +5954,13 @@ test "processClientFinished: rejects a client key above retention capacity" {
     defer bundle.deinit(testing.allocator);
     try bundle.bytes.appendSlice(testing.allocator, &fixtures.key_capacity_root_der);
     try bundle.parseCert(testing.allocator, 0, fixtures.key_capacity_time);
-    var config: Config = try testConfig(.generate());
-    config.client_auth = .required;
-    config.client_auth_bundle = &bundle;
-    config.client_auth_now_sec = fixtures.key_capacity_time;
-    var server: ServerHandshake = .init(config);
+    const config: Config = try testConfig(.generate());
+    const server_config: ServerConfig = .{
+        .client_auth = .required,
+        .client_auth_bundle = &bundle,
+        .client_auth_now_sec = fixtures.key_capacity_time,
+    };
+    var server: ServerHandshake = .init(server_config, config);
     defer server.deinit();
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
@@ -5937,7 +6012,7 @@ test "processClientFinished: rejects bad verify_data" {
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -5987,7 +6062,7 @@ test "processClientFinished: rejects EndOfEarlyData when 0-RTT was not accepted"
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -6019,7 +6094,7 @@ test "handleRecord: rejects second plaintext ClientHello before Finished" {
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -6083,7 +6158,7 @@ test "handleRecord: rejects client KeyUpdate before Finished" {
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -7163,7 +7238,7 @@ test "key update: simultaneous update_requested remains connected" {
 fn fuzzHandleRecord(_: void, input: []const u8) anyerror!void {
     const key_seed: [32]u8 = @splat(0x42);
     const keypair = x25519.KeyPair.generateDeterministic(.init(key_seed)) catch unreachable;
-    var server: ServerHandshake = .init(try testConfig(keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(keypair));
     defer server.deinit();
 
     var record_buf: [max_out_len + 64]u8 = undefined;
@@ -7258,7 +7333,7 @@ fn expectInMemoryAuthenticatedHandshake(suite: CipherSuite) !void {
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     server.supportAlpn(&.{"h2"});
     const suites = [_]CipherSuite{suite};
@@ -7325,7 +7400,7 @@ fn expectInMemoryKeyUpdateRoundTrip(suite: CipherSuite) !void {
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     const suites = [_]CipherSuite{suite};
     server.supportSuites(&suites);
@@ -7591,7 +7666,13 @@ test "PSK offer without psk_key_exchange_modes aborts" {
     ) orelse return error.TestUnexpectedResult;
     client_out[mode_extension + 1] = 0x15; // padding extension
 
-    var server: ServerHandshake = .init(.{ .keypairs = try .init(.generate()), .random = .zero });
+    var server: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [1024]u8 = undefined;
     try testing.expectError(
@@ -7647,11 +7728,15 @@ test "PSK offer with only psk_ke disables resumption and ticket issuance" {
         }
     };
     var lookup_context: Lookup.Context = .{ .psk = &psk, .identity = &identity };
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [1024]u8 = undefined;
     _ = try server.acceptClientHello(record, &server_out);
@@ -7707,14 +7792,18 @@ test "client authentication policy declines PSK resumption" {
     };
     var lookup_context: Lookup.Context = .{ .identity = identity, .psk = &psk };
     var client_cert_storage: [1024]u8 = undefined;
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
-        .client_auth = .required,
-        .insecure_no_client_chain_anchor = true,
-        .client_cert_buffer = &client_cert_storage,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
+            .client_auth = .required,
+            .insecure_no_client_chain_anchor = true,
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+            .client_cert_buffer = &client_cert_storage,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const server_hello_record = try server.acceptClientHello(record, &server_out);
@@ -7782,11 +7871,15 @@ fn expectIncompatiblePskNotSelected(
         .identity = &identity,
         .suite = ticket_suite,
     };
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     server.supportSuites(&.{negotiated_suite});
     var server_out: [1024]u8 = undefined;
@@ -7958,12 +8051,16 @@ fn expectInMemoryPskResumption(
 
     var server_keypairs: KeyPairs = try .init(.generate());
     if (hybrid_group == .secp384r1_mlkem1024) server_keypairs.p384 = try .generate();
-    var server: ServerHandshake = .init(.{
-        .keypairs = server_keypairs,
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-        .hybrid_groups = hybrid_groups,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+            .hybrid_groups = hybrid_groups,
+        },
+        .{
+            .keypairs = server_keypairs,
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     server.supportSuites(&.{cipher_suite});
     try testing.expect(server.selected_psk == null);
@@ -8064,7 +8161,13 @@ test "PSK fast-path rejects bare Finished when server did NOT select PSK" {
     // Server with NO psk_lookup: it ignores the PSK offer, selects no identity,
     // and does a full ephemeral (EC)DHE handshake. This models both a benign
     // server that declined resumption and an active MITM without the PSK.
-    var server: ServerHandshake = .init(.{ .keypairs = try .init(.generate()), .random = .zero });
+    var server: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -8144,11 +8247,15 @@ test "in-memory 0-RTT early data is decrypted by the server" {
     };
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -8261,11 +8368,15 @@ test "0-RTT: accepted early data distinguishes authentication and handshake erro
         const ch = try client.startWithPsk(&ticket, &client_out, true);
         client.completeWrite();
         var context: u8 = 0;
-        var server: ServerHandshake = .init(.{
-            .keypairs = try .init(.generate()),
-            .random = .zero,
-            .psk_lookup = .{ .context = &context, .lookup = Lookup.lookup },
-        });
+        var server: ServerHandshake = .init(
+            .{
+                .psk_lookup = .{ .context = &context, .lookup = Lookup.lookup },
+            },
+            .{
+                .keypairs = try .init(.generate()),
+                .random = .zero,
+            },
+        );
         defer server.deinit();
         var server_out: [4096]u8 = undefined;
         const sh = try server.acceptClientHello(ch, &server_out);
@@ -8357,11 +8468,15 @@ test "0-RTT: server rejects early data exceeding max_early_data_size" {
     };
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     _ = try server.acceptClientHello(ch_record, &server_out);
@@ -8386,7 +8501,13 @@ test "0-RTT: max u32 early-data limit rejects bytes beyond remaining budget" {
     const key: aead.Aes128GcmKey = .zero;
     const iv: aead.Iv = .zero;
 
-    var server: ServerHandshake = .init(.{ .keypairs = try .init(.generate()), .random = .zero });
+    var server: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     server.state = .wait_client_finished;
     server.early_rx = try .init(.{ .aes_128_gcm_sha256 = key }, iv);
     // This synthetic state initializes only early_rx, not handshake rx/tx.
@@ -8443,11 +8564,15 @@ test "0-RTT: no PSK selected means early data is skipped and 1-RTT completes" {
         }
     };
     var no_match: NoMatch = .{};
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &no_match, .lookup = NoMatch.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &no_match, .lookup = NoMatch.l },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -8568,11 +8693,15 @@ test "0-RTT: failed ClientHello after PSK selection resets negotiation state" {
     };
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
 
@@ -8673,12 +8802,16 @@ test "0-RTT: ticket suite mismatch declines early data" {
     // The server no longer enables the ticket's suite: same hash family, so
     // the binder verifies and the PSK is selected, but the exact-suite
     // precondition of §4.2.10 fails.
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .supported_suites = &.{.chacha20_poly1305_sha256},
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+            .supported_suites = &.{.chacha20_poly1305_sha256},
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     _ = try server.acceptClientHello(ch_record, &server_out);
@@ -8747,12 +8880,16 @@ test "0-RTT: ticket ALPN mismatch declines early data" {
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
     // Server preference selects proto-b; the ticket's proto-a does not match.
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .alpn_protocols = &.{"proto-b"},
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+            .alpn_protocols = &.{"proto-b"},
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     _ = try server.acceptClientHello(ch_record, &server_out);
@@ -8818,12 +8955,16 @@ test "0-RTT: matching suite, ALPN, and first identity accept early data" {
     };
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .alpn_protocols = &.{"proto-a"},
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+            .alpn_protocols = &.{"proto-a"},
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     _ = try server.acceptClientHello(ch_record, &server_out);
@@ -8971,11 +9112,15 @@ test "0-RTT: selected identity index above zero declines early data" {
     };
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     _ = try server.acceptClientHello(ch2_record[0 .. frame.header_len + ch_msg.len], &server_out);
@@ -9051,11 +9196,15 @@ test "0-RTT: declined early records in flight are skipped and 1-RTT completes" {
     };
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -9173,14 +9322,18 @@ test "0-RTT: required client auth declines PSK, skips early data, completes 1-RT
     };
     var lookup_context: Lookup.Context = .{ .identity = identity, .psk = &psk };
     var client_cert_storage: [1024]u8 = undefined;
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
-        .client_auth = .required,
-        .insecure_no_client_chain_anchor = true,
-        .client_cert_buffer = &client_cert_storage,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_context, .lookup = Lookup.lookup },
+            .client_auth = .required,
+            .insecure_no_client_chain_anchor = true,
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+            .client_cert_buffer = &client_cert_storage,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -9266,11 +9419,15 @@ test "0-RTT: decline skip budget exhaustion aborts the handshake" {
     const skip_limit: u32 = @intCast(early_one.len - frame.header_len);
 
     // Server with no PSK lookup: the offer is declined with no early key.
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .early_data_skip_limit = skip_limit,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .early_data_skip_limit = skip_limit,
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     _ = try server.acceptClientHello(ch_record, &server_out);
@@ -9324,7 +9481,13 @@ test "0-RTT: corrupted record after the skip window aborts" {
     client.completeWrite();
 
     // Server with no PSK lookup: declined, no early key, skip mode armed.
-    var server: ServerHandshake = .init(.{ .keypairs = try .init(.generate()), .random = .zero });
+    var server: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -9436,12 +9599,16 @@ test "0-RTT: HRR decline skips in-flight early data and the retry handshake comp
     };
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-        .hybrid_groups = hybrid_groups,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+            .hybrid_groups = hybrid_groups,
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     server.supportSuites(&.{.aes_128_gcm_sha256});
     var server_out: [4096]u8 = undefined;
@@ -9552,7 +9719,13 @@ test "0-RTT: default decline-skip budget covers a full max-size early record" {
         early_record.len,
     );
 
-    var server: ServerHandshake = .init(.{ .keypairs = try .init(.generate()), .random = .zero });
+    var server: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -9654,12 +9827,16 @@ test "0-RTT: HRR decline skip budget exhaustion aborts the handshake" {
     // Budget sized to exactly one "hello 0-rtt" record's wire payload:
     // plaintext + inner content type + AEAD tag.
     const skip_limit: u32 = @intCast("hello 0-rtt".len + 1 + aead.tag_len);
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .hybrid_groups = &group_storage,
-        .early_data_skip_limit = skip_limit,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .hybrid_groups = &group_storage,
+            .early_data_skip_limit = skip_limit,
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var client_out: [4096]u8 = undefined;
     var server_out: [4096]u8 = undefined;
@@ -9717,11 +9894,15 @@ test "0-RTT: HRR decline skip rejects malformed application_data records" {
     });
     defer client.deinit();
     client.policy.insecure_no_chain_anchor = true;
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .hybrid_groups = &group_storage,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .hybrid_groups = &group_storage,
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var client_out: [4096]u8 = undefined;
     var server_out: [4096]u8 = undefined;
@@ -9792,11 +9973,15 @@ test "0-RTT: HRR skip window closes at ClientHello2" {
     });
     defer client.deinit();
     client.policy.insecure_no_chain_anchor = true;
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .hybrid_groups = &group_storage,
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .hybrid_groups = &group_storage,
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var client_out: [4096]u8 = undefined;
     var server_out: [4096]u8 = undefined;
@@ -9899,11 +10084,15 @@ test "0-RTT: server declines, client sends no EndOfEarlyData" {
     };
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -10034,11 +10223,15 @@ test "0-RTT: processClientFinished rejects Finished before EndOfEarlyData" {
     };
     var lookup_ctx: Lookup = .{ .psk = &psk.data, .identity = &identity };
 
-    var server: ServerHandshake = .init(.{
-        .keypairs = try .init(.generate()),
-        .random = .zero,
-        .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-    });
+    var server: ServerHandshake = .init(
+        .{
+            .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
+        },
+        .{
+            .keypairs = try .init(.generate()),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     _ = try server.acceptClientHello(ch_record, &server_out);
@@ -10083,9 +10276,10 @@ test "preferredHybridShare follows server preference" {
         .secp256r1_mlkem768,
         .x25519_mlkem768,
     };
-    var config = try testConfig(.generate());
-    config.hybrid_groups = &preference;
-    var server: ServerHandshake = .init(config);
+    var server: ServerHandshake = .init(
+        .{ .hybrid_groups = &preference },
+        try testConfig(.generate()),
+    );
     defer server.deinit();
 
     var x25519_share: [1216]u8 = undefined;
@@ -10174,7 +10368,13 @@ test "in-memory X25519 handshake on deferred keypairs reaches app data" {
     const ch_record = try client.start(&client_out);
     client.completeWrite();
 
-    var server: ServerHandshake = .init(.{ .keypairs = deferredTestKeyPairs(), .random = .zero });
+    var server: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = deferredTestKeyPairs(),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
@@ -10219,14 +10419,13 @@ test "in-memory RFC 10024 hybrid group matrix reaches app data" {
         const ch_record = try client.start(&client_out);
         client.completeWrite();
 
-        var server_config: Config = .{
+        var config: Config = .{
             .keypairs = deferredTestKeyPairs(),
             .random = .zero,
-            .hybrid_groups = &enabled_groups,
         };
         if (group == .secp384r1_mlkem1024)
-            server_config.keypairs.p384 = try .generate();
-        var server: ServerHandshake = .init(server_config);
+            config.keypairs.p384 = try .generate();
+        var server: ServerHandshake = .init(.{ .hybrid_groups = &enabled_groups }, config);
         defer server.deinit();
 
         var server_out: [4096]u8 = undefined;
@@ -10275,14 +10474,13 @@ test "RFC 10024 hybrid group matrix negotiates through HRR" {
         const ch1 = try client_hello.parse(ch1_record[frame.header_len..][0..ch1_header.length()]);
         try testing.expect(ch1.public_key != null and ch1.public_key_p256 != null);
 
-        var server_config: Config = .{
+        var config: Config = .{
             .keypairs = deferredTestKeyPairs(),
             .random = .zero,
-            .hybrid_groups = &enabled_groups,
         };
         if (group == .secp384r1_mlkem1024)
-            server_config.keypairs.p384 = try .generate();
-        var server: ServerHandshake = .init(server_config);
+            config.keypairs.p384 = try .generate();
+        var server: ServerHandshake = .init(.{ .hybrid_groups = &enabled_groups }, config);
         defer server.deinit();
 
         var server_out: [4096]u8 = undefined;
@@ -10357,7 +10555,7 @@ test "hybrid share requires explicit server policy" {
     ch_header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(.generate()));
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     _ = try server.acceptClientHello(
@@ -10412,7 +10610,13 @@ test "in-memory HRR round trip reaches app data" {
 
     // Deferred keys: HRR names a group without deriving anything, and
     // ClientHello2 derives the X25519 key alone (#136).
-    var server: ServerHandshake = .init(.{ .keypairs = deferredTestKeyPairs(), .random = .zero });
+    var server: ServerHandshake = .init(
+        .{},
+        .{
+            .keypairs = deferredTestKeyPairs(),
+            .random = .zero,
+        },
+    );
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const hrr_record = try server.acceptClientHello(
@@ -10500,7 +10704,7 @@ test "acceptClientHello: server suite preference" {
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     const suites = [_]CipherSuite{.chacha20_poly1305_sha256};
     hs.supportSuites(&suites);
@@ -10528,7 +10732,7 @@ test "acceptClientHello: exposes SNI via clientServerName" {
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     _ = try hs.acceptClientHello(record[0 .. frame.header_len + ch.len], &out);
@@ -10545,7 +10749,7 @@ test "acceptClientHello: clientServerName is null when SNI absent" {
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     _ = try hs.acceptClientHello(record[0 .. frame.header_len + ch.len], &out);
@@ -10563,7 +10767,7 @@ test "acceptClientHello: rejects unsupported suite" {
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     try testing.expectError(
@@ -10586,7 +10790,7 @@ test "acceptClientHello: ignores unknown cipher suites in mixed list" {
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     const sh_record = try hs.acceptClientHello(record[0 .. frame.header_len + ch.len], &out);
@@ -10611,7 +10815,7 @@ test "acceptClientHello: rejects ClientHello with no shared group" {
     header.write(record[0..frame.header_len]);
     @memcpy(record[frame.header_len..][0..ch.len], ch);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     try testing.expectError(
@@ -10635,7 +10839,7 @@ test "handleRecord: reassembles ClientHello split across records" {
     hdr1.write(rec1[0..frame.header_len]);
     @memcpy(rec1[frame.header_len..][0..split_at], ch_msg[0..split_at]);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var reassembly: [1024]u8 = undefined;
     hs.useHandshakeBuffer(&reassembly);
@@ -10671,7 +10875,7 @@ test "handleRecord: reassembles ClientHello with header and body in separate rec
     hdr1.write(rec1[0..frame.header_len]);
     @memcpy(rec1[frame.header_len..][0..split_at], ch_msg[0..split_at]);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var reassembly: [1024]u8 = undefined;
     hs.useHandshakeBuffer(&reassembly);
@@ -10703,7 +10907,7 @@ test "handleRecord: rejects CCS while ClientHello fragment pending" {
     hdr1.write(rec1[0..frame.header_len]);
     @memcpy(rec1[frame.header_len..][0..split_at], ch_msg[0..split_at]);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var reassembly: [1024]u8 = undefined;
     hs.useHandshakeBuffer(&reassembly);
@@ -10729,7 +10933,7 @@ test "handleRecord: processes alert while ClientHello fragment pending" {
     hdr1.write(rec1[0..frame.header_len]);
     @memcpy(rec1[frame.header_len..][0..split_at], ch_msg[0..split_at]);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var reassembly: [1024]u8 = undefined;
     hs.useHandshakeBuffer(&reassembly);
@@ -10750,7 +10954,7 @@ test "handleRecord: processes alert while ClientHello fragment pending" {
 // RFC 8446 §6 — a plaintext fatal alert before the ClientHello aborts and
 // records the peer's exact level/description; reinitialization starts null (#85).
 test "handleRecord: plaintext fatal alert in wait_ch records detail" {
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [64]u8 = undefined;
     try testing.expect(hs.lastPeerAlert() == null);
@@ -10764,14 +10968,14 @@ test "handleRecord: plaintext fatal alert in wait_ch records detail" {
 
     // Deinit + reinitialization of the same engine starts null (#85).
     hs.deinit();
-    hs = .init(try testConfig(.generate()));
+    hs = .init(.{}, try testConfig(.generate()));
     try testing.expect(hs.lastPeerAlert() == null);
 }
 
 // RFC 8446 §6 — AlertLevel and AlertDescription are non-exhaustive; unknown
 // codes are legal on the wire and must be preserved verbatim for diagnostics.
 test "handleRecord: unknown alert codes are preserved" {
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [64]u8 = undefined;
 
@@ -10786,7 +10990,7 @@ test "handleRecord: unknown alert codes are preserved" {
 // RFC 8446 §6 — a later non-close_notify alert replaces an earlier one;
 // close_notify (§6.1) and malformed records leave the stored detail unchanged.
 test "handleRecord: lastPeerAlert replaced by later alert, preserved by close/malformed" {
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [64]u8 = undefined;
 
@@ -10826,7 +11030,7 @@ test "handleRecord: rejects fragmented ClientHello without reassembly buffer" {
     hdr1.write(rec1[0..frame.header_len]);
     @memcpy(rec1[frame.header_len..][0..split_at], ch_msg[0..split_at]);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [256]u8 = undefined;
     // No useHandshakeBuffer call — fragmentation must be rejected.
@@ -10852,7 +11056,7 @@ test "handleRecord: state reset after invalid fragmented ClientHello" {
     hdr1.write(rec1[0..frame.header_len]);
     @memcpy(rec1[frame.header_len..][0..split_at], ch_msg[0..split_at]);
 
-    var hs: ServerHandshake = .init(try testConfig(server_keypair));
+    var hs: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer hs.deinit();
     var reassembly: [1024]u8 = undefined;
     hs.useHandshakeBuffer(&reassembly);
@@ -10897,7 +11101,7 @@ test "handleRecord: rejects trailing bytes after fragmented ClientHello" {
     hdr1.write(rec1[0..frame.header_len]);
     @memcpy(rec1[frame.header_len..][0..split_at], ch_msg[0..split_at]);
 
-    var hs: ServerHandshake = .init(try testConfig(server_keypair));
+    var hs: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer hs.deinit();
     var reassembly: [1024]u8 = undefined;
     hs.useHandshakeBuffer(&reassembly);
@@ -10944,7 +11148,7 @@ test "handleRecord: reassembles ClientHello2 split across records after HRR" {
     ch1_header.write(ch1_record[0..frame.header_len]);
     @memcpy(ch1_record[frame.header_len..][0..hrr_ch1.len], hrr_ch1);
 
-    var hs: ServerHandshake = .init(try testConfig(server_keypair));
+    var hs: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer hs.deinit();
     var reassembly: [1024]u8 = undefined;
     hs.useHandshakeBuffer(&reassembly);
@@ -10995,7 +11199,7 @@ test "handleRecord: reassembles fragmented client Finished across encrypted reco
     ch_header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -11051,7 +11255,7 @@ test "handleRecord: rejects interleaved alert during Finished fragment reassembl
     ch_header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -11108,7 +11312,7 @@ test "handleRecord: rejects plaintext alert during Finished fragment reassembly"
     ch_header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -11151,7 +11355,7 @@ test "handleRecord: encrypted fatal alert while waiting for Finished records det
     ch_header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -11186,7 +11390,7 @@ test "handleRecord: rejects plaintext alert while waiting for Finished" {
     ch_header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -11210,7 +11414,7 @@ test "handleRecord: rejects zero-length encrypted handshake while waiting for Fi
     ch_header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(try testConfig(server_keypair));
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
     var sh_out: [256]u8 = undefined;
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
@@ -11244,7 +11448,7 @@ test "handleRecord: reassembles ClientHello when handshake header is split after
         &.{"h2"},
     );
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var reassembly: [1024]u8 = undefined;
     hs.useHandshakeBuffer(&reassembly);
@@ -11568,7 +11772,7 @@ test "handleRecord: zero-length handshake during KeyUpdate reassembly is rejecte
 // Regression for the #72 narrow-arithmetic class (audit S6, site 1):
 // line ~1467 evaluated `handshake_header_len + body_len` in u24.
 test "handleRecord: ClientHello body_len 0xFFFFFF rejected without overflow (fast path)" {
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var out: [64]u8 = undefined;
     // 16 03 03 00 04 = handshake record, 4-byte body.
@@ -11585,7 +11789,7 @@ test "handleRecord: ClientHello body_len 0xFFFFFF rejected without overflow (fas
 // Regression for the #72 narrow-arithmetic class (audit S6, site 2):
 // line ~1423 evaluated `handshake_header_len + body_len_assembled` in u24.
 test "handleRecord: split-header reassembly body_len 0xFFFFFF rejected without overflow" {
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
     var reassembly: [1024]u8 = undefined;
     hs.useHandshakeBuffer(&reassembly);
@@ -11608,7 +11812,7 @@ test "handleRecord: split-header reassembly body_len 0xFFFFFF rejected without o
 test "deinit leaves caller-owned buffers to the caller" {
     var reassembly: [ch_reassembly_buffer_size]u8 = @splat(0xc7);
 
-    var hs: ServerHandshake = .init(try testConfig(.generate()));
+    var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     hs.useHandshakeBuffer(&reassembly);
     hs.deinit();
 

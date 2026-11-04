@@ -9,6 +9,10 @@ All notable changes to tls are recorded here. The format follows
 
 - `tls_nonblocking.Server`: a caller-driven TLS 1.3 server with caller-owned buffers, incremental handshake progress, and explicit backpressure (#167).
 
+### Changed
+
+- `ServerHandshake.init` now takes reusable `ServerConfig` policy separately from per-connection `Config` keys, random, and buffers. `tls_nonblocking.Server.init` takes the same split, so listener `Options` cannot hold ephemeral connection state (#168).
+
 ## [0.1.1] - 2026-10-31
 
 ### Changed
