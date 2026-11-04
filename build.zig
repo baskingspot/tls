@@ -75,6 +75,13 @@ pub fn build(b: *Build) void {
         "Expose tls_xev and fetch its lazy libxev dependency",
     ) orelse false;
     {
+        const nonblocking_mod = b.addModule("tls_nonblocking", .{
+            .root_source_file = b.path("integrations/tls-nonblocking/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        nonblocking_mod.addImport("tls", mod);
+
         const std_mod = b.addModule("tls_std", .{
             .root_source_file = b.path("integrations/tls-std/src/root.zig"),
             .target = target,

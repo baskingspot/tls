@@ -5,6 +5,83 @@ run IDs, per-claim tables, and forensic notes. The human-facing status page is
 `PRODUCTION_READINESS.md`; this file is where you check whether a claim on that
 page is true.
 
+## 2026-11-04 caller-driven readiness server (#167)
+
+Scope: the `tls_nonblocking.Server` integration. The base revision is `b7de721`.
+The integration and this record share one commit. The host is Linux arm64 with
+Zig 0.16.0. The independent peer is OpenSSL 3.6.5.
+
+The integration gate ran `just ci` from `integrations/tls-nonblocking/`.
+All 19 tests passed. The same 19 tests passed with AWS-LC and BoringSSL headers
+and libraries selected through their devshell pkg-config paths. OpenSSL builds
+also passed in ReleaseSafe and ReleaseFast. Twenty repeated Debug runs each
+passed all 19 tests.
+
+Root `just ci` completed with exit status zero. The gate included the isolated
+package smoke test and all integration gates. The package smoke compiled
+`tls_nonblocking` without a libxev or testingx dependency in the consumer cache.
+
+A manual Memcheck run used the integration test executable from
+`zig build test -Doptimize=ReleaseFast -Dcpu=baseline --verbose`. The run selected
+`openssl-memcheck` through `LD_LIBRARY_PATH`, as the root memory gate does.
+Valgrind 3.27.1 reported these results:
+
+```text
+testingx: 19 passed, 0 failed, 0 skipped (of 19 total)
+in use at exit: 0 bytes in 0 blocks
+total heap usage: 31,074 allocs, 31,074 frees, 2,289,957 bytes allocated
+ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+```
+
+The initial native-CPU Memcheck attempt stopped on an unsupported instruction
+inside `Io.Threaded.init`, before any test ran. The baseline build avoided that
+Valgrind limitation. Neither run changed the library source.
+
+The public API tests cover these contracts:
+
+- The handshake progresses under one-byte transport fragments and each TLS 1.3 cipher suite.
+- A fragmented ClientHello spans record boundaries, including its handshake header.
+- A stalled connection slot does not block another handshake.
+- ALPN exposes `h2`, absent negotiation, and disjoint-list rejection.
+- Plaintext remains pinned across partial consumption and unrelated TX progress.
+- One output record bounds application acceptance and preserves partial sends.
+- A KeyUpdate response precedes later application output, even while plaintext remains borrowed.
+- Early data uses a distinct borrowed event before client Finished authentication.
+- Half-close preserves the opposite direction, and EOF without `close_notify` reports truncation.
+- Peer alerts abort without further output, and local errors defer a fatal alert behind existing output.
+- Buffer admission rejects short storage, and teardown preserves caller ownership.
+
+The OpenSSL test uses a real TCP socket. The adapter calls `recv` and `send` with
+`MSG_DONTWAIT`. It caps reads at seven bytes and writes at three bytes. It checks
+ALPN, echoed bytes, and authenticated close without the in-tree client engine.
+
+Regression checks produced the expected failures before their fixes:
+
+- A fatal peer alert left 52 queued bytes. The test required zero outbound bytes.
+- Borrowed plaintext blocked a required KeyUpdate response. The test expected `need_output` and received `application_data`.
+
+Mutation checks removed the plaintext input guard and replaced truncation with
+`closed`. The pin tests then observed 16,645 writable bytes instead of zero.
+The EOF tests then received `closed` instead of `UnexpectedEof`. The original
+code restored all tests to green.
+
+`zig build footprint` reported these Linux arm64 sizes:
+
+| Component | Bytes |
+| --- | ---: |
+| `Server` | 19,464 |
+| RX record buffer | 16,645 |
+| TX record buffer | 16,645 |
+| ClientHello reassembly | 32,772 |
+| Slot with alignment | 85,528 |
+
+The slot excludes shared credentials and optional client-certificate storage.
+Libcrypto owns its backend allocations. The driver owns no allocations and
+performs no transport I/O.
+
+The HTTP readiness consumer and its TLS `h2spec` runs are outside this evidence.
+Issue #167 remains open until that consumer passes on Linux and macOS.
+
 ## How this document works
 
 - **The evidence log.** The status page states the claim. This file records

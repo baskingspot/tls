@@ -58,9 +58,9 @@ const tls = @import("tls");
 `std.crypto.tls` exists, so a file that imports both should bind this module as
 `tlsx`.
 
-The same dependency exposes `tls_std`, `tls_xev` (opt-in with `.xev = true`),
-and `tls_ktls` (Linux). The [guide](https://baskingspot.dev/tls/#install)
-has the full setup.
+The same dependency exposes `tls_std`, `tls_nonblocking` (caller-driven server),
+`tls_xev` (opt-in with `.xev = true`), and `tls_ktls` (Linux).
+The [guide](https://baskingspot.dev/tls/#install) has the full setup.
 
 The library builds with Zig 0.16 only.
 

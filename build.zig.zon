@@ -32,6 +32,7 @@
         "build.zig.zon",
         "src",
         "tests/fixtures",
+        "integrations/tls-nonblocking/src",
         "integrations/tls-std/src",
         "integrations/tls-xev/src",
         "integrations/tls-ktls/src",

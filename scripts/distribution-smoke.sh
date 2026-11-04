@@ -106,6 +106,9 @@ build_consumer() {
 build_consumer core
 assert_not_cached testingx libxev
 
+build_consumer nonblocking
+assert_not_cached testingx libxev
+
 build_consumer std
 assert_not_cached testingx libxev
 

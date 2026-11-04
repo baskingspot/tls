@@ -102,6 +102,7 @@ rec {
       ast-grep
       benchstat
       binutils
+      coreutils # timeout bounds the independent OpenSSL integration peer.
       curl
       git
       go

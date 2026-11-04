@@ -46,6 +46,7 @@ choose:
 | ---------- | ------------------------------------------------ |
 | `tls`      | Zig 0.16                                         |
 | `tls_std`  | Zig 0.16                                         |
+| `tls_nonblocking` | Zig 0.16, caller-driven server transport |
 | `tls_xev`  | Zig 0.16 and the dependency option `.xev = true` |
 | `tls_ktls` | Zig 0.16 on Linux                                |
 
@@ -696,6 +697,21 @@ The drive loop is the protocol boundary. What changes by transport model:
 ## io_uring
 
 [`examples/iouring_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/examples/iouring_pingpong.zig) is Linux-only. Setup may use ordinary blocking `listen`, `accept`, and `connect`; the record data path submits sends and receives through the ring. The pending-write rule still applies: every emitted record completes through the ring before the next call that can advance protocol state.
+
+## Caller-driven readiness servers
+
+`tls_nonblocking.Server` accepts bytes and exposes output without transport I/O.
+It works with a caller-owned readiness loop on Linux and macOS. The caller keeps
+one connection state and its buffers in each fixed slot.
+
+`next()` reports handshake completion and borrowed plaintext. `write()` accepts
+one fragment or returns `WouldBlock` without acceptance. `sendBuffer()` and
+`sent(n)` preserve partial writes. `receiveBuffer()` and `received(n)` bound input
+storage. `endInput()` reports EOF without a false `close_notify`.
+
+The [integration contract](https://github.com/baskingspot/tls/blob/main/integrations/tls-nonblocking/README.md)
+defines buffer lifetimes and readiness interests. It also covers ALPN and shutdown.
+The module requires no libxev opt-in.
 
 ## libxev
 

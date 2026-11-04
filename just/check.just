@@ -138,6 +138,7 @@ flake-check N="20":
 [doc("Run every in-tree integration gate")]
 [group("check")]
 integrations-ci:
+    just integrations/tls-nonblocking/ci
     just integrations/tls-std/ci
     just integrations/tls-xev/ci
     if [ "$(uname -s)" = Linux ]; then just integrations/tls-ktls/ci; else echo "tls-ktls: Linux-only, skipped"; fi

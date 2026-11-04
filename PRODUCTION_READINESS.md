@@ -31,6 +31,7 @@ commit because the branch moved.
 | HelloRetryRequest | Proven | Both roles in memory and in TLS-Anvil; forced-HRR OpenSSL interop is not gated |
 | Session resumption | Partial | The engine side is proven; persistence, expiry, rotation, replay, and SNI partitioning are yours |
 | 0-RTT early data | Partial | Offer, accept, and reject are proven; accept is gated on the RFC 8446 §4.2.10 exact-suite, ALPN, and first-identity checks; ticket-age and anti-replay policy are yours, and the engine default is off |
+| Caller-driven readiness server | Partial | `tls_nonblocking.Server` has byte-stream and OpenSSL tests on Linux. HTTP consumer acceptance with `h2spec` over TLS on Linux and macOS remains open (#167). |
 | kTLS | Proven | Linux only; key export and the kernel data plane |
 | C ABI | Partial | Client lifecycle only; see `include/baskingspot_tls.h` |
 | TLS 1.2, DTLS, Windows | Out of scope | Not coming |
@@ -109,6 +110,10 @@ The row is reported on its own.
 - **Forced-HRR interop.** HelloRetryRequest is proven in memory and in
   TLS-Anvil. The harness does not yet force OpenSSL into HRR, so that path is
   not gated.
+- **HTTP readiness transport.** The caller-driven server has library tests. The
+  HTTP readiness consumer still needs TLS integration and `h2spec` acceptance on
+  Linux and macOS (#167). Those results do not follow from the blocking engine's
+  consumer evidence.
 - **Deployment shapes beyond the tested profiles.** The resource and recovery
   checks cover the recorded Linux profiles, not every kernel, allocator, or
   connection pattern a deployment will see.

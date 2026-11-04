@@ -5,6 +5,10 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `tls_nonblocking.Server`: a caller-driven TLS 1.3 server with caller-owned buffers, incremental handshake progress, and explicit backpressure (#167).
+
 ## [0.1.1] - 2026-10-31
 
 ### Changed

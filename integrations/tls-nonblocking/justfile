@@ -1,0 +1,30 @@
+set default-list
+
+[doc("Run all checks for this integration")]
+[group("check")]
+ci: lint test footprint
+
+[doc("Run byte-stream and backpressure tests")]
+[group("check")]
+test:
+    zig build test --summary all
+
+[doc("Report per-slot TLS storage for this target")]
+[group("check")]
+footprint:
+    zig build footprint
+
+[doc("Format Zig and Just sources")]
+[group("check")]
+fmt:
+    zig fmt build.zig build.zig.zon src/ examples/
+    just --fmt
+
+[doc("Check Zig and Just sources")]
+[group("check")]
+lint:
+    zig fmt --check build.zig build.zig.zon src/ examples/
+    ziglint build.zig src/ examples/
+    rc=0; for rule in ../../rules/std-alias-*.yml; do ast-grep scan --custom-languages allow --rule "$rule" src examples --globs '*.zig' --report-style short || rc=1; done; exit $rc
+    ast-grep scan --custom-languages allow --rule ../../rules/no-tls-owned-allocations.yml src/Server.zig --report-style short
+    just --fmt --check

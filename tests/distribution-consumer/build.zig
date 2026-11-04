@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Mode = enum {
     core,
+    nonblocking,
     std,
     xev,
     xev_without_option,
@@ -26,6 +27,7 @@ pub fn build(b: *std.Build) void {
         });
     const integration_name = switch (mode) {
         .core => "tls",
+        .nonblocking => "tls_nonblocking",
         .std => "tls_std",
         .xev, .xev_without_option => "tls_xev",
         .ktls => "tls_ktls",
