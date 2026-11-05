@@ -4601,7 +4601,9 @@ test "sendAnonymousFlightForTest: client decrypts EncryptedExtensions and Finish
     header.write(ch_record[0..frame.header_len]);
     @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
 
-    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
+    var server_config = try testConfig(server_keypair);
+    server_config.keypairs.p256 = try .generateDeterministic(.init(@splat(0x54)));
+    var server: ServerHandshake = .init(.{}, server_config);
     defer server.deinit();
     server.supportAlpn(&.{"h2"});
     var sh_out: [256]u8 = undefined;
@@ -10973,8 +10975,10 @@ test "hybrid share requires explicit server policy" {
 test "in-memory HRR round trip reaches app data" {
     const client_keypair: x25519.KeyPair = .generate();
 
+    var client_keypairs: KeyPairs = try .init(client_keypair);
+    client_keypairs.p256 = try .generateDeterministic(.init(@splat(0x53)));
     var client: ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
+        .keypairs = client_keypairs,
         .host_name = null,
         .now_sec = 0,
         .random = .zero,
@@ -12217,3 +12221,77 @@ test "deinit leaves caller-owned buffers to the caller" {
 
     try testing.expect(mem.allEqual(u8, &reassembly, 0xc7));
 }
+
+// Wire goldens for the record path, captured before the record layer is
+// extracted into an adapter. Any refactor of the handshake must leave these
+// bytes unchanged; that is the point of committing them.
+//
+// Coverage limit: the authenticated server flight and the client Finished are
+// not here. ECDSA signing is randomized, so those records are not reproducible
+// byte for byte; RFC 8448 §3 and the OpenSSL interop suite cover them. What is
+// pinned here is everything a refactor can break silently: ClientHello
+// framing, ServerHello framing, the handshake-key flight (via the anonymous
+// flight), and a handshake-key alert.
+test "wire goldens: record output for a deterministic handshake" {
+    const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x51)));
+    const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x52)));
+
+    var client_keypairs: KeyPairs = try .init(client_keypair);
+    client_keypairs.p256 = try .generateDeterministic(.init(@splat(0x53)));
+    var client: ClientHandshake = .init(.{
+        .keypairs = client_keypairs,
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client.deinit();
+    client.policy.insecure_no_chain_anchor = true;
+
+    var cbuf: [4096]u8 = undefined;
+    var sbuf: [4096]u8 = undefined;
+
+    const ch = try client.start(&cbuf);
+    client.completeWrite();
+    try expectHex(ch, golden_client_hello);
+
+    var server_config = try testConfig(server_keypair);
+    server_config.keypairs.p256 = try .generateDeterministic(.init(@splat(0x54)));
+    var server: ServerHandshake = .init(.{}, server_config);
+    defer server.deinit();
+
+    const sh = try server.acceptClientHello(ch, &sbuf);
+    try expectHex(sh, golden_server_hello);
+
+    const flight = try server.sendAnonymousFlightForTest(&sbuf);
+    try expectHex(flight, golden_server_flight);
+
+    const al = try server.sendAlert(.close_notify, &sbuf);
+    try expectHex(al, golden_alert);
+}
+
+fn expectHex(actual: []const u8, comptime expected_hex: []const u8) !void {
+    var buf: [expected_hex.len / 2]u8 = undefined;
+    const expected = try std.fmt.hexToBytes(&buf, expected_hex);
+    try testing.expectEqualSlices(u8, expected, actual);
+}
+
+const golden_client_hello =
+    "16030300d9010000d5030300000000000000000000000000000000000000000000000000" ++
+    "00000000000000000006130113021303010000a6002b0003020304000a00060004001d00" ++
+    "17000d000a000804030503080408050032000e000c040105010601040305030807002d00" ++
+    "0201010033006b0069001d0020ad908a8a708aca07588cda7c4ed3e44d4966a80a9abb2f" ++
+    "1e4bbac53c67414e340017004104d797737d4081542dfe111a9a6cba6a52e91118f27a81" ++
+    "4f8e831e8f72d5165f9308da9652224eaf39f459098b545d520900d372da6e73cf33c403" ++
+    "2a8264e7bae4";
+
+const golden_server_hello =
+    "160303005a02000056030300000000000000000000000000000000000000000000000000" ++
+    "0000000000000000130100002e00330024001d0020f68b05ba03f7185e1ba88878682f8d" ++
+    "d0b15158f6050889c9481d79c2d7d2fa07002b00020304";
+
+const golden_server_flight =
+    "170303003baa28ea4b32de66dd45eaf439d99fdb8fa0a0ba2786becb04c259041b4610d2" ++
+    "a8b5d03e2b6bf8935fdd5c735ab234dc52c8fa8479dba9b9f1f45cfe";
+
+const golden_alert =
+    "1703030013ed6c49d952551265b4237a8a8fc4d467246447";
