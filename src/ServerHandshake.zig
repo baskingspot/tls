@@ -6109,7 +6109,7 @@ test "public Finished paths reject trailing and non-Finished handshake messages"
             try testing.expectEqual(.wait_client_finished, server.state);
             var peer = try server.tx.clone();
             defer peer.deinit();
-            const response = try server.sendAlert(alert.alertForError(failure), &out);
+            const response = try server.sendAlert(alert.alertForError(failure).?, &out);
             const decoded = try peer.decrypt(out[0..response.len]);
             try testing.expectEqual(.alert, decoded.content_type);
             const received = try alert.parse(decoded.content);
@@ -6136,7 +6136,7 @@ test "handleRecord: rejects disjoint ALPN offers with the required alert" {
     const failure: HandleError = if (result) |_| return error.TestExpectedError else |err| err;
     try testing.expectEqual(error.NoApplicationProtocol, failure);
     try testing.expectEqual(.wait_ch, server.state);
-    const response = try server.sendAlert(alert.alertForError(failure), &out);
+    const response = try server.sendAlert(alert.alertForError(failure).?, &out);
     const alert_header = try frame.parseHeader(response);
     try testing.expectEqual(.alert, alert_header.content_type);
     const received = try alert.parse(response[frame.header_len..]);
@@ -6189,7 +6189,7 @@ test "processClientFinished: rejects a client key above retention capacity" {
     try testing.expectEqual(error.CertificateKeyTooLarge, failure);
     var peer = try server.tx.clone();
     defer peer.deinit();
-    const response = try server.sendAlert(alert.alertForError(failure), &out);
+    const response = try server.sendAlert(alert.alertForError(failure).?, &out);
     const decoded = try peer.decrypt(out[0..response.len]);
     try testing.expectEqual(.alert, decoded.content_type);
     const received = try alert.parse(decoded.content);
@@ -8612,7 +8612,7 @@ test "0-RTT: accepted early data distinguishes authentication and handshake erro
             .corrupt_tag => .bad_record_mac,
             .malformed_handshake => .unexpected_message,
         };
-        try testing.expectEqual(description, alert.alertForError(failure));
+        try testing.expectEqual(description, alert.alertForError(failure).?);
         try testing.expectEqual(switch (fault) {
             .corrupt_tag => error.AuthenticationFailed,
             .malformed_handshake => error.UnexpectedMessage,

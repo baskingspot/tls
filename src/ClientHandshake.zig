@@ -2718,7 +2718,7 @@ test "processServerHello: rejects invalid secp256r1 point" {
         &bad_ks,
     );
     try testing.expectError(error.IdentityElement, hs.processServerHello(sh));
-    try testing.expectEqual(.illegal_parameter, alert.alertForError(error.IdentityElement));
+    try testing.expectEqual(.illegal_parameter, alert.alertForError(error.IdentityElement).?);
 }
 
 // RFC 8446 §4.1.3 — ServerHello key_share must select an offered group.
@@ -2778,7 +2778,7 @@ test "processServerHello: rejects a missing key_share after TLS 1.3 selection" {
     try testing.expectEqual(error.MissingExtension, failure);
     try testing.expectEqual(.wait_sh, hs.state);
     var out: [64]u8 = undefined;
-    const response = try hs.sendAlert(alert.alertForError(failure), &out);
+    const response = try hs.sendAlert(alert.alertForError(failure).?, &out);
     try expectPlaintextAlert(response, .missing_extension);
 }
 
@@ -2943,7 +2943,7 @@ test "processFlight: rejects unanchored Certificate by default" {
     var peer = try hs.tx.clone();
     defer peer.deinit();
     var out: [64]u8 = undefined;
-    const rec = try hs.sendAlert(alert.alertForError(error.MissingTrustAnchor), &out);
+    const rec = try hs.sendAlert(alert.alertForError(error.MissingTrustAnchor).?, &out);
     try expectEncryptedAlert(&peer, rec, .unknown_ca);
 }
 
@@ -3020,7 +3020,7 @@ test "processFlight: rejects unsolicited EncryptedExtensions ALPN" {
     var peer = try hs.tx.clone();
     defer peer.deinit();
     var out: [64]u8 = undefined;
-    const rec = try hs.sendAlert(alert.alertForError(error.UnsupportedExtension), &out);
+    const rec = try hs.sendAlert(alert.alertForError(error.UnsupportedExtension).?, &out);
     try expectEncryptedAlert(&peer, rec, .unsupported_extension);
 }
 
@@ -3082,7 +3082,7 @@ test "handleRecord: rejects a server key above retention capacity" {
     try testing.expectEqual(error.CertificateKeyTooLarge, failure);
     var peer = try hs.tx.clone();
     defer peer.deinit();
-    const response = try hs.sendAlert(alert.alertForError(failure), &out);
+    const response = try hs.sendAlert(alert.alertForError(failure).?, &out);
     try expectEncryptedAlert(&peer, response, .unsupported_certificate);
 }
 
@@ -3287,7 +3287,7 @@ test "processFlight: rejects unoffered CertificateVerify scheme" {
     var peer = try hs.tx.clone();
     defer peer.deinit();
     var out: [64]u8 = undefined;
-    const description = alert.alertForError(error.UnsupportedSignatureScheme);
+    const description = alert.alertForError(error.UnsupportedSignatureScheme).?;
     const rec = try hs.sendAlert(description, &out);
     try expectEncryptedAlert(&peer, rec, .illegal_parameter);
 }
@@ -3627,7 +3627,7 @@ test "clientFinishedMessage: 0-RTT is unsupported, not unexpected_message" {
     try testing.expectEqual(.internal, errors.classify(error.EarlyDataUnsupported));
     try testing.expectEqual(
         alert.Description.internal_error,
-        alert.alertForError(error.EarlyDataUnsupported),
+        alert.alertForError(error.EarlyDataUnsupported).?,
     );
 }
 

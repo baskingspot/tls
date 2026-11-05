@@ -367,20 +367,6 @@ fn mapWriteError(err: HandshakeError) error{ TlsProtocolError, InternalError } {
     };
 }
 
-/// The peer-visible reason for a handshake failure, or null when nothing
-/// should be sent: the peer already aborted, and RFC 8446 §6.2 says close
-/// without more data. Goes through the canonical per-error tls table rather
-/// than the coarse `classify` bucket, so the peer receives the specific alert
-/// TLS defines — `unknown_ca` for an untrusted chain, `certificate_expired`
-/// for an expired one, `decrypt_error` for a failed CertificateVerify —
-/// instead of a generic `bad_certificate`.
-fn alertForHandshakeError(err: HandshakeError) ?alert.Description {
-    return switch (err) {
-        error.PeerAlert => null,
-        else => alert.alertForError(err),
-    };
-}
-
 fn mapServerHandshakeError(err: HandshakeError) AcceptError {
     return switch (classify(err)) {
         .certificate => error.CertificateVerificationFailed,
@@ -1025,7 +1011,7 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
         /// Report a handshake failure to the peer (RFC 8446 §6.2), then coarsen
         /// it for the caller.
         fn handshakeFailure(s: *Self, err: HandshakeError) HandshakeFailure {
-            if (alertForHandshakeError(err)) |description| s.sendFatalAlert(description);
+            if (alert.alertForError(err)) |description| s.sendFatalAlert(description);
             return if (role == .client)
                 mapClientHandshakeError(err)
             else
@@ -1519,22 +1505,22 @@ test "public error mapping: undersized client-identity storage is HandshakeBuffe
 test "alert fidelity: specific descriptions, silence after a peer alert" {
     try testing.expectEqual(
         alert.Description.decrypt_error,
-        alertForHandshakeError(error.SignatureVerificationFailed).?,
+        alert.alertForError(error.SignatureVerificationFailed).?,
     );
     try testing.expectEqual(
         alert.Description.bad_record_mac,
-        alertForHandshakeError(error.AuthenticationFailed).?,
+        alert.alertForError(error.AuthenticationFailed).?,
     );
     try testing.expectEqual(
         alert.Description.unknown_ca,
-        alertForHandshakeError(error.MissingTrustAnchor).?,
+        alert.alertForError(error.MissingTrustAnchor).?,
     );
     try testing.expectEqual(
         alert.Description.certificate_expired,
-        alertForHandshakeError(error.CertificateExpired).?,
+        alert.alertForError(error.CertificateExpired).?,
     );
     // The peer already sent a fatal alert; §6.2 says close without replying.
-    try testing.expectEqual(@as(?alert.Description, null), alertForHandshakeError(error.PeerAlert));
+    try testing.expectEqual(@as(?alert.Description, null), alert.alertForError(error.PeerAlert));
 }
 
 test "Config: buffer sizing is the whole story of the Stream footprint" {

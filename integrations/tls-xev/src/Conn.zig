@@ -1022,12 +1022,10 @@ pub fn ConnWith(comptime Xev: type, comptime role: root.Role) type {
 
         /// The peer-visible reason for a core handshake failure, from the canonical
         /// table rather than the coarse `classify` bucket. RFC 8446 §5 makes an
-        /// unexpected record `unexpected_message`, not `illegal_parameter`.
+        /// unexpected record `unexpected_message`, not `illegal_parameter`, and
+        /// a peer alert maps to no reply at all.
         fn alertForCore(err: tls.errors.HandshakeError) ?tls.alert.Description {
-            return switch (err) {
-                error.PeerAlert => null,
-                else => tls.alert.alertForError(err),
-            };
+            return tls.alert.alertForError(err);
         }
 
         /// Local conditions that never reached the core. Peer faults go through

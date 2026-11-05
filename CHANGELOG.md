@@ -5,6 +5,10 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `alert.alertForError` returns `?Description` and maps `error.PeerAlert` to null. The peer already sent its own alert, so answering it with another alert — previously `internal_error` — blamed the wrong side (RFC 8446 §6.2). Integrations drop their `PeerAlert` special case.
+
 ### Added
 
 - `ClientHandshake.clientFinishedMessage` and `ServerHandshake.processClientFinishedMessage` exchange the Finished as bare handshake messages, for a caller that owns its own record layer (QUIC CRYPTO frames). Both enter the same state machine as the record paths: `clientFinished` and `processClientFinished` are now thin wrappers around the shared assembly and verification code, and the record output is unchanged. The bare client path rejects a 0-RTT handshake with `error.EarlyDataUnsupported`, because EndOfEarlyData is not part of that flight; it classifies as an internal limitation, not a peer protocol error.

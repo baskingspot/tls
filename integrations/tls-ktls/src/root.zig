@@ -236,8 +236,8 @@ pub fn Connection(comptime Handshake: type) type {
                 }
 
                 const event = self.handshake.receiveKtlsRecord(content_type, content) catch |err| {
-                    if (err != error.PeerAlert) {
-                        self.sendFailureAlert(tls.alert.alertForError(err));
+                    if (tls.alert.alertForError(err)) |description| {
+                        self.sendFailureAlert(description);
                     }
                     return self.fail(err);
                 };

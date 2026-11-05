@@ -302,7 +302,6 @@ test "every handshake error has a deliberate peer-visible alert" {
         "CertificateSignatureNamedCurveUnsupported",
         "ClientCertificateTooLarge",
         "TooManyKeyUpdates",
-        "PeerAlert",
         "InvalidServerName",
         "ServerNameTooLong",
         "NotHelloRetryRequest",
@@ -328,9 +327,12 @@ test "every handshake error has a deliberate peer-visible alert" {
         if (class == .internal) {
             // Ours: the peer must not be blamed for it, and it must not be
             // parked on the fall-through list.
-            try testing.expectEqual(alert.Description.internal_error, description);
+            try testing.expectEqual(alert.Description.internal_error, description.?);
             try testing.expect(!listed);
-        } else if (description == .internal_error) {
+        } else if (description == null) {
+            // Nothing to send: the peer already explained itself.
+            try testing.expect(!listed);
+        } else if (description.? == .internal_error) {
             // Peer-caused with no specific alert yet: it has to be a known gap.
             try testing.expect(listed);
         } else {

@@ -1754,7 +1754,7 @@ fn sendBestEffortAlert(
     err: anyerror,
     out: []u8,
 ) void {
-    const description = tls.alert.alertForError(err);
+    const description = tls.alert.alertForError(err) orelse return;
     const alert_record = hs.sendAlert(description, out) catch return;
     tls.io.writeAll(testing.io, stream, alert_record) catch return;
 }

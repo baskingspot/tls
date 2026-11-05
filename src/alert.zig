@@ -87,11 +87,16 @@ pub fn plaintextRecord(msg: *const [2]u8, out: []u8) error{BufferTooShort}![]u8 
     return out[0..total];
 }
 
-/// Map a TLS engine error to the appropriate alert description.
-/// RFC 8446 §6.2 — error alerts should be as specific as the protocol defines;
-/// unknown errors fall through to `internal_error`.
-pub fn alertForError(err: anyerror) Description {
+/// Map a TLS engine error to the alert to send the peer, or null when nothing
+/// should be sent. RFC 8446 §6.2 — error alerts should be as specific as the
+/// protocol defines; unknown errors fall through to `internal_error`.
+///
+/// `error.PeerAlert` is null: the peer already sent its own alert, and answering
+/// it with a second alert, let alone `internal_error`, blames the wrong side.
+/// RFC 8446 §6.2 says close without more data in that case.
+pub fn alertForError(err: anyerror) ?Description {
     return switch (err) {
+        error.PeerAlert => null,
         error.AuthenticationFailed => .bad_record_mac,
         // RFC 8446 §4.2.10 — the §4.2.10 decline path deliberately tolerates a
         // bounded number of deprotection failures (in-flight 0-RTT records);
@@ -291,7 +296,7 @@ test "alertForError: certificate failures map to certificate alerts" {
         .{ .err = error.InvalidSignature, .description = .bad_certificate },
         .{ .err = error.ClientCertificateRequired, .description = .certificate_required },
     };
-    for (cases) |case| try testing.expectEqual(case.description, alertForError(case.err));
+    for (cases) |case| try testing.expectEqual(case.description, alertForError(case.err).?);
 }
 
 // RFC 8446 §6.2 — decode failures use decode_error, malformed handshake
@@ -344,15 +349,21 @@ test "alertForError: parser and semantic failures map to protocol alerts" {
         .{ .err = error.UnsupportedSignatureScheme, .description = .illegal_parameter },
         .{ .err = error.SignatureSchemeNotOffered, .description = .illegal_parameter },
     };
-    for (cases) |case| try testing.expectEqual(case.description, alertForError(case.err));
+    for (cases) |case| try testing.expectEqual(case.description, alertForError(case.err).?);
 }
 
 // RFC 8446 §6 — provider failures are local errors, not peer input errors.
 test "alertForError: provider failure maps to internal_error" {
-    try testing.expectEqual(.internal_error, alertForError(error.LibcryptoFailed));
+    try testing.expectEqual(.internal_error, alertForError(error.LibcryptoFailed).?);
 }
 
 // RFC 8446 §6 — unknown errors fall through to internal_error.
 test "alertForError: unknown error maps to internal_error" {
-    try testing.expectEqual(.internal_error, alertForError(error.SomeUnmappedError));
+    try testing.expectEqual(.internal_error, alertForError(error.SomeUnmappedError).?);
+}
+
+// RFC 8446 §6.2 — the peer already told us why it stopped. Sending our own
+// alert, especially `internal_error`, blames the wrong side.
+test "alertForError: a peer alert maps to no alert" {
+    try testing.expectEqual(@as(?Description, null), alertForError(error.PeerAlert));
 }
