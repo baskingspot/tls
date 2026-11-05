@@ -102,6 +102,11 @@ pub const Suite = union(enum) {
     /// Pre-ServerHello: run both candidate transcript hashes and keep the one
     /// the chosen suite uses. RFC 8446 §4.4.1 permits deferring the transcript
     /// until the hash is selected.
+    ///
+    /// Client-only. A server picks its arm at ClientHello and never buffers, so
+    /// every server switch over this union carries `else => unreachable`; a
+    /// server that reaches `buffering` is a bug, not a supported state. Extend
+    /// buffering to the server by removing those arms, not by ignoring them.
     pub const Buffering = struct {
         sha256: Sha256,
         sha384: Sha384,

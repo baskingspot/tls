@@ -412,233 +412,195 @@ pub const State = enum {
     connected,
 };
 
-const Suite = union(enum) {
-    /// Pre-ServerHello: the negotiated hash isn't known yet, so run both
-    /// transcript hashes and keep the one the chosen suite uses. RFC 8446
-    /// §4.4.1 permits deferring the transcript until the hash is selected.
-    const Buffering = struct {
-        sha256: Sha256,
-        sha384: Sha384,
+// The suite type is shared with the server: one definition of the transcript
+// and key schedule, in `suite_state.zig`. Client-only operations are free
+// functions over it below.
+const Suite = suite_state.Suite;
 
-        fn init() Buffering {
-            return .{ .sha256 = .init(.{}), .sha384 = .init(.{}) };
-        }
-    };
-
-    buffering: Buffering,
-    sha256: HashArm(hkdf.HkdfSha256, Sha256),
-    sha384: HashArm(hkdf.HkdfSha384, Sha384),
-
-    /// A function, not a constant: libcrypto hash init cannot run at comptime.
-    fn init() Suite {
-        return .{ .buffering = .init() };
+/// RFC 8446 §4.4.3 — verify the CertificateVerify signature against the
+/// leaf public key (extracted earlier from the Certificate message) and the
+/// transcript through Certificate (snapshotted here, before CV is
+/// absorbed). The digest stays inside the arm.
+fn verifyCertificate(
+    suite: *const Suite,
+    cv_msg: []const u8,
+    pub_key: []const u8,
+    offered_schemes: []const SignatureScheme,
+) certificate.VerifyError!void {
+    switch (suite.*) {
+        .buffering => unreachable,
+        inline .sha256, .sha384 => |*s| {
+            const th = s.transcript.peek();
+            try certificate.verifyServerSignatureWithSchemes(
+                cv_msg,
+                pub_key,
+                &th,
+                offered_schemes,
+            );
+        },
     }
+}
 
-    fn secureZero(self: *Suite) void {
-        switch (self.*) {
-            .buffering => {},
-            inline .sha256, .sha384 => |*s| s.secureZero(),
-        }
+/// RFC 8446 §4.4.4 — verify the server's Finished MAC. Snapshots the
+/// transcript through CertificateVerify (the state before Finished is
+/// absorbed) and checks the MAC with the retained server finished key.
+fn verifyServerFinished(
+    suite: *const Suite,
+    finished_msg: []const u8,
+) finished.VerifyError!void {
+    switch (suite.*) {
+        .buffering => unreachable,
+        inline .sha256, .sha384 => |*s| {
+            const th = s.transcript.peek();
+            try finished.verify(
+                @TypeOf(s.transcript),
+                finished_msg,
+                &s.server_finished_key.data,
+                &th,
+            );
+        },
     }
+}
 
-    /// Feed one handshake message (4-byte header + body, no record framing)
-    /// into the running transcript hash. RFC 8446 §4.4.1. While buffering
-    /// (before the suite is chosen) both candidate hashes are fed.
-    fn update(self: *Suite, msg: []const u8) void {
-        switch (self.*) {
-            .buffering => |*b| {
-                b.sha256.update(msg);
-                b.sha384.update(msg);
-            },
-            inline .sha256, .sha384 => |*s| s.transcript.update(msg),
-        }
+fn writeTranscriptHash(suite: *const Suite, out: *[48]u8) u8 {
+    switch (suite.*) {
+        .buffering => unreachable,
+        inline .sha256, .sha384 => |*s| {
+            const th = s.transcript.peek();
+            @memcpy(out[0..th.len], th[0..]);
+            return th.len;
+        },
     }
+}
 
-    /// RFC 8446 §4.4.3 — verify the CertificateVerify signature against the
-    /// leaf public key (extracted earlier from the Certificate message) and the
-    /// transcript through Certificate (snapshotted here, before CV is
-    /// absorbed). The digest stays inside the arm.
-    fn verifyCertificate(
-        self: *const Suite,
-        cv_msg: []const u8,
-        pub_key: []const u8,
-        offered_schemes: []const SignatureScheme,
-    ) certificate.VerifyError!void {
-        switch (self.*) {
-            .buffering => unreachable,
-            inline .sha256, .sha384 => |*s| {
-                const th = s.transcript.peek();
-                try certificate.verifyServerSignatureWithSchemes(
-                    cv_msg,
-                    pub_key,
-                    &th,
-                    offered_schemes,
-                );
-            },
-        }
+/// RFC 8446 §4.4.4, §7.1 — encode the client Finished and derive the
+/// application-traffic RecordLayers. Client authentication splits the two
+/// transcript contexts: Finished covers any client Certificate/Verify,
+/// while application secrets are still derived through the server Finished.
+/// The plaintext Finished is written to `out`; rx/tx are application-keyed.
+fn finishHandshake(
+    suite: *Suite,
+    out: []u8,
+    app_transcript_hash: []const u8,
+    capture: ?*traffic_secrets.TrafficSecrets,
+) (error{BufferTooShort} || aead.Error)!HandshakeKeys.WithFinished {
+    switch (suite.*) {
+        .buffering => unreachable,
+        inline .sha256, .sha384 => |*s| {
+            const H = @TypeOf(s.*).Hkdf;
+            const th = s.transcript.peek();
+            const fin = try finished.encode(
+                @TypeOf(s.transcript),
+                out,
+                &s.client_finished_key.data,
+                &th,
+            );
+
+            assert(app_transcript_hash.len == H.prk_len);
+            var app_th: H.TranscriptHash = undefined;
+            @memcpy(app_th.data[0..], app_transcript_hash);
+
+            var master = H.masterSecret(s.handshake_secret);
+            defer master.secureZero();
+            var master_key: H.Keyed = .init(&master.data);
+            defer master_key.secureZero();
+            s.client_app_secret = H.deriveSecretKeyed(&master_key, "c ap traffic", &app_th);
+            s.server_app_secret = H.deriveSecretKeyed(&master_key, "s ap traffic", &app_th);
+            if (capture) |keep| {
+                keep.setClientApplication(s.client_app_secret.data[0..H.prk_len]);
+                keep.setServerApplication(s.server_app_secret.data[0..H.prk_len]);
+            }
+
+            s.transcript.update(fin); // client Finished now part of the transcript
+
+            // RFC 8446 §7.5 — resumption_master_secret over the transcript
+            // through the client Finished. Derived before
+            // forgetHandshakeSecrets wipes the handshake_secret (which feeds
+            // the master secret).
+            const res_th: H.TranscriptHash = .init(s.transcript.peek());
+            s.resumption_master = H.deriveSecretKeyed(&master_key, "res master", &res_th);
+            s.resumption_master_valid = true;
+
+            var tx = try H.makeRecordLayer(s.aead, s.client_app_secret);
+            errdefer tx.deinit();
+            const rx = try H.makeRecordLayer(s.aead, s.server_app_secret);
+            s.forgetHandshakeSecrets();
+
+            return .{
+                .finished = fin,
+                .tx = tx,
+                .rx = rx,
+            };
+        },
     }
+}
 
-    /// RFC 8446 §4.4.4 — verify the server's Finished MAC. Snapshots the
-    /// transcript through CertificateVerify (the state before Finished is
-    /// absorbed) and checks the MAC with the retained server finished key.
-    fn verifyServerFinished(
-        self: *const Suite,
-        finished_msg: []const u8,
-    ) finished.VerifyError!void {
-        switch (self.*) {
-            .buffering => unreachable,
-            inline .sha256, .sha384 => |*s| {
-                const th = s.transcript.peek();
-                try finished.verify(
-                    @TypeOf(s.transcript),
-                    finished_msg,
-                    &s.server_finished_key.data,
-                    &th,
-                );
-            },
-        }
+/// RFC 8446 §7.2 — ratchet our sending (client) application key and return
+/// the fresh RecordLayer (sequence number reset to 0).
+pub fn ratchetClientKey(self: *Suite) aead.Error!RecordLayer {
+    switch (self.*) {
+        .buffering => unreachable,
+        inline .sha256, .sha384 => |*s| return s.ratchetClientKey(),
     }
+}
 
-    fn writeTranscriptHash(self: *const Suite, out: *[48]u8) u8 {
-        switch (self.*) {
-            .buffering => unreachable,
-            inline .sha256, .sha384 => |*s| {
-                const th = s.transcript.peek();
-                @memcpy(out[0..th.len], th[0..]);
-                return th.len;
-            },
-        }
+/// RFC 8446 §7.2 — ratchet the peer's sending (server) application key and
+/// return the fresh RecordLayer (sequence number reset to 0).
+pub fn ratchetServerKey(self: *Suite) aead.Error!RecordLayer {
+    switch (self.*) {
+        .buffering => unreachable,
+        inline .sha256, .sha384 => |*s| return s.ratchetServerKey(),
     }
+}
 
-    /// RFC 8446 §4.4.4, §7.1 — encode the client Finished and derive the
-    /// application-traffic RecordLayers. Client authentication splits the two
-    /// transcript contexts: Finished covers any client Certificate/Verify,
-    /// while application secrets are still derived through the server Finished.
-    /// The plaintext Finished is written to `out`; rx/tx are application-keyed.
-    fn finishHandshake(
-        self: *Suite,
-        out: []u8,
-        app_transcript_hash: []const u8,
-        capture: ?*traffic_secrets.TrafficSecrets,
-    ) (error{BufferTooShort} || aead.Error)!HandshakeKeys.WithFinished {
-        switch (self.*) {
-            .buffering => unreachable,
-            inline .sha256, .sha384 => |*s| {
-                const H = @TypeOf(s.*).Hkdf;
-                const th = s.transcript.peek();
-                const fin = try finished.encode(
-                    @TypeOf(s.transcript),
-                    out,
-                    &s.client_finished_key.data,
-                    &th,
-                );
+/// RFC 8446 §7.1 — mix the DHE shared secret into the key schedule and
+/// derive the handshake-traffic keys. Call once, after the transcript has
+/// absorbed ClientHello and ServerHello.
+///
+/// Snapshots the transcript at the ServerHello point and derives every
+/// secret rooted there — traffic keys and both finished keys — because the
+/// running hash moves on and cannot be rewound. The handshake secret and
+/// finished keys are retained in the arm; the RecordLayers are returned.
+fn deriveHandshakeKeys(
+    suite: *Suite,
+    dhe: []const u8,
+    psk: ?[]const u8,
+    capture: ?*traffic_secrets.TrafficSecrets,
+) aead.Error!HandshakeKeys {
+    switch (suite.*) {
+        .buffering => unreachable,
+        inline .sha256, .sha384 => |*s| {
+            const H = @TypeOf(s.*).Hkdf;
+            s.handshake_secret = H.handshakeSecretFor(psk, dhe);
 
-                assert(app_transcript_hash.len == H.prk_len);
-                var app_th: H.TranscriptHash = undefined;
-                @memcpy(app_th.data[0..], app_transcript_hash);
+            const th: H.TranscriptHash = .init(s.transcript.peek());
+            var handshake_key: H.Keyed = .init(&s.handshake_secret.data);
+            defer handshake_key.secureZero();
+            var client_secret = H.deriveSecretKeyed(&handshake_key, "c hs traffic", &th);
+            defer client_secret.secureZero();
+            var server_secret = H.deriveSecretKeyed(&handshake_key, "s hs traffic", &th);
+            defer server_secret.secureZero();
+            if (capture) |keep| keep.setHandshake(
+                client_secret.data[0..H.prk_len],
+                server_secret.data[0..H.prk_len],
+            );
 
-                var master = H.masterSecret(s.handshake_secret);
-                defer master.secureZero();
-                var master_key: H.Keyed = .init(&master.data);
-                defer master_key.secureZero();
-                s.client_app_secret = H.deriveSecretKeyed(&master_key, "c ap traffic", &app_th);
-                s.server_app_secret = H.deriveSecretKeyed(&master_key, "s ap traffic", &app_th);
-                if (capture) |keep| {
-                    keep.setClientApplication(s.client_app_secret.data[0..H.prk_len]);
-                    keep.setServerApplication(s.server_app_secret.data[0..H.prk_len]);
-                }
+            var rx = try H.makeRecordLayerAndFinishedKey(
+                s.aead,
+                server_secret,
+                &s.server_finished_key,
+            );
+            errdefer rx.deinit();
+            const tx = try H.makeRecordLayerAndFinishedKey(
+                s.aead,
+                client_secret,
+                &s.client_finished_key,
+            );
 
-                s.transcript.update(fin); // client Finished now part of the transcript
-
-                // RFC 8446 §7.5 — resumption_master_secret over the transcript
-                // through the client Finished. Derived before
-                // forgetHandshakeSecrets wipes the handshake_secret (which feeds
-                // the master secret).
-                const res_th: H.TranscriptHash = .init(s.transcript.peek());
-                s.resumption_master = H.deriveSecretKeyed(&master_key, "res master", &res_th);
-                s.resumption_master_valid = true;
-
-                var tx = try H.makeRecordLayer(s.aead, s.client_app_secret);
-                errdefer tx.deinit();
-                const rx = try H.makeRecordLayer(s.aead, s.server_app_secret);
-                s.forgetHandshakeSecrets();
-
-                return .{
-                    .finished = fin,
-                    .tx = tx,
-                    .rx = rx,
-                };
-            },
-        }
+            return .{ .rx = rx, .tx = tx };
+        },
     }
-
-    /// RFC 8446 §7.2 — ratchet our sending (client) application key and return
-    /// the fresh RecordLayer (sequence number reset to 0).
-    pub fn ratchetClientKey(self: *Suite) aead.Error!RecordLayer {
-        switch (self.*) {
-            .buffering => unreachable,
-            inline .sha256, .sha384 => |*s| return s.ratchetClientKey(),
-        }
-    }
-
-    /// RFC 8446 §7.2 — ratchet the peer's sending (server) application key and
-    /// return the fresh RecordLayer (sequence number reset to 0).
-    pub fn ratchetServerKey(self: *Suite) aead.Error!RecordLayer {
-        switch (self.*) {
-            .buffering => unreachable,
-            inline .sha256, .sha384 => |*s| return s.ratchetServerKey(),
-        }
-    }
-
-    /// RFC 8446 §7.1 — mix the DHE shared secret into the key schedule and
-    /// derive the handshake-traffic keys. Call once, after the transcript has
-    /// absorbed ClientHello and ServerHello.
-    ///
-    /// Snapshots the transcript at the ServerHello point and derives every
-    /// secret rooted there — traffic keys and both finished keys — because the
-    /// running hash moves on and cannot be rewound. The handshake secret and
-    /// finished keys are retained in the arm; the RecordLayers are returned.
-    fn deriveHandshakeKeys(
-        self: *Suite,
-        dhe: []const u8,
-        psk: ?[]const u8,
-        capture: ?*traffic_secrets.TrafficSecrets,
-    ) aead.Error!HandshakeKeys {
-        switch (self.*) {
-            .buffering => unreachable,
-            inline .sha256, .sha384 => |*s| {
-                const H = @TypeOf(s.*).Hkdf;
-                s.handshake_secret = H.handshakeSecretFor(psk, dhe);
-
-                const th: H.TranscriptHash = .init(s.transcript.peek());
-                var handshake_key: H.Keyed = .init(&s.handshake_secret.data);
-                defer handshake_key.secureZero();
-                var client_secret = H.deriveSecretKeyed(&handshake_key, "c hs traffic", &th);
-                defer client_secret.secureZero();
-                var server_secret = H.deriveSecretKeyed(&handshake_key, "s hs traffic", &th);
-                defer server_secret.secureZero();
-                if (capture) |keep| keep.setHandshake(
-                    client_secret.data[0..H.prk_len],
-                    server_secret.data[0..H.prk_len],
-                );
-
-                var rx = try H.makeRecordLayerAndFinishedKey(
-                    s.aead,
-                    server_secret,
-                    &s.server_finished_key,
-                );
-                errdefer rx.deinit();
-                const tx = try H.makeRecordLayerAndFinishedKey(
-                    s.aead,
-                    client_secret,
-                    &s.client_finished_key,
-                );
-
-                return .{ .rx = rx, .tx = tx };
-            },
-        }
-    }
-};
+}
 
 state: State,
 suite: Suite,
@@ -1860,7 +1822,8 @@ pub fn processServerHello(self: *ClientHandshake, msg: []const u8) ServerHelloEr
             return error.IllegalParameter;
         break :blk self.offered_psk;
     } else null;
-    const keys = try self.suite.deriveHandshakeKeys(
+    const keys = try deriveHandshakeKeys(
+        &self.suite,
         dhe[0..dhe_len],
         psk,
         self.traffic_secret_storage,
@@ -1996,7 +1959,7 @@ fn retainPeerCertificate(
 }
 
 fn saveServerFinishedHash(self: *ClientHandshake) void {
-    self.server_finished_hash_len = self.suite.writeTranscriptHash(&self.server_finished_hash);
+    self.server_finished_hash_len = writeTranscriptHash(&self.suite, &self.server_finished_hash);
 }
 
 fn processFlightMessage(
@@ -2076,7 +2039,7 @@ fn processFlightMessage(
             // receive a full authenticated flight (Certificate + CV).
             .finished => {
                 if (!self.server_selected_psk) return error.UnexpectedMessage;
-                self.suite.verifyServerFinished(msg.raw) catch return error.InvalidVerifyData;
+                verifyServerFinished(&self.suite, msg.raw) catch return error.InvalidVerifyData;
                 self.server_flight_progress = .finished_verified;
                 self.suite.update(msg.raw);
                 self.saveServerFinishedHash();
@@ -2089,7 +2052,8 @@ fn processFlightMessage(
             if (msg.type != .certificate_verify) return error.UnexpectedMessage;
             if (self.server_flight_progress != .certificate_verified)
                 return error.UnexpectedMessage;
-            try self.suite.verifyCertificate(
+            try verifyCertificate(
+                &self.suite,
                 msg.raw,
                 self.leaf_pub_key.constSlice(),
                 self.offered_signature_schemes.constSlice(),
@@ -2102,7 +2066,7 @@ fn processFlightMessage(
             if (msg.type != .finished) return error.UnexpectedMessage;
             if (self.server_flight_progress != .certificate_verify_verified)
                 return error.UnexpectedMessage;
-            try self.suite.verifyServerFinished(msg.raw);
+            try verifyServerFinished(&self.suite, msg.raw);
             self.server_flight_progress = .finished_verified;
             self.suite.update(msg.raw);
             self.saveServerFinishedHash();
@@ -2304,7 +2268,8 @@ fn assembleClientFlight(
         }
     }
 
-    var keys = self.suite.finishHandshake(
+    var keys = finishHandshake(
+        &self.suite,
         scratch[plain_len..],
         self.server_finished_hash[0..self.server_finished_hash_len],
         self.traffic_secret_storage,
@@ -2607,7 +2572,7 @@ test "deriveHandshakeKeys: RFC 8448 §3 server handshake key/iv/finished" {
     const b = hs.suite.buffering;
     hs.suite = .{ .sha256 = HashArm(hkdf.HkdfSha256, Sha256).init(b.sha256, .aes_128_gcm_sha256) };
 
-    var keys = try hs.suite.deriveHandshakeKeys(&dhe, null, null);
+    var keys = try deriveHandshakeKeys(&hs.suite, &dhe, null, null);
     defer keys.rx.deinit();
     defer keys.tx.deinit();
 
