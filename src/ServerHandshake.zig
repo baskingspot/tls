@@ -399,12 +399,6 @@ pub const Config = struct {
     client_cert_buffer: ?[]u8 = null,
     /// Who frames the protocol bytes. The record path is the default and is
     /// byte-identical to earlier releases.
-    ///
-    /// Transitional: this exists only until the record layer moves out of the
-    /// handshake and becomes an adapter beside it (see docs/slop/QUIC-SEAM.md).
-    /// A flag that says "emit messages instead of records" still leaves the
-    /// engine owning record semantics, so it is not the destination; it is the
-    /// smallest honest step that lets a caller stop receiving records.
     carrier: Carrier = .record,
     /// Extensions appended to EncryptedExtensions, verbatim. tls frames them
     /// and rejects a type it writes itself; the data is opaque. RFC 8446 §4.2.
@@ -5101,10 +5095,6 @@ fn awaitingClientFinishedServer(
 // The carrier decides who frames the bytes, not what they are. Two identical
 // deterministic servers send the same flight; the message-mode bytes must be
 // exactly what the record path encrypts.
-//
-// What this does NOT cover: a real QUIC handshake drops the compatibility CCS
-// and the session id and carries transport parameters, so the two modes stop
-// being the same handshake. This holds for configurations where they still are.
 // Message mode has no alert records; the caller maps the alert to its own
 // transport error (QUIC CONNECTION_CLOSE).
 test "carrier: message mode emits no alert record" {

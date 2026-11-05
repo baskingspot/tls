@@ -129,11 +129,6 @@ pub const SessionTicket = struct {
 // The carrier decides who frames the bytes, not what the bytes are. Both
 // clients run the same state machine from the same deterministic key material,
 // so the message-mode ClientHello must be exactly the record payload.
-//
-// What this does NOT cover: once a QUIC handshake diverges from a TLS one - no
-// session id, no compatibility CCS, transport parameters, a different flight
-// shape - byte equality stops being the right assertion. This test pins the
-// configurations where both modes run the same handshake, and nothing more.
 test "carrier: message mode emits the record payload, not a record" {
     const keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x21)));
     const p256_keypair: p256.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
@@ -330,12 +325,6 @@ pub const Config = struct {
     reassembly: ?[]u8 = null,
     /// Who frames the protocol bytes. The record path is the default and is
     /// byte-identical to earlier releases.
-    ///
-    /// Transitional: this exists only until the record layer moves out of the
-    /// handshake and becomes an adapter beside it (see docs/slop/QUIC-SEAM.md).
-    /// A flag that says "emit messages instead of records" still leaves the
-    /// engine owning record semantics, so it is not the destination; it is the
-    /// smallest honest step that lets a caller stop receiving records.
     carrier: Carrier = .record,
     /// Extensions appended to the ClientHello, verbatim. tls frames them and
     /// rejects a type it emits itself; the data is opaque. RFC 8446 §4.2.
