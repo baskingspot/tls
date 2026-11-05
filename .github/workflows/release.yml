@@ -10,7 +10,31 @@ on:
 permissions: {}
 
 jobs:
+  # A tag archive is what every consumer downloads. The ceiling keeps research
+  # and captures out of it: export-ignore handles the current tree, this stops
+  # the next directory from creeping back in unnoticed.
+  archive-size:
+    permissions:
+      contents: read
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse an oversized source archive
+        run: |
+          set -euo pipefail
+          limit=2097152
+          bytes=$(git archive --format=tar.gz HEAD | wc -c)
+          echo "source archive: ${bytes} bytes (limit ${limit})"
+          if [ "${bytes}" -gt "${limit}" ]; then
+            echo "source archive exceeds ${limit} bytes" >&2
+            echo "exclude it with export-ignore in .gitattributes, or stop packaging research into the repository" >&2
+            exit 1
+          fi
+
   release:
+    needs: archive-size
     permissions:
       contents: write
     uses: baskingspot/gh-actions/.github/workflows/release-library.yml@a26279caa6babcb0b548e6c55ced2aac9ee9a5b9 # v0.12.1
