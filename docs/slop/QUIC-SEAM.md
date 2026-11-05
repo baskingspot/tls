@@ -5,7 +5,17 @@ decision, not the implementation. Cites are against `567257a`.
 
 The shape: the handshake emits and accepts bare handshake messages, and the caller
 wraps them - `RecordLayer` for TLS, CRYPTO frames for QUIC. The engine keeps one
-runtime `carrier` field; it is not a comptime parameter.
+runtime `carrier` field.
+
+A comptime carrier lost because the choice is per connection, not per type: it
+would instantiate both handshake state machines twice, and generate two copies of
+the largest types in the repository, to save a branch at nine sites.
+
+The read side stays engine-owned because a TLS record does not carry its
+encryption level and a QUIC packet header does. The engine swaps `rx` as the
+handshake advances, so a caller holding TLS ciphertext cannot choose a key; QUIC
+callers can, and only they invert. That asymmetry is the reason full inversion
+does not work here.
 
 ## 1. The record sites
 
