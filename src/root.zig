@@ -36,6 +36,8 @@ pub const RecordLayer = @import("RecordLayer.zig");
 pub const server_hello = @import("server_hello.zig");
 pub const ServerHandshake = @import("ServerHandshake.zig");
 pub const signature = @import("signature.zig");
+/// Optional retention of TLS 1.3 traffic secrets (RFC 8446 §7.1).
+pub const traffic_secrets = @import("traffic_secrets.zig");
 pub const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 pub const x25519 = @import("x25519.zig");
 

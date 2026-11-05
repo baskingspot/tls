@@ -13,6 +13,7 @@ const testing = std.testing;
 
 const aead = @import("aead.zig");
 const alert = @import("alert.zig");
+const traffic_secrets = @import("traffic_secrets.zig");
 const wiremod = @import("wire.zig");
 const stdx = @import("stdx");
 const buffer = stdx.buffer;
@@ -388,6 +389,13 @@ pub const Config = struct {
     /// Optional caller-owned storage for retaining the verified client leaf
     /// certificate DER. The storage must outlive the handshake.
     client_cert_buffer: ?[]u8 = null,
+    /// Optional caller-owned storage for the TLS 1.3 traffic secrets. When
+    /// non-null the engine keeps them for the connection's life and
+    /// `trafficSecrets()` returns them; when null they are derived, used, and
+    /// wiped exactly as before, and the accessor returns `error.NotRetained`.
+    /// Retention is opt-in because it lengthens the window in which keying
+    /// material sits in memory. RFC 8446 §7.1.
+    traffic_secrets: ?*traffic_secrets.TrafficSecrets = null,
 };
 
 pub const ConfigError = ServerConfig.ValidationError;
@@ -457,6 +465,8 @@ tx_owner: TxOwner,
 /// Most recent non-close_notify peer alert (RFC 8446 §6.2); close_notify (§6.1)
 /// never sets it.
 last_peer_alert: ?alert.Alert,
+/// Caller storage for retained traffic secrets, or null when not requested.
+traffic_secret_storage: ?*traffic_secrets.TrafficSecrets,
 post_handshake_count: u8,
 /// An inbound KeyUpdate request must be answered before kTLS handoff.
 key_update_obligation: handshake.KeyUpdateObligation,
@@ -565,6 +575,7 @@ pub fn init(server_config: ServerConfig, config: Config) ServerHandshake {
         .ticket_compatibility = .unavailable,
         .tx_owner = .userspace,
         .last_peer_alert = null,
+        .traffic_secret_storage = config.traffic_secrets,
         .post_handshake_count = 0,
         .key_update_obligation = .none,
         .retry_transcript = null,
@@ -779,6 +790,27 @@ pub fn useHandshakeBuffer(self: *ServerHandshake, storage: []u8) void {
 /// clearing it (#81): the retained DER survives `deinit` untouched.
 ///
 /// RFC 8446 §4.4.2, §4.4.3.
+/// Provide caller-owned storage for the traffic secrets. Equivalent to setting
+/// `Config.traffic_secrets` at construction. The caller owns clearing it: the
+/// engine writes the secrets there and never wipes lent memory on teardown.
+pub fn useTrafficSecretStorage(
+    self: *ServerHandshake,
+    storage: *traffic_secrets.TrafficSecrets,
+) void {
+    assert(self.state == .wait_ch);
+    storage.* = .init();
+    self.traffic_secret_storage = storage;
+}
+
+/// The retained traffic secrets, or `error.NotRetained` when the caller did not
+/// ask for them. Never returns zeros: an absent request is an error, not an
+/// empty answer. Fields are null until the handshake derives them.
+pub fn trafficSecrets(
+    self: *const ServerHandshake,
+) error{NotRetained}!*const traffic_secrets.TrafficSecrets {
+    return self.traffic_secret_storage orelse error.NotRetained;
+}
+
 pub fn useClientCertificateBuffer(self: *ServerHandshake, storage: []u8) void {
     assert(self.state == .wait_ch);
     assert(self.client_cert.buffer.len == 0);
@@ -1821,6 +1853,10 @@ fn installHandshakeArm(
     defer client_secret.secureZero();
     var server_secret = H.deriveSecretKeyed(&handshake_key, "s hs traffic", &th);
     defer server_secret.secureZero();
+    if (self.traffic_secret_storage) |keep| keep.setHandshake(
+        client_secret.data[0..H.prk_len],
+        server_secret.data[0..H.prk_len],
+    );
     var rx = try H.makeRecordLayerAndFinishedKey(
         aead_key,
         client_secret,
@@ -2116,6 +2152,8 @@ fn prepareServerApplicationWriteKey(self: *ServerHandshake) aead.Error!RecordLay
             defer master.secureZero();
             s.server_app_secret = H.serverApplicationTrafficSecret(master, &app_th);
             errdefer s.server_app_secret.secureZero();
+            if (self.traffic_secret_storage) |keep|
+                keep.setServerApplication(s.server_app_secret.data[0..H.prk_len]);
             break :blk try H.makeRecordLayer(s.aead, s.server_app_secret);
         },
     };
@@ -2246,6 +2284,8 @@ fn verifyClientFinished(
             defer master_key.secureZero();
             s.client_app_secret = H.deriveSecretKeyed(&master_key, "c ap traffic", &app_th);
             errdefer s.client_app_secret.secureZero();
+            if (self.traffic_secret_storage) |keep|
+                keep.setClientApplication(s.client_app_secret.data[0..H.prk_len]);
             const next_rx = try H.makeRecordLayer(s.aead, s.client_app_secret);
             self.rx.deinit();
             self.rx = next_rx;
@@ -4843,6 +4883,67 @@ fn connectedTestServerConfigure(suites_patch: ?[6]u8) !ServerHandshake {
     return server;
 }
 
+test "traffic secrets: server retains handshake and application secrets on request" {
+    var store: traffic_secrets.TrafficSecrets = .init();
+    defer store.secureZero();
+
+    const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
+    const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
+    var ch_buf: [512]u8 = undefined;
+    const ch = try client_hello.encode(&ch_buf, .zero, client_keypair.public_key, null, &.{});
+    var ch_record: [1024]u8 = undefined;
+    const header: frame.Header = .init(.handshake, @intCast(ch.len));
+    header.write(ch_record[0..frame.header_len]);
+    @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
+
+    var config = try testConfig(server_keypair);
+    config.traffic_secrets = &store;
+    var server: ServerHandshake = .init(.{}, config);
+
+    // Without a request the accessor refuses rather than answering zeros.
+    var unrequested: ServerHandshake = .init(.{}, try testConfig(server_keypair));
+    defer unrequested.deinit();
+    try testing.expectError(error.NotRetained, unrequested.trafficSecrets());
+
+    var sh_out: [256]u8 = undefined;
+    _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
+    const after_ch = try server.trafficSecrets();
+    try testing.expect(after_ch.client_handshake != null);
+    try testing.expect(after_ch.server_handshake != null);
+    try testing.expect(after_ch.client_application == null);
+    try testing.expectEqual(@as(u8, 32), after_ch.len);
+
+    var flight_out: [512]u8 = undefined;
+    _ = try server.sendAnonymousFlightForTest(&flight_out);
+    try testing.expect((try server.trafficSecrets()).server_application != null);
+
+    var fin_plain: [64]u8 = undefined;
+    const fin = switch (server.suite_state) {
+        inline .sha256, .sha384 => |*s| blk: {
+            const th = s.transcript.peek();
+            break :blk try finished.encode(
+                @TypeOf(s.transcript),
+                &fin_plain,
+                &s.client_finished_key.data,
+                &th,
+            );
+        },
+    };
+    var client_tx = try server.rx.clone();
+    defer client_tx.deinit();
+    var fin_wire: [128]u8 = undefined;
+    const fin_record = try client_tx.encrypt(.handshake, fin, &fin_wire);
+    try server.processClientFinished(fin_wire[0..fin_record.len]);
+
+    const done = try server.trafficSecrets();
+    try testing.expect(done.client_application != null);
+    try testing.expect(done.server_application != null);
+
+    // Lent memory is never wiped by the engine.
+    server.deinit();
+    try testing.expect(store.client_application != null);
+}
+
 /// Same as connectedTestServer, but negotiating TLS_AES_256_GCM_SHA384: the
 /// offered vector keeps its length and carries one recognized SHA-384 suite
 /// plus unknown code points the server ignores (RFC 8446 §4.1.2, §9.3).
@@ -6711,9 +6812,9 @@ fn expectSameEstablishedEvent(expected: Event, actual: Event) !void {
 test "per-connection structs stay within their measured sizes" {
     const Ceiling = struct { server: usize, established: usize, suite: usize };
     const ceiling: Ceiling = switch (backend.active) {
-        .openssl, .@"openssl-fips" => .{ .server = 19376, .established = 712, .suite = 520 },
-        .@"aws-lc", .@"aws-lc-fips" => .{ .server = 21080, .established = 1848, .suite = 520 },
-        .boringssl => .{ .server = 21040, .established = 1824, .suite = 512 },
+        .openssl, .@"openssl-fips" => .{ .server = 19384, .established = 712, .suite = 520 },
+        .@"aws-lc", .@"aws-lc-fips" => .{ .server = 21088, .established = 1848, .suite = 520 },
+        .boringssl => .{ .server = 21048, .established = 1824, .suite = 512 },
     };
     try testing.expect(@sizeOf(ServerHandshake) <= ceiling.server);
     try testing.expect(@sizeOf(EstablishedSession) <= ceiling.established);

@@ -43,6 +43,7 @@ const max_post_handshake_new_session_tickets =
 const hkdf = @import("hkdf.zig");
 const handshake_key_pairs = @import("handshake_key_pairs.zig");
 const hybrid_kex = @import("hybrid_kex.zig");
+const traffic_secrets = @import("traffic_secrets.zig");
 const memx = @import("memx.zig");
 const NewSessionTicket = @import("NewSessionTicket.zig");
 const p256 = @import("p256.zig");
@@ -123,6 +124,47 @@ pub const SessionTicket = struct {
         crypto.secureZero(u8, mem.asBytes(self));
     }
 };
+
+test "traffic secrets: retained only when requested" {
+    var store: traffic_secrets.TrafficSecrets = .init();
+    defer store.secureZero();
+
+    var config = try testConfig(rfc8448_client_keypair);
+    config.insecure_no_chain_anchor = true;
+
+    var plain: ClientHandshake = .init(config);
+    defer plain.deinit();
+    try testing.expectError(error.NotRetained, plain.trafficSecrets());
+
+    config.traffic_secrets = &store;
+    var hs: ClientHandshake = .init(config);
+    hs.injectClientHello(&rfc8448_client_hello);
+    try hs.processServerHello(&rfc8448_server_hello);
+
+    const kept = try hs.trafficSecrets();
+    try testing.expect(kept.client_handshake != null);
+    try testing.expect(kept.server_handshake != null);
+    try testing.expect(kept.client_application == null);
+    try testing.expectEqual(@as(u8, 32), kept.len);
+    try testing.expectEqual(@as(usize, 32), kept.client_handshake.?.bytes().len);
+    // RFC 8448 §3 — server_handshake_traffic_secret for this trace.
+    try testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0xb6, 0x7b, 0x7d, 0x69, 0x0c, 0xc1, 0x6c, 0x4e,
+            0x75, 0xe5, 0x42, 0x13, 0xcb, 0x2d, 0x37, 0xb4,
+            0xe9, 0xc9, 0x12, 0xbc, 0xde, 0xd9, 0x10, 0x5d,
+            0x42, 0xbe, 0xfd, 0x59, 0xd3, 0x91, 0xad, 0x38,
+        },
+        kept.server_handshake.?.bytes(),
+    );
+
+    // The engine never wipes lent memory: the caller owns teardown of the store.
+    const client_bytes = kept.client_handshake.?.bytes();
+    hs.deinit();
+    try testing.expect(store.client_handshake != null);
+    try testing.expectEqualSlices(u8, client_bytes, store.client_handshake.?.bytes());
+}
 
 test "SessionTicket.secureZero erases identity, PSK, and metadata" {
     var ticket: SessionTicket = .init(0x11111111, 0x22222222, .aes_256_gcm_sha384, 0x33333333);
@@ -236,6 +278,13 @@ pub const Config = struct {
     /// Optional caller-owned storage for handshake-message reassembly. When
     /// non-null, the engine reassembles flight messages that span records.
     reassembly: ?[]u8 = null,
+    /// Optional caller-owned storage for the TLS 1.3 traffic secrets. When
+    /// non-null the engine keeps them for the connection's life and
+    /// `trafficSecrets()` returns them; when null they are derived, used, and
+    /// wiped exactly as before, and the accessor returns `error.NotRetained`.
+    /// Retention is opt-in because it lengthens the window in which keying
+    /// material sits in memory. RFC 8446 §7.1.
+    traffic_secrets: ?*traffic_secrets.TrafficSecrets = null,
 
     /// Validate local hybrid policy before handshake construction or wire I/O.
     pub fn validate(self: *const Config) ValidationError!void {
@@ -459,6 +508,7 @@ const Suite = union(enum) {
         self: *Suite,
         out: []u8,
         app_transcript_hash: []const u8,
+        capture: ?*traffic_secrets.TrafficSecrets,
     ) (error{BufferTooShort} || aead.Error)!HandshakeKeys.WithFinished {
         switch (self.*) {
             .buffering => unreachable,
@@ -482,6 +532,10 @@ const Suite = union(enum) {
                 defer master_key.secureZero();
                 s.client_app_secret = H.deriveSecretKeyed(&master_key, "c ap traffic", &app_th);
                 s.server_app_secret = H.deriveSecretKeyed(&master_key, "s ap traffic", &app_th);
+                if (capture) |keep| {
+                    keep.setClientApplication(s.client_app_secret.data[0..H.prk_len]);
+                    keep.setServerApplication(s.server_app_secret.data[0..H.prk_len]);
+                }
 
                 s.transcript.update(fin); // client Finished now part of the transcript
 
@@ -537,6 +591,7 @@ const Suite = union(enum) {
         self: *Suite,
         dhe: []const u8,
         psk: ?[]const u8,
+        capture: ?*traffic_secrets.TrafficSecrets,
     ) aead.Error!HandshakeKeys {
         switch (self.*) {
             .buffering => unreachable,
@@ -551,6 +606,10 @@ const Suite = union(enum) {
                 defer client_secret.secureZero();
                 var server_secret = H.deriveSecretKeyed(&handshake_key, "s hs traffic", &th);
                 defer server_secret.secureZero();
+                if (capture) |keep| keep.setHandshake(
+                    client_secret.data[0..H.prk_len],
+                    server_secret.data[0..H.prk_len],
+                );
 
                 var rx = try H.makeRecordLayerAndFinishedKey(
                     s.aead,
@@ -690,6 +749,8 @@ server_finished_hash_len: u8,
 /// received. Set during HRR processing; the real ServerHello must use the
 /// same group. RFC 8446 §4.1.4.
 retry_selected_group: ?NamedGroup,
+/// Caller storage for retained traffic secrets, or null when not requested.
+traffic_secret_storage: ?*traffic_secrets.TrafficSecrets,
 
 /// A client sends its shares in the first flight: nothing to defer. A
 /// deferred key would go out as an all-zero X25519 or P-256 share.
@@ -754,6 +815,7 @@ pub fn init(config: Config) ClientHandshake {
         .server_finished_hash = @splat(0),
         .server_finished_hash_len = 0,
         .retry_selected_group = null,
+        .traffic_secret_storage = config.traffic_secrets,
     };
 }
 
@@ -838,6 +900,27 @@ pub fn useHandshakeBuffer(self: *ClientHandshake, storage: []u8) void {
 /// after `deinit`, which never writes to memory it was lent. Certificates are
 /// public data, so this is hygiene rather than disclosure — but do not read
 /// `deinit` as having handled it. See #81.
+/// Provide caller-owned storage for the traffic secrets. Equivalent to setting
+/// `Config.traffic_secrets` at construction. The caller owns clearing it: the
+/// engine writes the secrets there and never wipes lent memory on teardown.
+pub fn useTrafficSecretStorage(
+    self: *ClientHandshake,
+    storage: *traffic_secrets.TrafficSecrets,
+) void {
+    assert(self.state == .start);
+    storage.* = .init();
+    self.traffic_secret_storage = storage;
+}
+
+/// The retained traffic secrets, or `error.NotRetained` when the caller did not
+/// ask for them. Never returns zeros: an absent request is an error, not an
+/// empty answer. Fields are null until the handshake derives them.
+pub fn trafficSecrets(
+    self: *const ClientHandshake,
+) error{NotRetained}!*const traffic_secrets.TrafficSecrets {
+    return self.traffic_secret_storage orelse error.NotRetained;
+}
+
 pub fn usePeerCertificateBuffer(self: *ClientHandshake, storage: []u8) void {
     assert(self.state == .start);
     assert(self.peer_certificate.buffer.len == 0);
@@ -1041,6 +1124,8 @@ pub fn startWithPsk(
                 var th: H.TranscriptHash = undefined;
                 Sha256.hash(ch, &th.data, .{});
                 const early_traffic = H.clientEarlyTrafficSecret(early, &th);
+                if (self.traffic_secret_storage) |keep|
+                    keep.setClientEarly(early_traffic.data[0..H.prk_len]);
                 self.early_tx = try H.makeRecordLayer(ticket.cipher_suite, early_traffic);
             },
             .aes_256_gcm_sha384 => {
@@ -1049,6 +1134,8 @@ pub fn startWithPsk(
                 var th: H.TranscriptHash = undefined;
                 Sha384.hash(ch, &th.data, .{});
                 const early_traffic = H.clientEarlyTrafficSecret(early, &th);
+                if (self.traffic_secret_storage) |keep|
+                    keep.setClientEarly(early_traffic.data[0..H.prk_len]);
                 self.early_tx = try H.makeRecordLayer(ticket.cipher_suite, early_traffic);
             },
         }
@@ -1742,7 +1829,11 @@ pub fn processServerHello(self: *ClientHandshake, msg: []const u8) ServerHelloEr
             return error.IllegalParameter;
         break :blk self.offered_psk;
     } else null;
-    const keys = try self.suite.deriveHandshakeKeys(dhe[0..dhe_len], psk);
+    const keys = try self.suite.deriveHandshakeKeys(
+        dhe[0..dhe_len],
+        psk,
+        self.traffic_secret_storage,
+    );
     // Commit only after every fallible step succeeded (#158).
     self.server_selected_psk = sh.selected_identity != null;
     self.rx = keys.rx;
@@ -2142,6 +2233,7 @@ pub fn clientFinished(self: *ClientHandshake, out: []u8) ClientFinishedError![]c
     var keys = self.suite.finishHandshake(
         plain_buf[plain_len..],
         self.server_finished_hash[0..self.server_finished_hash_len],
+        self.traffic_secret_storage,
     ) catch |err| return switch (err) {
         error.BufferTooShort => error.BufferTooShort,
         else => |e| e,
@@ -2404,7 +2496,7 @@ test "deriveHandshakeKeys: RFC 8448 §3 server handshake key/iv/finished" {
     const b = hs.suite.buffering;
     hs.suite = .{ .sha256 = HashArm(hkdf.HkdfSha256, Sha256).init(b.sha256, .aes_128_gcm_sha256) };
 
-    var keys = try hs.suite.deriveHandshakeKeys(&dhe, null);
+    var keys = try hs.suite.deriveHandshakeKeys(&dhe, null, null);
     defer keys.rx.deinit();
     defer keys.tx.deinit();
 
