@@ -193,6 +193,9 @@ pub fn classify(err: HandshakeError) Class {
         // ── Our side ──
         error.AeadEncryptFailed,
         error.AeadSetupFailed,
+        // The bare-message path cannot carry 0-RTT yet. Local gap, not a peer
+        // fault, so it classifies as ours rather than as `protocol`.
+        error.EarlyDataUnsupported,
         error.KeyUpdateRequired,
         error.LibcryptoFailed,
         error.PendingKeyUpdateResponse,

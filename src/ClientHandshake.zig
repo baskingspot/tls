@@ -14,6 +14,7 @@ const mem = std.mem;
 
 const aead = @import("aead.zig");
 const alert = @import("alert.zig");
+const errors = @import("errors.zig");
 const stdx = @import("stdx");
 const buffer = stdx.buffer;
 const certificate = @import("certificate.zig");
@@ -2106,6 +2107,13 @@ pub const ClientFinishedError = SendError || signature.SignError || aead.Error |
     UnexpectedMessage,
     SignatureSchemeNotOffered,
     BufferTooShort,
+    /// The bare-message path cannot carry a 0-RTT handshake: EndOfEarlyData
+    /// travels under the early traffic key and RFC 9001 §5 omits it from the
+    /// handshake entirely. Not implemented, not a peer fault, and deliberately
+    /// not `UnexpectedMessage` - a caller that forwards this to
+    /// `alert.alertForError` gets `internal_error`, not an alert that blames a
+    /// legal handshake.
+    EarlyDataUnsupported,
 };
 
 /// Produce the client Finished as a wire-ready (encrypted) record and promote
@@ -2302,9 +2310,10 @@ fn promoteToApplicationKeys(
 /// Finished, and the returned slice is exactly what `clientFinished` would
 /// encrypt into a record.
 ///
-/// 0-RTT is rejected here: EndOfEarlyData travels under the early traffic key
-/// and is not part of this plaintext flight (RFC 9001 §4.5 omits it entirely).
-/// A caller that accepted early data must use a later mode.
+/// 0-RTT is rejected with `error.EarlyDataUnsupported`: EndOfEarlyData travels
+/// under the early traffic key and is not part of this plaintext flight
+/// (RFC 9001 §5 omits it entirely). This is a missing feature in the bare
+/// path, not a peer protocol error.
 pub fn clientFinishedMessage(
     self: *ClientHandshake,
     out: []u8,
@@ -2312,7 +2321,7 @@ pub fn clientFinishedMessage(
     assert(self.state == .send_finished);
     if (self.server_flight_progress != .finished_verified) return error.UnexpectedMessage;
     if (self.server_finished_hash_len == 0) return error.UnexpectedMessage;
-    if (self.server_accepted_early_data) return error.UnexpectedMessage;
+    if (self.server_accepted_early_data) return error.EarlyDataUnsupported;
     if (self.early_tx != null) {
         self.early_tx.?.deinit();
         self.early_tx = null;
@@ -3597,6 +3606,30 @@ const rfc8448_client_finished = [_]u8{
     0xfa, 0xc6, 0xe9, 0x85, 0x27, 0xb6, 0x42, 0xf2,
     0xed, 0xd5, 0xce, 0x61,
 };
+
+// A legal 0-RTT handshake must not be reported as a peer protocol error. The
+// bare path does not implement early data yet; say so, and say it in a way
+// that does not map to `unexpected_message`.
+test "clientFinishedMessage: 0-RTT is unsupported, not unexpected_message" {
+    var hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
+    defer hs.deinit();
+    hs.policy.insecure_no_chain_anchor = true;
+    hs.injectClientHello(&rfc8448_client_hello);
+    try hs.processServerHello(&rfc8448_server_hello);
+    var flight_buf: [1024]u8 = undefined;
+    try hs.processFlight(rfc8448Fixture("server_flight.b64", &flight_buf), hs.policy);
+
+    // Simulate a server that accepted 0-RTT for an otherwise complete flight.
+    hs.server_accepted_early_data = true;
+
+    var out: [128]u8 = undefined;
+    try testing.expectError(error.EarlyDataUnsupported, hs.clientFinishedMessage(&out));
+    try testing.expectEqual(.internal, errors.classify(error.EarlyDataUnsupported));
+    try testing.expectEqual(
+        alert.Description.internal_error,
+        alert.alertForError(error.EarlyDataUnsupported),
+    );
+}
 
 // The bare-message entry must be the same state machine as the record entry:
 // same plaintext flight, same key promotion, same terminal state.
