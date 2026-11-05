@@ -95,33 +95,60 @@ pub fn HashArm(comptime Hkdf_: type, comptime Hash: type) type {
     };
 }
 
-/// The negotiated cipher suite's traffic-secret state. Both roles carry one
-/// arm; the KeyUpdate ratchet (RFC 8446 §4.6.3, §7.2) derives each next
-/// traffic key from the arm's application secrets.
+/// The unified handshake suite state: transcript plus key schedule, for both
+/// roles. The client starts in `buffering` because the hash is unknown until
+/// ServerHello; the server picks an arm at ClientHello and never buffers.
 pub const Suite = union(enum) {
+    /// Pre-ServerHello: run both candidate transcript hashes and keep the one
+    /// the chosen suite uses. RFC 8446 §4.4.1 permits deferring the transcript
+    /// until the hash is selected.
+    pub const Buffering = struct {
+        sha256: Sha256,
+        sha384: Sha384,
+
+        pub fn init() Buffering {
+            return .{ .sha256 = .init(.{}), .sha384 = .init(.{}) };
+        }
+    };
+
+    buffering: Buffering,
     sha256: HashArm(hkdf.HkdfSha256, Sha256),
     sha384: HashArm(hkdf.HkdfSha384, Sha384),
 
+    /// A function, not a constant: libcrypto hash init cannot run at comptime.
+    pub fn init() Suite {
+        return .{ .buffering = .init() };
+    }
+
     pub fn secureZero(self: *Suite) void {
         switch (self.*) {
+            .buffering => {},
             inline .sha256, .sha384 => |*s| s.secureZero(),
         }
     }
 
+    /// Feed one handshake message into the running transcript hash.
+    /// RFC 8446 §4.4.1. While buffering, both candidate hashes are fed.
     pub fn update(self: *Suite, msg: []const u8) void {
         switch (self.*) {
+            .buffering => |*b| {
+                b.sha256.update(msg);
+                b.sha384.update(msg);
+            },
             inline .sha256, .sha384 => |*s| s.transcript.update(msg),
         }
     }
 
     pub fn ratchetClientKey(self: *Suite) aead.Error!RecordLayer {
         return switch (self.*) {
+            .buffering => unreachable,
             inline .sha256, .sha384 => |*s| s.ratchetClientKey(),
         };
     }
 
     pub fn ratchetServerKey(self: *Suite) aead.Error!RecordLayer {
         return switch (self.*) {
+            .buffering => unreachable,
             inline .sha256, .sha384 => |*s| s.ratchetServerKey(),
         };
     }

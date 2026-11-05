@@ -1001,6 +1001,7 @@ pub fn deriveTicketPsk(self: *ServerHandshake) PrepareTicketError!TicketPsk {
             defer psk.secureZero();
             ticket.psk.appendSliceAssumeCapacity(&psk.data);
         },
+        else => unreachable,
     }
     self.ticket_nonce_state = .{ .prepared = nonce };
     return ticket;
@@ -1967,6 +1968,7 @@ fn encodeEncryptedExtensionsFinished(
             self.server_finished_hash_len = @intCast(fin_th.len);
             pos += fin.len;
         },
+        else => unreachable,
     }
     return plaintext[0..pos];
 }
@@ -2127,6 +2129,7 @@ fn encodeAuthenticatedFlight(
             @memcpy(cv_input[cv_ctx_len..][0..th.len], &th);
             break :blk th.len;
         },
+        else => unreachable,
     };
     var sig_buf: [512]u8 = undefined;
     const sig = try signer.sign(
@@ -2156,6 +2159,7 @@ fn encodeAuthenticatedFlight(
             self.server_finished_hash_len = @intCast(fin_th.len);
             pos += fin.len;
         },
+        else => unreachable,
     }
     return plaintext[0..pos];
 }
@@ -2212,12 +2216,14 @@ fn prepareServerApplicationWriteKey(self: *ServerHandshake) aead.Error!RecordLay
                 keep.setServerApplication(s.server_app_secret.data[0..H.prk_len]);
             break :blk try H.makeRecordLayer(s.aead, s.server_app_secret);
         },
+        else => unreachable,
     };
 }
 
 fn clearServerApplicationWriteSecret(self: *ServerHandshake) void {
     switch (self.suite_state) {
         inline .sha256, .sha384 => |*s| s.server_app_secret.secureZero(),
+        else => unreachable,
     }
 }
 
@@ -2314,6 +2320,7 @@ fn processClientFinishedPlaintext(
                             backend.capabilities.certificate_verify_schemes,
                         );
                     },
+                    else => unreachable,
                 }
                 self.suite_state.update(msg.raw);
                 msg = (try hr.next()) orelse return error.UnexpectedMessage;
@@ -2372,6 +2379,7 @@ fn verifyClientFinished(
             s.resumption_master_valid = true;
             s.forgetHandshakeSecrets();
         },
+        else => unreachable,
     }
     self.state = .connected;
 }
@@ -4644,6 +4652,7 @@ test "sendAnonymousFlightForTest: client decrypts EncryptedExtensions and Finish
     switch (server.suite_state) {
         .sha256 => |s| try finished.verify(Sha256, fin.raw, &s.server_finished_key.data, &th),
         .sha384 => unreachable,
+        else => unreachable,
     }
 }
 
@@ -4914,6 +4923,7 @@ fn expectHandshakeSecretsZero(server: *const ServerHandshake) !void {
             try testing.expect(mem.allEqual(u8, mem.asBytes(&s.client_finished_key), 0));
             try testing.expect(mem.allEqual(u8, mem.asBytes(&s.server_finished_key), 0));
         },
+        else => unreachable,
     }
 }
 
@@ -4952,6 +4962,7 @@ fn connectedTestServerConfigure(suites_patch: ?[6]u8) !ServerHandshake {
                 &th,
             );
         },
+        else => unreachable,
     };
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
@@ -5007,6 +5018,7 @@ test "traffic secrets: server retains handshake and application secrets on reque
                 &th,
             );
         },
+        else => unreachable,
     };
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
@@ -5071,6 +5083,7 @@ test "processClientFinishedMessage: the bare entry reaches the same state" {
                 &th,
             );
         },
+        else => unreachable,
     };
     var client_tx = try by_record.rx.clone();
     defer client_tx.deinit();
@@ -6234,6 +6247,7 @@ test "processClientFinished: verifies Finished and installs app keys" {
                 &th,
             );
         },
+        else => unreachable,
     };
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
@@ -6278,6 +6292,7 @@ test "public Finished paths reject trailing and non-Finished handshake messages"
                         &th,
                     );
                 },
+                else => unreachable,
             };
             const offset: usize = switch (placement) {
                 .trailing => fin.len,
@@ -6431,6 +6446,7 @@ test "processClientFinished: rejects bad verify_data" {
                 &th,
             );
         },
+        else => unreachable,
     };
     // Tamper one byte of the verify_data (after the 4-byte handshake header).
     var tampered: [64]u8 = undefined;
@@ -7011,6 +7027,7 @@ test "handleRecord: KeyUpdate flood is rejected" {
     var client_secret: H.TrafficSecret = switch (server.suite_state) {
         .sha256 => |s| s.client_app_secret,
         .sha384 => unreachable,
+        else => unreachable,
     };
 
     var i: usize = 0;
@@ -8151,6 +8168,7 @@ test "PSK offer with only psk_ke disables resumption and ticket issuance" {
             s.resumption_master = .init(@splat(0x42));
             s.resumption_master_valid = true;
         },
+        else => unreachable,
     }
     try testing.expectError(error.IncompatiblePskModes, server.deriveTicketPsk());
 }
@@ -11621,6 +11639,7 @@ test "handleRecord: reassembles fragmented client Finished across encrypted reco
                 &th,
             );
         },
+        else => unreachable,
     };
 
     // Split the Finished after the 4-byte handshake header.
@@ -11677,6 +11696,7 @@ test "handleRecord: rejects interleaved alert during Finished fragment reassembl
                 &th,
             );
         },
+        else => unreachable,
     };
 
     // First fragment: 4-byte handshake header only.
@@ -11733,6 +11753,7 @@ test "handleRecord: rejects plaintext alert during Finished fragment reassembly"
                 &th,
             );
         },
+        else => unreachable,
     };
 
     var client_tx = try server.rx.clone();
