@@ -180,11 +180,10 @@ fn sendAlertAndReturnError(
     err: anyerror,
     out: []u8,
 ) anyerror {
-    // The peer already sent us a fatal alert; replying with our own alert
-    // would be wrong (and would emit a spurious internal_error). Just
-    // propagate the original error. RFC 8446 §6.
-    if (err == error.PeerAlert) return err;
-    const rec = hs.sendAlert(tls.alert.alertForError(err), out) catch return err;
+    // A peer alert maps to no reply (RFC 8446 §6.2), so `alertForError` returns
+    // null and the original error propagates untouched.
+    const description = tls.alert.alertForError(err) orelse return err;
+    const rec = hs.sendAlert(description, out) catch return err;
     tls.io.writeAll(io, stream, rec) catch return err;
     hs.completeWrite();
     return err;
