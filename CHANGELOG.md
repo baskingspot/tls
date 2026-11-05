@@ -5,6 +5,12 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-05
+
+### Fixed
+
+- The source archive no longer carries `docs/`, so `zig fetch` pulls 826 KB instead of 10.3 MB. The release workflow refuses an archive over 2 MiB, so research cannot creep back in (#170).
+
 ## [0.2.0] - 2026-11-05
 
 ### Added
