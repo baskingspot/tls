@@ -279,6 +279,16 @@ pub const Config = struct {
     /// Optional caller-owned storage for handshake-message reassembly. When
     /// non-null, the engine reassembles flight messages that span records.
     reassembly: ?[]u8 = null,
+    /// Extensions appended to the ClientHello, verbatim. tls frames them and
+    /// rejects a type it emits itself; the data is opaque. RFC 8446 §4.2.
+    extra_extensions: []const extension_type.ExtraExtension = &.{},
+    /// Extension types the server's EncryptedExtensions must carry. A missing
+    /// one fails the handshake with `error.MissingRequiredExtension` and
+    /// `missingExtension()` naming it.
+    required_extensions: []const u16 = &.{},
+    /// Caller storage for the extensions the server sent. Slices borrow the
+    /// handshake message and are valid until the next record is processed.
+    peer_extensions: ?*encrypted_extensions.ExtensionSink = null,
     /// Optional caller-owned storage for the TLS 1.3 traffic secrets. When
     /// non-null the engine keeps them for the connection's life and
     /// `trafficSecrets()` returns them; when null they are derived, used, and
@@ -752,6 +762,13 @@ server_finished_hash_len: u8,
 retry_selected_group: ?NamedGroup,
 /// Caller storage for retained traffic secrets, or null when not requested.
 traffic_secret_storage: ?*traffic_secrets.TrafficSecrets,
+/// Extensions this client offers and requires, plus where the server's land.
+extra_extensions: []const extension_type.ExtraExtension,
+required_extensions: []const u16,
+peer_extensions: ?*encrypted_extensions.ExtensionSink,
+/// The required extension the server omitted, or 0. Set before
+/// `error.MissingRequiredExtension` is returned.
+missing_extension: u16,
 
 /// A client sends its shares in the first flight: nothing to defer. A
 /// deferred key would go out as an all-zero X25519 or P-256 share.
@@ -817,6 +834,10 @@ pub fn init(config: Config) ClientHandshake {
         .server_finished_hash_len = 0,
         .retry_selected_group = null,
         .traffic_secret_storage = config.traffic_secrets,
+        .extra_extensions = config.extra_extensions,
+        .required_extensions = config.required_extensions,
+        .peer_extensions = config.peer_extensions,
+        .missing_extension = 0,
     };
 }
 
@@ -878,7 +899,8 @@ pub const StartError = error{
     ServerNameTooLong,
     IdentityTooLong,
     InvalidBinderLength,
-} || AlpnError || aead.Error || hybrid_kex.Error || ConfigError;
+} || AlpnError || aead.Error || hybrid_kex.Error || ConfigError ||
+    extension_type.ExtraExtensionError;
 
 /// Provide caller-owned storage for reassembling handshake messages that span
 /// encrypted records (large certificate chains, fragmented flights). Without
@@ -920,6 +942,12 @@ pub fn trafficSecrets(
     self: *const ClientHandshake,
 ) error{NotRetained}!*const traffic_secrets.TrafficSecrets {
     return self.traffic_secret_storage orelse error.NotRetained;
+}
+
+/// The required extension the server omitted, or 0. Meaningful only after
+/// `error.MissingRequiredExtension`.
+pub fn missingExtension(self: *const ClientHandshake) u16 {
+    return self.missing_extension;
 }
 
 pub fn usePeerCertificateBuffer(self: *ClientHandshake, storage: []u8) void {
@@ -996,7 +1024,7 @@ pub fn start(self: *ClientHandshake, out: []u8) StartError![]const u8 {
         hybrid_share = .{ .group = group, .data = public_key };
     }
 
-    const ch = try client_hello.encodeWithHybridGroups(
+    const ch = try client_hello.encodeWithHybridGroupsAndExtensions(
         out[frame.header_len..],
         self.random,
         self.keypairs.x25519.public_key,
@@ -1006,6 +1034,7 @@ pub fn start(self: *ClientHandshake, out: []u8) StartError![]const u8 {
         self.alpn_protocols,
         self.hybrid.supported_groups,
         hybrid_share,
+        self.extra_extensions,
     );
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(out[0..frame.header_len]);
@@ -1070,6 +1099,7 @@ pub fn startWithPsk(
         obfuscated_ticket_age,
         binder_len,
         offer,
+        self.extra_extensions,
     );
     const ch = r.msg;
 
@@ -1979,6 +2009,10 @@ fn processFlightMessage(
             if (msg.type != .encrypted_extensions) return error.UnexpectedMessage;
             const ee = try encrypted_extensions.parse(msg.raw, self.alpn_protocols, .{
                 .offered_extensions = self.offered_extensions,
+                .allowed_extensions = self.extra_extensions,
+                .received = self.peer_extensions,
+                .required_extensions = self.required_extensions,
+                .missing_out = &self.missing_extension,
             });
             if (ee.alpn_protocol) |protocol| {
                 self.selected_alpn.clear();

@@ -132,7 +132,8 @@ fn extensionsLen(
     include_p384: bool,
     hybrid_groups: []const NamedGroup,
     kem: ?KemShare,
-) (AlpnError || ServerNameError)!u16 {
+    extras: []const extension_type.ExtraExtension,
+) (AlpnError || ServerNameError || extension_type.ExtraExtensionError)!u16 {
     const sni: u16 = if (server_name) |n| try sniExtLen(n) else 0;
     const alpn: u16 = if (alpn_protocols.len == 0) 0 else try alpnExtLen(alpn_protocols);
     const total = sni +
@@ -142,9 +143,35 @@ fn extensionsLen(
         ext_sig_algs_len +
         ext_sig_algs_cert_len +
         ext_psk_kem_len +
-        ext_header_len + 2 + keySharesLen(include_p256, include_p384, kem);
-    assert(total <= std.math.maxInt(u16));
+        ext_header_len + 2 + keySharesLen(include_p256, include_p384, kem) +
+        try extension_type.extraExtensionsLen(extras);
+    if (total > std.math.maxInt(u16)) return error.ExtensionTooLong;
     return @intCast(total);
+}
+
+/// `extensionsLen` for callers that supply no extras. Those cannot hit the
+/// extra-extension errors, so they stay out of the public error set and every
+/// existing signature is unchanged.
+fn extensionsLenPlain(
+    server_name: ?[]const u8,
+    alpn_protocols: AlpnProtocols,
+    include_p256: bool,
+    include_p384: bool,
+    hybrid_groups: []const NamedGroup,
+    kem: ?KemShare,
+) (AlpnError || ServerNameError)!u16 {
+    return extensionsLen(
+        server_name,
+        alpn_protocols,
+        include_p256,
+        include_p384,
+        hybrid_groups,
+        kem,
+        &.{},
+    ) catch |err| switch (err) {
+        error.ReservedExtension, error.DuplicateExtension, error.ExtensionTooLong => unreachable,
+        else => |e| return e,
+    };
 }
 
 pub fn encodedLen(
@@ -152,7 +179,7 @@ pub fn encodedLen(
     alpn_protocols: AlpnProtocols,
 ) (AlpnError || ServerNameError)!usize {
     return handshake_header_len + body_fixed_len +
-        try extensionsLen(server_name, alpn_protocols, false, false, &.{}, null);
+        try extensionsLenPlain(server_name, alpn_protocols, false, false, &.{}, null);
 }
 
 pub fn encodedLenWithP256(
@@ -160,7 +187,7 @@ pub fn encodedLenWithP256(
     alpn_protocols: AlpnProtocols,
 ) (AlpnError || ServerNameError)!usize {
     return handshake_header_len + body_fixed_len +
-        try extensionsLen(server_name, alpn_protocols, true, false, &.{}, null);
+        try extensionsLenPlain(server_name, alpn_protocols, true, false, &.{}, null);
 }
 
 pub fn encodedLenWithP256P384(
@@ -168,7 +195,7 @@ pub fn encodedLenWithP256P384(
     alpn_protocols: AlpnProtocols,
 ) (AlpnError || ServerNameError)!usize {
     return handshake_header_len + body_fixed_len +
-        try extensionsLen(server_name, alpn_protocols, true, true, &.{}, null);
+        try extensionsLenPlain(server_name, alpn_protocols, true, true, &.{}, null);
 }
 
 /// Errors from ClientHello2 encoding after a HelloRetryRequest.
@@ -779,7 +806,11 @@ pub fn encodeWithPsk(
         obfuscated_ticket_age,
         binder_len,
         offer_early_data,
-    );
+        &.{},
+    ) catch |err| switch (err) {
+        error.ReservedExtension, error.DuplicateExtension, error.ExtensionTooLong => unreachable,
+        else => |e| return e,
+    };
 }
 
 /// Encode a PSK ClientHello with the same RFC 10024 supported-groups and
@@ -799,15 +830,18 @@ pub fn encodeWithPskAndHybridGroups(
     obfuscated_ticket_age: u32,
     binder_len: u8,
     offer_early_data: bool,
+    extras: []const extension_type.ExtraExtension,
 ) (error{
     BufferTooShort,
     InvalidServerName,
     ServerNameTooLong,
     IdentityTooLong,
     InvalidBinderLength,
-} || capabilities.HybridPolicyError || AlpnError)!PskEncodeResult {
+} || capabilities.HybridPolicyError || AlpnError ||
+    extension_type.ExtraExtensionError)!PskEncodeResult {
     if (identity.len > 256) return error.IdentityTooLong;
     if (binder_len != 32 and binder_len != 48) return error.InvalidBinderLength;
+    try extension_type.validateExtraExtensions(extras);
     try validateHybridGroups(hybrid_groups, hybrid_share);
     const include_p256 = public_key_p256 != null;
     const include_p384 = public_key_p384 != null;
@@ -822,7 +856,7 @@ pub fn encodeWithPskAndHybridGroups(
     const psk_ext_data_len: usize = identities_len + binders_len;
     const psk_ext_len: usize = 4 + psk_ext_data_len;
 
-    const base_ext_len = try extensionsLen(
+    const base_ext_len = try extensionsLenPlain(
         server_name,
         alpn_protocols,
         include_p256,
@@ -833,7 +867,8 @@ pub fn encodeWithPskAndHybridGroups(
     // base_ext_len already includes psk_key_exchange_modes (added in slice E).
     // early_data ext (if offered): 4 bytes (ext header + 0-length ext_data).
     const early_data_ext_len: usize = if (offer_early_data) 4 else 0;
-    const ext_len = base_ext_len + early_data_ext_len + psk_ext_len;
+    const ext_len = base_ext_len + early_data_ext_len +
+        try extension_type.extraExtensionsLen(extras) + psk_ext_len;
     const encoded_len = handshake_header_len + body_fixed_len + ext_len;
     if (out.len < encoded_len) return error.BufferTooShort;
 
@@ -941,6 +976,13 @@ pub fn encodeWithPskAndHybridGroups(
     if (offer_early_data) {
         w.appendAssumeCapacity(ExtensionType, .early_data);
         w.appendAssumeCapacity(u16, 0);
+    }
+
+    // Caller-supplied extensions, before pre_shared_key which must stay last.
+    for (extras) |extra| {
+        w.appendAssumeCapacity(u16, extra.extension_type);
+        w.appendAssumeCapacity(u16, @intCast(extra.data.len));
+        w.appendSliceAssumeCapacity(extra.data);
     }
 
     // pre_shared_key (RFC 8446 §4.2.11) — MUST be the last extension.
@@ -1075,7 +1117,7 @@ pub fn encode(
     server_name: ?[]const u8,
     alpn_protocols: AlpnProtocols,
 ) (error{ BufferTooShort, InvalidServerName, ServerNameTooLong } || AlpnError)![]u8 {
-    return encodeInternal(
+    return encodeInternalPlain(
         out,
         random,
         public_key,
@@ -1097,7 +1139,7 @@ pub fn encodeWithP256(
     alpn_protocols: AlpnProtocols,
 ) (error{ BufferTooShort, InvalidServerName, ServerNameTooLong } || AlpnError)![]u8 {
     assert(backend.capabilities.client_p256);
-    return encodeInternal(
+    return encodeInternalPlain(
         out,
         random,
         public_key,
@@ -1119,7 +1161,7 @@ pub fn encodeWithP256P384(
     server_name: ?[]const u8,
     alpn_protocols: AlpnProtocols,
 ) (error{ BufferTooShort, InvalidServerName, ServerNameTooLong } || AlpnError)![]u8 {
-    return encodeInternal(
+    return encodeInternalPlain(
         out,
         random,
         public_key,
@@ -1176,7 +1218,7 @@ pub fn encodeWithHybridGroups(
     assert(backend.capabilities.client_p256);
     if (public_key_p384 != null) assert(backend.capabilities.client_p384);
     try validateHybridGroups(hybrid_groups, kem_share);
-    return encodeInternal(
+    return encodeInternalPlain(
         out,
         random,
         public_key,
@@ -1189,7 +1231,46 @@ pub fn encodeWithHybridGroups(
     );
 }
 
-fn encodeInternal(
+/// `encodeWithHybridGroups`, plus caller-supplied extensions appended after the
+/// built-in ones. The engine frames them and rejects a type it emits itself;
+/// `data` is opaque to tls. RFC 8446 §4.2.
+///
+/// `pre_shared_key` stays reserved so a PSK handshake can still patch it in as
+/// the last extension (RFC 8446 §4.2.11).
+pub fn encodeWithHybridGroupsAndExtensions(
+    out: []u8,
+    random: Random,
+    public_key: x25519.PublicKey,
+    public_key_p256: p256.PublicKey,
+    public_key_p384: ?p384.PublicKey,
+    server_name: ?[]const u8,
+    alpn_protocols: AlpnProtocols,
+    hybrid_groups: []const NamedGroup,
+    kem_share: ?KemShare,
+    extras: []const extension_type.ExtraExtension,
+) (error{ BufferTooShort, InvalidServerName, ServerNameTooLong } ||
+    capabilities.HybridPolicyError || AlpnError ||
+    extension_type.ExtraExtensionError)![]u8 {
+    assert(backend.capabilities.client_p256);
+    if (public_key_p384 != null) assert(backend.capabilities.client_p384);
+    try validateHybridGroups(hybrid_groups, kem_share);
+    return encodeInternal(
+        out,
+        random,
+        public_key,
+        public_key_p256,
+        public_key_p384,
+        server_name,
+        alpn_protocols,
+        hybrid_groups,
+        kem_share,
+        extras,
+    );
+}
+
+/// `encodeInternal` for callers that supply no extras, so the extra-extension
+/// errors stay out of every existing public error set.
+fn encodeInternalPlain(
     out: []u8,
     random: Random,
     public_key: x25519.PublicKey,
@@ -1200,6 +1281,37 @@ fn encodeInternal(
     hybrid_groups: []const NamedGroup,
     kem_share: ?KemShare,
 ) (error{ BufferTooShort, InvalidServerName, ServerNameTooLong } || AlpnError)![]u8 {
+    return encodeInternal(
+        out,
+        random,
+        public_key,
+        public_key_p256,
+        public_key_p384,
+        server_name,
+        alpn_protocols,
+        hybrid_groups,
+        kem_share,
+        &.{},
+    ) catch |err| switch (err) {
+        error.ReservedExtension, error.DuplicateExtension, error.ExtensionTooLong => unreachable,
+        else => |e| return e,
+    };
+}
+
+fn encodeInternal(
+    out: []u8,
+    random: Random,
+    public_key: x25519.PublicKey,
+    public_key_p256: ?p256.PublicKey,
+    public_key_p384: ?p384.PublicKey,
+    server_name: ?[]const u8,
+    alpn_protocols: AlpnProtocols,
+    hybrid_groups: []const NamedGroup,
+    kem_share: ?KemShare,
+    extras: []const extension_type.ExtraExtension,
+) (error{ BufferTooShort, InvalidServerName, ServerNameTooLong } ||
+    AlpnError || extension_type.ExtraExtensionError)![]u8 {
+    try extension_type.validateExtraExtensions(extras);
     const include_p256 = public_key_p256 != null;
     const include_p384 = public_key_p384 != null;
     const ext_len = try extensionsLen(
@@ -1209,6 +1321,7 @@ fn encodeInternal(
         include_p384,
         hybrid_groups,
         kem_share,
+        extras,
     );
     const encoded_len = handshake_header_len + body_fixed_len + ext_len;
     if (out.len < encoded_len) return error.BufferTooShort;
@@ -1317,6 +1430,15 @@ fn encodeInternal(
         w.appendAssumeCapacity(NamedGroup, k.group);
         w.appendAssumeCapacity(u16, @intCast(k.data.len));
         w.appendSliceAssumeCapacity(k.data);
+    }
+
+    // Caller-supplied extensions, verbatim and last. `pre_shared_key` is
+    // reserved by `validateExtraExtensions`, so appending here keeps it free to
+    // be patched in after this function returns (RFC 8446 §4.2.11).
+    for (extras) |extra| {
+        w.appendAssumeCapacity(u16, extra.extension_type);
+        w.appendAssumeCapacity(u16, @intCast(extra.data.len));
+        w.appendSliceAssumeCapacity(extra.data);
     }
 
     return w.buffered();
@@ -2536,6 +2658,56 @@ const compression_method_offset = 48;
 const extensions_len_offset = 49;
 const extensions_offset = extensions_len_offset + 2;
 
+/// The raw extension_data for `wanted`, or null when the ClientHello does not
+/// carry it. The slice borrows `msg`. Used by callers that require an
+/// extension to be present (RFC 8446 §4.2: a server that requires one aborts
+/// with `missing_extension`).
+pub fn extension(msg: []const u8, wanted: u16) ?[]const u8 {
+    if (msg.len < extensions_offset) return null;
+    var r: wire.Reader = .init(msg);
+    r.assumeSkip(1 + 3 + 2 + 32);
+    const session_id_len = r.assumeRead(u8);
+    r.assumeSkip(session_id_len);
+    const cipher_suites_len = r.assumeRead(u16);
+    r.assumeSkip(cipher_suites_len);
+    const compression_len = r.assumeRead(u8);
+    r.assumeSkip(compression_len);
+    const extensions_len = r.assumeRead(u16);
+    const end = r.end + extensions_len;
+    if (end > msg.len) return null;
+    while (r.end + 4 <= end) {
+        const current = r.assumeRead(u16);
+        const ext_len = r.assumeRead(u16);
+        if (r.end + ext_len > end) return null;
+        const data = r.assumeReadSlice(ext_len);
+        if (current == wanted) return data;
+    }
+    return null;
+}
+
+test "extension: finds a caller-supplied extension and misses an absent one" {
+    var buf: [1024]u8 = undefined;
+    const keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x77)));
+    const p256_keypair: p256.KeyPair = try .generateDeterministic(.init(@splat(0x88)));
+    const extras = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{ 0xaa, 0xbb } },
+    };
+    const msg = try encodeWithHybridGroupsAndExtensions(
+        &buf,
+        .zero,
+        keypair.public_key,
+        p256_keypair.public_key,
+        null,
+        null,
+        &.{},
+        &.{},
+        null,
+        extras[0..],
+    );
+    try testing.expectEqualSlices(u8, &.{ 0xaa, 0xbb }, extension(msg, 0x0039).?);
+    try testing.expectEqual(@as(?[]const u8, null), extension(msg, 0x0044));
+}
+
 fn findExtensionOffset(msg: []const u8, ext_type: ExtensionType) !usize {
     var r: wire.Reader = .init(msg);
     r.assumeSkip(1 + 3 + 2 + 32);
@@ -2620,11 +2792,11 @@ test "parse: rejects duplicate signature_algorithms_cert" {
     try testing.expectError(error.DuplicateExtension, parse(buf[0..new_len]));
 }
 
-fn expectDuplicateExtensionForTest(extension: ExtensionType) !void {
+fn expectDuplicateExtensionForTest(wanted: ExtensionType) !void {
     var buf: [1024]u8 = undefined;
     const encoded = try encode(&buf, .zero, .zero, "example.test", &.{"h2"});
     _ = try parse(encoded);
-    const offset = try findExtensionOffset(encoded, extension);
+    const offset = try findExtensionOffset(encoded, wanted);
     const data_len: usize = memx.readInt(u16, encoded[offset + 2 ..][0..2]);
     const duplicate = encoded[offset..][0 .. ext_header_len + data_len];
     const len = appendExtension(&buf, encoded.len, duplicate);
@@ -2980,4 +3152,71 @@ test "parse: psk_key_exchange_modes list_len 0xFF rejected without overflow" {
     msg[51] = 0xFF; // list_len = 0xFF → overflows u8 in `list_len + 1`
     msg[52] = 0x01;
     try testing.expectError(error.InvalidExtensionLength, parse(&msg));
+}
+
+// RFC 8446 §4.2 - a caller-supplied extension rides the ClientHello verbatim.
+test "encodeWithHybridGroupsAndExtensions: extras are framed and parse back" {
+    var buf: [1024]u8 = undefined;
+    const keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x33)));
+    const p256_keypair: p256.KeyPair = try .generateDeterministic(.init(@splat(0x55)));
+    const extras = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{ 0xde, 0xad, 0xbe, 0xef } },
+    };
+    const msg = try encodeWithHybridGroupsAndExtensions(
+        &buf,
+        .zero,
+        keypair.public_key,
+        p256_keypair.public_key,
+        null,
+        null,
+        &.{},
+        &.{},
+        null,
+        &extras,
+    );
+    // The extension block ends with the caller's bytes, framed and unmodified.
+    try testing.expect(mem.endsWith(u8, msg, &.{
+        0x00, 0x39, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef,
+    }));
+    // And the document still parses as a ClientHello.
+    _ = try parse(msg);
+}
+
+// A caller-supplied extension may not shadow one the engine emits, and the PSK
+// extension stays reserved so a resumption handshake can still append it last.
+test "encodeWithHybridGroupsAndExtensions: reserved and duplicate extras are refused" {
+    var buf: [1024]u8 = undefined;
+    const keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x44)));
+    const p256_keypair: p256.KeyPair = try .generateDeterministic(.init(@splat(0x66)));
+    const reserved = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x002b, .data = &.{} },
+    };
+    try testing.expectError(error.ReservedExtension, encodeWithHybridGroupsAndExtensions(
+        &buf,
+        .zero,
+        keypair.public_key,
+        p256_keypair.public_key,
+        null,
+        null,
+        &.{},
+        &.{},
+        null,
+        &reserved,
+    ));
+    const duplicated = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{ 1, 2 } },
+        .{ .extension_type = 0x0039, .data = &.{ 3, 4 } },
+    };
+    try testing.expectError(error.DuplicateExtension, encodeWithHybridGroupsAndExtensions(
+        &buf,
+        .zero,
+        keypair.public_key,
+        p256_keypair.public_key,
+        null,
+        null,
+        &.{},
+        &.{},
+        null,
+        &duplicated,
+    ));
 }

@@ -151,6 +151,8 @@ pub fn classify(err: HandshakeError) Class {
         error.UnexpectedContentType,
         error.UnexpectedEof,
         error.UnexpectedExtension,
+        // RFC 8446 §6.2 — the peer omitted an extension the handshake required.
+        error.MissingRequiredExtension,
         error.UnexpectedMessage,
         error.UnexpectedRecord,
         error.UnofferedAlpnProtocol,
@@ -194,9 +196,15 @@ pub fn classify(err: HandshakeError) Class {
         // ── Our side ──
         error.AeadEncryptFailed,
         error.AeadSetupFailed,
+        // Our sink for peer extensions was sized too small.
+        error.ExtensionSinkFull,
         // The bare-message path cannot carry 0-RTT yet. Local gap, not a peer
         // fault, so it classifies as ours rather than as `protocol`.
         error.EarlyDataUnsupported,
+        // Caller-supplied extension the engine reserves or repeats. The
+        // malformed-wire `DuplicateExtension` is separate and stays `protocol`.
+        error.ReservedExtension,
+        error.ExtensionTooLong,
         error.KeyUpdateRequired,
         error.LibcryptoFailed,
         error.PendingKeyUpdateResponse,

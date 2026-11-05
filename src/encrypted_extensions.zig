@@ -17,6 +17,40 @@ const wire = @import("wire.zig");
 // ast-grep-ignore: public-struct-field-default -- options bag: call sites override one knob
 pub const Options = struct {
     offered_extensions: OfferedExtensions = .initEmpty(),
+    /// Extension types the caller allows and wants the bytes for. A type the
+    /// engine does not handle and that is not listed here is
+    /// `error.UnsupportedExtension`. Caller-supplied extensions are opaque to
+    /// tls; a protocol built on it owns the meaning (RFC 8446 §4.2).
+    allowed_extensions: []const extension_type.ExtraExtension = &.{},
+    /// Caller storage for the allowed extensions the peer sent. Slices in the
+    /// result borrow the input message.
+    received: ?*ExtensionSink = null,
+    /// Types that must appear. A missing one fails with
+    /// `error.MissingRequiredExtension` and writes the type to `missing_out`.
+    required_extensions: []const u16 = &.{},
+    /// Receives the extension type that was required and absent.
+    missing_out: ?*u16 = null,
+};
+
+/// Caller-owned slots for the allowed extensions the peer sent.
+pub const ExtensionSink = struct {
+    items: []extension_type.ExtraExtension,
+    len: usize,
+
+    pub fn init(items: []extension_type.ExtraExtension) ExtensionSink {
+        return .{ .items = items, .len = 0 };
+    }
+
+    pub fn append(self: *ExtensionSink, extra: extension_type.ExtraExtension) bool {
+        if (self.len == self.items.len) return false;
+        self.items[self.len] = extra;
+        self.len += 1;
+        return true;
+    }
+
+    pub fn slice(self: *const ExtensionSink) []const extension_type.ExtraExtension {
+        return self.items[0..self.len];
+    }
 };
 
 pub const ParseError = error{
@@ -30,6 +64,10 @@ pub const ParseError = error{
     EmptyAlpnProtocol,
     TooManyAlpnProtocols,
     UnofferedAlpnProtocol,
+    /// A required extension was absent; `Options.missing_out` names it.
+    MissingRequiredExtension,
+    /// `Options.received` had no slot left.
+    ExtensionSinkFull,
 };
 
 pub const Parsed = struct {
@@ -40,8 +78,18 @@ pub const Parsed = struct {
     /// to send EndOfEarlyData (§4.5).
     early_data_accepted: bool,
 
+    /// Caller-supplied extensions the peer sent, in wire order, borrowing the
+    /// input message. Empty unless `Options.received` was provided.
+    extensions: []const extension_type.ExtraExtension,
+
     /// No ALPN selected and no early-data acceptance.
-    pub const empty: Parsed = .{ .alpn_protocol = null, .early_data_accepted = false };
+    pub fn empty() Parsed {
+        return .{
+            .alpn_protocol = null,
+            .early_data_accepted = false,
+            .extensions = &.{},
+        };
+    }
 };
 
 pub const EncodeError = error{ BufferTooShort, EmptyAlpnProtocol, AlpnProtocolTooLong };
@@ -54,8 +102,9 @@ pub fn encodedLen(alpn_protocol: ?[]const u8, early_data_accepted: bool) usize {
     return 4 + 2 + alpn_len + early_len;
 }
 
-/// Encode EncryptedExtensions. Currently only ALPN and early_data are
-/// supported as server output. RFC 8446 §4.3.1, §4.2.10, RFC 7301 §3.2.
+/// Encode EncryptedExtensions. The engine emits ALPN and early_data itself;
+/// anything else comes from `encodeWithExtensions`.
+/// RFC 8446 §4.3.1, §4.2.10, RFC 7301 §3.2.
 pub fn encode(
     out: []u8,
     alpn_protocol: ?[]const u8,
@@ -83,6 +132,54 @@ pub fn encode(
     if (early_data_accepted) {
         w.appendAssumeCapacity(ExtensionType, .early_data);
         w.appendAssumeCapacity(u16, 0);
+    }
+    return w.buffered();
+}
+
+/// Encode EncryptedExtensions with caller-supplied extensions appended after
+/// the built-in ones. A type the engine emits itself is reserved. RFC 8446
+/// §4.2, §4.3.1.
+pub fn encodeWithExtensions(
+    out: []u8,
+    alpn_protocol: ?[]const u8,
+    early_data_accepted: bool,
+    extras: []const extension_type.ExtraExtension,
+) (EncodeError || extension_type.ExtraExtensionError)![]const u8 {
+    if (alpn_protocol) |p| {
+        if (p.len == 0) return error.EmptyAlpnProtocol;
+        if (p.len > 255) return error.AlpnProtocolTooLong;
+    }
+    for (extras) |extra| {
+        if (extra.data.len > std.math.maxInt(u16)) return error.ExtensionTooLong;
+        // alpn and early_data are the two the engine writes in this message.
+        if (extra.extension_type == @intFromEnum(ExtensionType.alpn) or
+            extra.extension_type == @intFromEnum(ExtensionType.early_data))
+            return error.ReservedExtension;
+    }
+    const base = encodedLen(alpn_protocol, early_data_accepted);
+    const extra_len = try extension_type.extraExtensionsLen(extras);
+    const len = base + extra_len;
+    if (out.len < len) return error.BufferTooShort;
+
+    var w: wire.Writer = .init(out);
+    w.appendAssumeCapacity(handshake.Type, .encrypted_extensions);
+    w.appendAssumeCapacity(u24, @intCast(len - 4));
+    w.appendAssumeCapacity(u16, @intCast(len - 6));
+    if (alpn_protocol) |p| {
+        w.appendAssumeCapacity(ExtensionType, .alpn);
+        w.appendAssumeCapacity(u16, @intCast(2 + 1 + p.len));
+        w.appendAssumeCapacity(u16, @intCast(1 + p.len));
+        w.appendAssumeCapacity(u8, @intCast(p.len));
+        w.appendSliceAssumeCapacity(p);
+    }
+    if (early_data_accepted) {
+        w.appendAssumeCapacity(ExtensionType, .early_data);
+        w.appendAssumeCapacity(u16, 0);
+    }
+    for (extras) |extra| {
+        w.appendAssumeCapacity(u16, extra.extension_type);
+        w.appendAssumeCapacity(u16, @intCast(extra.data.len));
+        w.appendSliceAssumeCapacity(extra.data);
     }
     return w.buffered();
 }
@@ -116,7 +213,7 @@ pub fn parse(msg: []const u8, offered_alpn: []const []const u8, opts: Options) P
     const extensions_end = r.end + extensions_len;
     try extension_type.rejectDuplicateExtensions(msg[r.end..extensions_end]);
 
-    var result: Parsed = .empty;
+    var result: Parsed = .empty();
     while (r.end < extensions_end) {
         if (extensions_end - r.end < 4) return error.InvalidExtensionLength;
         const ext_type = r.assumeRead(ExtensionType);
@@ -179,8 +276,34 @@ pub fn parse(msg: []const u8, offered_alpn: []const []const u8, opts: Options) P
             .key_share,
             => return error.UnexpectedExtension,
             // RFC 8446 §4.2 — the server MUST NOT send extensions the client
-            // did not offer; abort with unsupported_extension.
-            else => return error.UnsupportedExtension,
+            // did not offer; abort with unsupported_extension. A caller that
+            // listed the type asked to receive it verbatim instead.
+            else => {
+                const value = @intFromEnum(ext_type);
+                var allowed = false;
+                for (opts.allowed_extensions) |candidate| {
+                    if (candidate.extension_type == value) allowed = true;
+                }
+                if (!allowed) return error.UnsupportedExtension;
+                if (opts.received) |sink| {
+                    if (!sink.append(.{
+                        .extension_type = value,
+                        .data = ext,
+                    })) return error.ExtensionSinkFull;
+                }
+                if (result.extensions.len == 0 and opts.received != null)
+                    result.extensions = opts.received.?.slice();
+            },
+        }
+    }
+    if (opts.received) |sink| result.extensions = sink.slice();
+
+    // A required extension that never arrived fails the handshake, and the
+    // caller learns which one.
+    for (opts.required_extensions) |required| {
+        if (!hasExtension(msg, required)) {
+            if (opts.missing_out) |out| out.* = required;
+            return error.MissingRequiredExtension;
         }
     }
     if (r.end != extensions_end) return error.InvalidExtensionLength;
@@ -497,4 +620,77 @@ test "EncryptedExtensions: bounded single-byte mutation sweep" {
             input[offset] = seed[offset];
         }
     }
+}
+
+/// True when the encoded EncryptedExtensions message carries `extension_type`.
+fn hasExtension(msg: []const u8, wanted: u16) bool {
+    if (msg.len < 6) return false;
+    var r: wire.Reader = .init(msg);
+    r.assumeSkip(4);
+    const extensions_len = r.assumeRead(u16);
+    const end = r.end + extensions_len;
+    if (end > msg.len) return false;
+    while (r.end + 4 <= end) {
+        const current = r.assumeRead(u16);
+        const ext_len = r.assumeRead(u16);
+        if (r.end + ext_len > end) return false;
+        if (current == wanted) return true;
+        r.assumeSkip(ext_len);
+    }
+    return false;
+}
+
+// RFC 8446 §4.3.1 — a caller-supplied extension round-trips verbatim, and a
+// required one that is absent fails with its type named.
+test "extras: round-trip through encode and parse" {
+    var buf: [128]u8 = undefined;
+    const extras = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{ 0x01, 0x02, 0x03 } },
+    };
+    const msg = try encodeWithExtensions(&buf, "h2", false, extras[0..]);
+
+    var slots: [4]extension_type.ExtraExtension = undefined;
+    var sink: ExtensionSink = .init(&slots);
+    var missing: u16 = 0;
+    const parsed = try parse(msg, &.{"h2"}, .{
+        .allowed_extensions = extras[0..],
+        .received = &sink,
+        .required_extensions = &.{0x0039},
+        .missing_out = &missing,
+    });
+    try testing.expectEqualStrings("h2", parsed.alpn_protocol.?);
+    try testing.expectEqual(@as(usize, 1), parsed.extensions.len);
+    try testing.expectEqual(@as(u16, 0x0039), parsed.extensions[0].extension_type);
+    try testing.expectEqualSlices(u8, extras[0].data, parsed.extensions[0].data);
+}
+
+test "extras: a required extension that is absent names itself" {
+    var buf: [64]u8 = undefined;
+    const msg = try encode(&buf, null, false);
+    var missing: u16 = 0;
+    try testing.expectError(error.MissingRequiredExtension, parse(msg, &.{}, .{
+        .required_extensions = &.{0x0039},
+        .missing_out = &missing,
+    }));
+    try testing.expectEqual(@as(u16, 0x0039), missing);
+}
+
+test "extras: an unlisted unknown type is still unsupported" {
+    var buf: [64]u8 = undefined;
+    const extras = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x1234, .data = &.{} },
+    };
+    const msg = try encodeWithExtensions(&buf, null, false, extras[0..]);
+    try testing.expectError(error.UnsupportedExtension, parse(msg, &.{}, .{}));
+}
+
+test "extras: the encoder refuses a type it writes itself" {
+    var buf: [64]u8 = undefined;
+    const extras = [_]extension_type.ExtraExtension{
+        .{ .extension_type = @intFromEnum(ExtensionType.alpn), .data = &.{} },
+    };
+    try testing.expectError(
+        error.ReservedExtension,
+        encodeWithExtensions(&buf, null, false, extras[0..]),
+    );
 }

@@ -11,6 +11,84 @@ const memx = @import("memx.zig");
 // extensions, while keeping duplicate detection bounded without extra storage.
 const max_extensions: usize = 64;
 
+/// An extension the caller supplies verbatim. The engine frames it, rejects a
+/// duplicate or reserved type, and otherwise treats `data` as opaque bytes: a
+/// protocol built on TLS (QUIC's transport parameters, for instance) owns the
+/// meaning. RFC 8446 §4.2.
+pub const ExtraExtension = struct {
+    extension_type: u16,
+    data: []const u8,
+};
+
+/// Extensions the ClientHello and EncryptedExtensions encoders emit themselves.
+/// A caller-supplied extension may not collide with one of these, and
+/// `pre_shared_key` must stay last (RFC 8446 §4.2.11).
+const reserved_types = [_]u16{
+    0x0000, // server_name
+    0x000a, // supported_groups
+    0x000d, // signature_algorithms
+    0x0010, // alpn
+    0x0029, // pre_shared_key
+    0x002b, // supported_versions
+    0x002d, // psk_key_exchange_modes
+    0x0032, // signature_algorithms_cert
+    0x0033, // key_share
+};
+
+pub const ExtraExtensionError = error{
+    /// The caller supplied a type the engine emits itself.
+    ReservedExtension,
+    /// The caller supplied the same type twice.
+    DuplicateExtension,
+    /// extension_data longer than the u16 length field allows.
+    ExtensionTooLong,
+};
+
+pub fn validateExtraExtensions(
+    extras: []const ExtraExtension,
+) ExtraExtensionError!void {
+    for (extras, 0..) |extra, index| {
+        if (extra.data.len > std.math.maxInt(u16)) return error.ExtensionTooLong;
+        for (reserved_types) |reserved| {
+            if (extra.extension_type == reserved) return error.ReservedExtension;
+        }
+        for (extras[0..index]) |earlier| {
+            if (earlier.extension_type == extra.extension_type)
+                return error.DuplicateExtension;
+        }
+    }
+}
+
+/// Wire size of the supplied extensions: type, length, and data each time.
+pub fn extraExtensionsLen(extras: []const ExtraExtension) ExtraExtensionError!usize {
+    var total: usize = 0;
+    for (extras) |extra| {
+        if (extra.data.len > std.math.maxInt(u16)) return error.ExtensionTooLong;
+        total += 4 + extra.data.len;
+    }
+    return total;
+}
+
+test "validateExtraExtensions: reserved, duplicate, and oversized are refused" {
+    const reserved = [_]ExtraExtension{
+        .{ .extension_type = 0x0029, .data = "" },
+    };
+    try testing.expectError(error.ReservedExtension, validateExtraExtensions(&reserved));
+
+    const duplicate = [_]ExtraExtension{
+        .{ .extension_type = 0x0039, .data = "a" },
+        .{ .extension_type = 0x0039, .data = "b" },
+    };
+    try testing.expectError(error.DuplicateExtension, validateExtraExtensions(&duplicate));
+
+    const ok = [_]ExtraExtension{
+        .{ .extension_type = 0x0039, .data = "params" },
+        .{ .extension_type = 0x4469, .data = "" },
+    };
+    try validateExtraExtensions(&ok);
+    try testing.expectEqual(@as(usize, 4 + 6 + 4), try extraExtensionsLen(&ok));
+}
+
 pub const OfferedExtension = enum {
     server_name,
     record_size_limit,

@@ -153,6 +153,7 @@ pub fn alertForError(err: anyerror) ?Description {
         => .bad_certificate,
         error.MissingExtension,
         error.MissingSignatureAlgorithmsExtension,
+        error.MissingRequiredExtension,
         => .missing_extension,
         error.UnsupportedExtension => .unsupported_extension,
         error.UnsupportedTlsVersion => .protocol_version,

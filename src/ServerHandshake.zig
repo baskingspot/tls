@@ -14,6 +14,7 @@ const testing = std.testing;
 const aead = @import("aead.zig");
 const alert = @import("alert.zig");
 const traffic_secrets = @import("traffic_secrets.zig");
+const extension_type = @import("extension_type.zig");
 const wiremod = @import("wire.zig");
 const stdx = @import("stdx");
 const buffer = stdx.buffer;
@@ -389,6 +390,16 @@ pub const Config = struct {
     /// Optional caller-owned storage for retaining the verified client leaf
     /// certificate DER. The storage must outlive the handshake.
     client_cert_buffer: ?[]u8 = null,
+    /// Extensions appended to EncryptedExtensions, verbatim. tls frames them
+    /// and rejects a type it writes itself; the data is opaque. RFC 8446 §4.2.
+    extra_extensions: []const extension_type.ExtraExtension = &.{},
+    /// Extension types the client's ClientHello must carry. A missing one
+    /// fails the handshake with `error.MissingRequiredExtension` (and
+    /// `missingExtension()` names it), which the peer sees as
+    /// `missing_extension` (RFC 8446 §6.2).
+    required_extensions: []const u16 = &.{},
+    /// Caller storage for the required extensions the client sent.
+    peer_extensions: ?*encrypted_extensions.ExtensionSink = null,
     /// Optional caller-owned storage for the TLS 1.3 traffic secrets. When
     /// non-null the engine keeps them for the connection's life and
     /// `trafficSecrets()` returns them; when null they are derived, used, and
@@ -467,6 +478,12 @@ tx_owner: TxOwner,
 last_peer_alert: ?alert.Alert,
 /// Caller storage for retained traffic secrets, or null when not requested.
 traffic_secret_storage: ?*traffic_secrets.TrafficSecrets,
+/// Extensions this server sends and requires, plus where the client's land.
+extra_extensions: []const extension_type.ExtraExtension,
+required_extensions: []const u16,
+peer_extensions: ?*encrypted_extensions.ExtensionSink,
+/// The required extension the client omitted, or 0.
+missing_extension: u16,
 post_handshake_count: u8,
 /// An inbound KeyUpdate request must be answered before kTLS handoff.
 key_update_obligation: handshake.KeyUpdateObligation,
@@ -576,6 +593,10 @@ pub fn init(server_config: ServerConfig, config: Config) ServerHandshake {
         .tx_owner = .userspace,
         .last_peer_alert = null,
         .traffic_secret_storage = config.traffic_secrets,
+        .extra_extensions = config.extra_extensions,
+        .required_extensions = config.required_extensions,
+        .peer_extensions = config.peer_extensions,
+        .missing_extension = 0,
         .post_handshake_count = 0,
         .key_update_obligation = .none,
         .retry_transcript = null,
@@ -811,6 +832,12 @@ pub fn trafficSecrets(
     return self.traffic_secret_storage orelse error.NotRetained;
 }
 
+/// The required extension the client omitted, or 0. Meaningful only after
+/// `error.MissingRequiredExtension`.
+pub fn missingExtension(self: *const ServerHandshake) u16 {
+    return self.missing_extension;
+}
+
 pub fn useClientCertificateBuffer(self: *ServerHandshake, storage: []u8) void {
     assert(self.state == .wait_ch);
     assert(self.client_cert.buffer.len == 0);
@@ -1038,6 +1065,11 @@ pub const AcceptError =
         IllegalParameter,
         LibcryptoFailed,
         TooManyPskIdentities,
+        /// A caller-required extension was absent from the ClientHello;
+        /// `missingExtension()` names it. RFC 8446 §6.2 `missing_extension`.
+        MissingRequiredExtension,
+        /// `Config.peer_extensions` ran out of slots.
+        ExtensionSinkFull,
     };
 
 pub const FlightError =
@@ -1240,6 +1272,20 @@ fn processClientHelloMessage(
     }
     try self.validateHybridGroups();
     const ch = try client_hello.parse(ch_msg);
+
+    // Caller-required extensions must be present. The peer learns
+    // `missing_extension` (RFC 8446 §6.2); the caller learns which type through
+    // `missingExtension()`.
+    for (self.required_extensions) |required| {
+        const data = client_hello.extension(ch_msg, required) orelse {
+            self.missing_extension = required;
+            return error.MissingRequiredExtension;
+        };
+        if (self.peer_extensions) |sink| {
+            if (!sink.append(.{ .extension_type = required, .data = data }))
+                return error.ExtensionSinkFull;
+        }
+    }
     if (self.retry_ch1_digest) |ch1_digest| {
         const ch2_digest = retryClientHelloDigest(&ch);
         if (!mem.eql(u8, &ch1_digest, &ch2_digest)) return error.IllegalParameter;
@@ -1893,11 +1939,16 @@ fn encodeEncryptedExtensionsFinished(
     plaintext: []u8,
 ) FlightError![]const u8 {
     var pos: usize = 0;
-    const ee = try encrypted_extensions.encode(
+    const ee = encrypted_extensions.encodeWithExtensions(
         plaintext[pos..],
         self.selected_alpn,
         self.early_rx != null,
-    );
+        self.extra_extensions,
+    ) catch |err| return switch (err) {
+        error.BufferTooShort => error.BufferTooShort,
+        error.EmptyAlpnProtocol, error.AlpnProtocolTooLong => error.BufferTooShort,
+        else => error.BufferTooShort,
+    };
     self.suite_state.update(ee);
     pos += ee.len;
 
@@ -2041,11 +2092,16 @@ fn encodeAuthenticatedFlight(
     assert(self.state == .wait_client_finished);
     var pos: usize = 0;
 
-    const ee = try encrypted_extensions.encode(
+    const ee = encrypted_extensions.encodeWithExtensions(
         plaintext[pos..],
         self.selected_alpn,
         self.early_rx != null,
-    );
+        self.extra_extensions,
+    ) catch |err| return switch (err) {
+        error.BufferTooShort => error.BufferTooShort,
+        error.EmptyAlpnProtocol, error.AlpnProtocolTooLong => error.BufferTooShort,
+        else => error.BufferTooShort,
+    };
     self.suite_state.update(ee);
     pos += ee.len;
 
@@ -5053,6 +5109,151 @@ const ConnectedTestPair = struct {
     server: ServerHandshake,
 };
 
+// The positive path: both sides send an opaque extension, both require it, and
+// both read what the other sent. This is the shape QUIC transport parameters
+// will use; tls never looks inside the bytes.
+test "extras: both directions carry an opaque extension end to end" {
+    const client_keypair: x25519.KeyPair = .generate();
+    const server_keypair: x25519.KeyPair = .generate();
+
+    const client_bytes = [_]u8{ 0xc1, 0xc2, 0xc3 };
+    const server_bytes = [_]u8{ 0x51, 0x52 };
+
+    var client_slots: [4]extension_type.ExtraExtension = undefined;
+    var server_slots: [4]extension_type.ExtraExtension = undefined;
+    var client_sink: encrypted_extensions.ExtensionSink = .init(&client_slots);
+    var server_sink: encrypted_extensions.ExtensionSink = .init(&server_slots);
+
+    const client_extras = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &client_bytes },
+    };
+    const server_extras = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &server_bytes },
+    };
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(client_keypair),
+        .host_name = "ztls.server.test",
+        .now_sec = 0,
+        .random = .zero,
+        .extra_extensions = &client_extras,
+        .required_extensions = &.{0x0039},
+        .peer_extensions = &client_sink,
+    });
+    defer client.deinit();
+    client.policy.insecure_no_chain_anchor = true;
+    var client_out: [1024]u8 = undefined;
+    const ch_record = try client.start(&client_out);
+    client.completeWrite();
+
+    var server_config = try testConfig(server_keypair);
+    server_config.required_extensions = &.{0x0039};
+    server_config.extra_extensions = &server_extras;
+    server_config.peer_extensions = &server_sink;
+
+    var server: ServerHandshake = .init(.{}, server_config);
+    defer server.deinit();
+    var server_out: [4096]u8 = undefined;
+    const sh_record = try server.acceptClientHello(ch_record, &server_out);
+
+    // The server saw the client's bytes, verbatim.
+    try testing.expectEqual(@as(usize, 1), server_sink.slice().len);
+    try testing.expectEqualSlices(u8, &client_bytes, server_sink.slice()[0].data);
+
+    try client.processServerHello(sh_record[frame.header_len..]);
+
+    var signer = try signature.PrivateKey.fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer signer.deinit();
+    var plaintext: [4096]u8 = undefined;
+    const flight_record = try server.sendAuthenticatedFlight(
+        &.{serverEcdsaCertDer()},
+        signer.signer(),
+        &plaintext,
+        &server_out,
+    );
+    const client_event = try client.handleRecord(server_out[0..flight_record.len], &client_out);
+    const client_finished_record = switch (client_event) {
+        .write => |w| w,
+        else => return error.UnexpectedEvent,
+    };
+    client.completeWrite();
+    try server.processClientFinished(client_out[0..client_finished_record.len]);
+
+    // And the client saw the server's.
+    try testing.expectEqual(@as(usize, 1), client_sink.slice().len);
+    try testing.expectEqualSlices(u8, &server_bytes, client_sink.slice()[0].data);
+    try testing.expect(client.isConnected());
+    try testing.expect(server.isConnected());
+}
+
+// A server that requires an extension the ClientHello omits fails with the
+// type named, so the caller can say which extension was missing rather than
+// logging a generic protocol error. The peer would see `missing_extension`.
+test "required extension: a server that requires one refuses a ClientHello without it" {
+    const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x91)));
+    const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x92)));
+    var ch_buf: [512]u8 = undefined;
+    const ch = try client_hello.encode(&ch_buf, .zero, client_keypair.public_key, null, &.{});
+    var ch_record: [1024]u8 = undefined;
+    const header: frame.Header = .init(.handshake, @intCast(ch.len));
+    header.write(ch_record[0..frame.header_len]);
+    @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
+
+    var config = try testConfig(server_keypair);
+    config.required_extensions = &.{0x0039};
+    var server: ServerHandshake = .init(.{}, config);
+    defer server.deinit();
+
+    var out: [256]u8 = undefined;
+    try testing.expectError(
+        error.MissingRequiredExtension,
+        server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &out),
+    );
+    try testing.expectEqual(@as(u16, 0x0039), server.missingExtension());
+}
+
+// The client side of the same rule: the server's EncryptedExtensions must carry
+// what this client required.
+test "required extension: a client that requires one rejects a server that omits it" {
+    const client_keypair: x25519.KeyPair = .generate();
+    const server_keypair: x25519.KeyPair = .generate();
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(client_keypair),
+        .host_name = "ztls.server.test",
+        .now_sec = 0,
+        .random = .zero,
+        .required_extensions = &.{0x0039},
+    });
+    defer client.deinit();
+    client.policy.insecure_no_chain_anchor = true;
+    var client_out: [1024]u8 = undefined;
+    const ch_record = try client.start(&client_out);
+    client.completeWrite();
+
+    var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
+    defer server.deinit();
+    var server_out: [4096]u8 = undefined;
+    const sh_record = try server.acceptClientHello(ch_record, &server_out);
+    try client.processServerHello(sh_record[frame.header_len..]);
+
+    var signer = try signature.PrivateKey.fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer signer.deinit();
+    var plaintext: [4096]u8 = undefined;
+    const flight_record = try server.sendAuthenticatedFlight(
+        &.{serverEcdsaCertDer()},
+        signer.signer(),
+        &plaintext,
+        &server_out,
+    );
+
+    try testing.expectError(
+        error.MissingRequiredExtension,
+        client.handleRecord(server_out[0..flight_record.len], &client_out),
+    );
+    try testing.expectEqual(@as(u16, 0x0039), client.missingExtension());
+}
+
 fn connectedTestPair() !ConnectedTestPair {
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
@@ -6909,9 +7110,9 @@ fn expectSameEstablishedEvent(expected: Event, actual: Event) !void {
 test "per-connection structs stay within their measured sizes" {
     const Ceiling = struct { server: usize, established: usize, suite: usize };
     const ceiling: Ceiling = switch (backend.active) {
-        .openssl, .@"openssl-fips" => .{ .server = 19384, .established = 712, .suite = 520 },
-        .@"aws-lc", .@"aws-lc-fips" => .{ .server = 21088, .established = 1848, .suite = 520 },
-        .boringssl => .{ .server = 21048, .established = 1824, .suite = 512 },
+        .openssl, .@"openssl-fips" => .{ .server = 19432, .established = 712, .suite = 520 },
+        .@"aws-lc", .@"aws-lc-fips" => .{ .server = 21136, .established = 1848, .suite = 520 },
+        .boringssl => .{ .server = 21096, .established = 1824, .suite = 512 },
     };
     try testing.expect(@sizeOf(ServerHandshake) <= ceiling.server);
     try testing.expect(@sizeOf(EstablishedSession) <= ceiling.established);

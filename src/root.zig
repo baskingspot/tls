@@ -19,6 +19,7 @@ pub const errors = @import("errors.zig");
 /// The compact post-handshake server engine, constructed only by
 /// `ServerHandshake.extractEstablished` (#115).
 pub const EstablishedSession = @import("EstablishedSession.zig");
+pub const extension_type = @import("extension_type.zig");
 pub const ExtensionType = @import("extension_type.zig").ExtensionType;
 pub const frame = @import("frame.zig");
 pub const hkdf = @import("hkdf.zig");
