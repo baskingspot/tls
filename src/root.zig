@@ -26,6 +26,7 @@ pub const hkdf = @import("hkdf.zig");
 pub const io = @import("io.zig");
 pub const kex = @import("kex.zig");
 pub const ktls = @import("ktls.zig");
+pub const level = @import("level.zig");
 pub const Array = stdx.mem.Array;
 pub const mlkem = @import("mlkem.zig");
 pub const Outbox = @import("Outbox.zig");
