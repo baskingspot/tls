@@ -126,6 +126,44 @@ pub const SessionTicket = struct {
     }
 };
 
+// The carrier decides who frames the bytes, not what the bytes are. Both
+// clients run the same state machine from the same deterministic key material,
+// so the message-mode ClientHello must be exactly the record payload.
+test "carrier: message mode emits the record payload, not a record" {
+    const keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x21)));
+    const p256_keypair: p256.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
+    var shared_keypairs: KeyPairs = try .init(keypair);
+    shared_keypairs.p256 = p256_keypair;
+
+    var record_mode: ClientHandshake = .init(.{
+        .keypairs = shared_keypairs,
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer record_mode.deinit();
+    var message_mode: ClientHandshake = .init(.{
+        .keypairs = shared_keypairs,
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .carrier = .message,
+    });
+    defer message_mode.deinit();
+
+    var record_buf: [2048]u8 = undefined;
+    const record = try record_mode.start(&record_buf);
+    var message_buf: [2048]u8 = undefined;
+    const message = try message_mode.start(&message_buf);
+
+    try testing.expectEqual(
+        frame.ContentType.handshake,
+        @as(frame.ContentType, @enumFromInt(record[0])),
+    );
+    try testing.expectEqualSlices(u8, message, record[frame.header_len..]);
+    try testing.expectEqual(@as(usize, message.len), record.len - frame.header_len);
+}
+
 test "traffic secrets: retained only when requested" {
     var store: traffic_secrets.TrafficSecrets = .init();
     defer store.secureZero();
@@ -244,6 +282,12 @@ pub const HybridPolicy = struct {
     }
 };
 
+/// How the engine hands protocol bytes to its caller. `record` writes TLS
+/// records; `message` emits bare handshake messages and the caller owns the
+/// record layer (QUIC CRYPTO frames). The state machine is the same either
+/// way; only the framing differs.
+pub const Carrier = enum { record, message };
+
 // ast-grep-ignore: public-struct-field-default -- options bag: call sites override one knob
 pub const Config = struct {
     pub const ValidationError = HybridPolicyError || error{MissingP384KeyPair};
@@ -279,6 +323,9 @@ pub const Config = struct {
     /// Optional caller-owned storage for handshake-message reassembly. When
     /// non-null, the engine reassembles flight messages that span records.
     reassembly: ?[]u8 = null,
+    /// Who frames the protocol bytes. The record path is the default and is
+    /// byte-identical to earlier releases.
+    carrier: Carrier = .record,
     /// Extensions appended to the ClientHello, verbatim. tls frames them and
     /// rejects a type it emits itself; the data is opaque. RFC 8446 §4.2.
     extra_extensions: []const extension_type.ExtraExtension = &.{},
@@ -762,6 +809,8 @@ server_finished_hash_len: u8,
 retry_selected_group: ?NamedGroup,
 /// Caller storage for retained traffic secrets, or null when not requested.
 traffic_secret_storage: ?*traffic_secrets.TrafficSecrets,
+/// Who frames the protocol bytes for this connection.
+carrier: Carrier,
 /// Extensions this client offers and requires, plus where the server's land.
 extra_extensions: []const extension_type.ExtraExtension,
 required_extensions: []const u16,
@@ -834,6 +883,7 @@ pub fn init(config: Config) ClientHandshake {
         .server_finished_hash_len = 0,
         .retry_selected_group = null,
         .traffic_secret_storage = config.traffic_secrets,
+        .carrier = config.carrier,
         .extra_extensions = config.extra_extensions,
         .required_extensions = config.required_extensions,
         .peer_extensions = config.peer_extensions,
@@ -1024,8 +1074,9 @@ pub fn start(self: *ClientHandshake, out: []u8) StartError![]const u8 {
         hybrid_share = .{ .group = group, .data = public_key };
     }
 
+    const target = if (self.carrier == .message) out else out[frame.header_len..];
     const ch = try client_hello.encodeWithHybridGroupsAndExtensions(
-        out[frame.header_len..],
+        target,
         self.random,
         self.keypairs.x25519.public_key,
         self.keypairs.p256.public_key,
@@ -1036,6 +1087,12 @@ pub fn start(self: *ClientHandshake, out: []u8) StartError![]const u8 {
         hybrid_share,
         self.extra_extensions,
     );
+    if (self.carrier == .message) {
+        // The caller frames the ClientHello. No record header and no pending
+        // record write; the handshake state is otherwise identical.
+        self.injectClientHello(ch);
+        return ch;
+    }
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(out[0..frame.header_len]);
     self.injectClientHello(ch);
@@ -1081,8 +1138,9 @@ pub fn startWithPsk(
         hybrid_share = .{ .group = group, .data = public_key };
     }
 
+    const psk_target = if (self.carrier == .message) out else out[frame.header_len..];
     const r = try client_hello.encodeWithPskAndHybridGroups(
-        out[frame.header_len..],
+        psk_target,
         self.random,
         self.keypairs.x25519.public_key,
         self.keypairs.p256.public_key,
@@ -1130,6 +1188,14 @@ pub fn startWithPsk(
         },
     }
 
+    if (self.carrier == .message) {
+        self.offered_psk = psk;
+        self.offered_psk_identity = identity;
+        self.offered_psk_obfuscated_ticket_age = obfuscated_ticket_age;
+        self.offered_psk_cipher_suite = ticket.cipher_suite;
+        self.offered_psk_alpn = ticket.alpn_protocol.constSlice();
+        return ch;
+    }
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(out[0..frame.header_len]);
     // Retain the offered PSK so processServerHello can use it as the early
@@ -1333,6 +1399,9 @@ pub fn sendAlert(
     description: alert.Description,
     out: []u8,
 ) AlertError![]const u8 {
+    // Message mode has no alert records: QUIC turns a TLS alert into
+    // CONNECTION_CLOSE, so the engine emits nothing and the caller carries it.
+    if (self.carrier == .message) return &.{};
     if (self.pending_write.isPending()) return error.PendingWrite;
     var msg: [2]u8 = undefined;
     const level: alert.Level = if (description == .close_notify) .warning else .fatal;
@@ -2167,6 +2236,9 @@ pub const ClientFinishedError = SendError || signature.SignError || aead.Error |
 /// A successful call installs application keys without transport I/O.
 /// The caller can then use receiveRecord before Finished reaches the peer.
 pub fn clientFinished(self: *ClientHandshake, out: []u8) ClientFinishedError![]const u8 {
+    // In message mode the caller frames the flight, which is exactly what
+    // `clientFinishedMessage` returns. One state machine, two doors.
+    if (self.carrier == .message) return self.clientFinishedMessage(out);
     assert(self.state == .send_finished);
     if (self.server_flight_progress != .finished_verified) return error.UnexpectedMessage;
     if (self.server_finished_hash_len == 0) return error.UnexpectedMessage;

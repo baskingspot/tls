@@ -379,6 +379,13 @@ pub const ServerConfig = struct {
 
 /// Inputs whose values and borrowed storage belong to exactly one connection.
 // ast-grep-ignore: public-struct-field-default -- optional caller-owned buffers
+/// How the engine hands protocol bytes to its caller. `record` writes TLS
+/// records; `message` emits bare handshake messages and the caller owns the
+/// record layer (QUIC CRYPTO frames). The state machine is the same either
+/// way: only the framing differs.
+pub const Carrier = enum { record, message };
+
+// ast-grep-ignore: public-struct-field-default -- options bag: call sites override one knob
 pub const Config = struct {
     /// Ephemeral keypairs used for ServerHello key_share entries. X25519 and
     /// P-256 are present by default; P-384 is opt-in.
@@ -390,6 +397,9 @@ pub const Config = struct {
     /// Optional caller-owned storage for retaining the verified client leaf
     /// certificate DER. The storage must outlive the handshake.
     client_cert_buffer: ?[]u8 = null,
+    /// Who frames the protocol bytes. The record path is the default and is
+    /// byte-identical to earlier releases.
+    carrier: Carrier = .record,
     /// Extensions appended to EncryptedExtensions, verbatim. tls frames them
     /// and rejects a type it writes itself; the data is opaque. RFC 8446 §4.2.
     extra_extensions: []const extension_type.ExtraExtension = &.{},
@@ -478,6 +488,8 @@ tx_owner: TxOwner,
 last_peer_alert: ?alert.Alert,
 /// Caller storage for retained traffic secrets, or null when not requested.
 traffic_secret_storage: ?*traffic_secrets.TrafficSecrets,
+/// Who frames the protocol bytes for this connection.
+carrier: Carrier,
 /// Extensions this server sends and requires, plus where the client's land.
 extra_extensions: []const extension_type.ExtraExtension,
 required_extensions: []const u16,
@@ -593,6 +605,7 @@ pub fn init(server_config: ServerConfig, config: Config) ServerHandshake {
         .tx_owner = .userspace,
         .last_peer_alert = null,
         .traffic_secret_storage = config.traffic_secrets,
+        .carrier = config.carrier,
         .extra_extensions = config.extra_extensions,
         .required_extensions = config.required_extensions,
         .peer_extensions = config.peer_extensions,
@@ -1137,6 +1150,20 @@ pub fn acceptClientHello(
     return self.processClientHelloMessage(record[frame.header_len..][0..hdr.length()], out);
 }
 
+/// Accept a plaintext ClientHello the caller already de-recorded, for a caller
+/// that owns its own record layer (QUIC CRYPTO frames). Same state machine as
+/// `acceptClientHello`, entered after the record header.
+pub fn acceptClientHelloMessage(
+    self: *ServerHandshake,
+    msg: []const u8,
+    out: []u8,
+) AcceptError![]const u8 {
+    assert(self.carrier == .message);
+    assert(self.state == .wait_ch);
+    assert(self.ch_buf.len == 0);
+    return self.processClientHelloMessage(msg, out);
+}
+
 /// Clear every per-ClientHello negotiation field so a ClientHello that
 /// fails after PSK selection leaves nothing for the next attempt: no stale
 /// credential, no live 0-RTT key, no stale ALPN/SNI/ticket policy. The
@@ -1539,9 +1566,10 @@ fn processClientHelloMessage(
         } },
     };
 
+    const sh_target = if (self.carrier == .message) out else out[frame.header_len..];
     const sh = if (self.selected_psk != null)
         try server_hello.encodeWithKeyShareAndPsk(
-            out[frame.header_len..],
+            sh_target,
             self.random.data,
             ch.legacy_session_id,
             suite,
@@ -1550,16 +1578,22 @@ fn processClientHelloMessage(
         )
     else
         try server_hello.encodeWithKeyShare(
-            out[frame.header_len..],
+            sh_target,
             self.random.data,
             ch.legacy_session_id,
             suite,
             &server_key_share,
         );
-    const header: frame.Header = .init(.handshake, @intCast(sh.len));
-    header.write(out[0..frame.header_len]);
-
-    var out_len = frame.header_len + sh.len;
+    var out_len: usize = 0;
+    if (self.carrier == .message) {
+        // The caller frames the ServerHello. No compatibility CCS either: that
+        // record exists only to placate middleboxes on a TLS byte stream.
+        out_len = sh.len;
+    } else {
+        const header: frame.Header = .init(.handshake, @intCast(sh.len));
+        header.write(out[0..frame.header_len]);
+        out_len = frame.header_len + sh.len;
+    }
     // RFC 8446 Appendix D.4 — send at most one compatibility CCS. The HRR
     // path already sent it after ClientHello1.
     if (ch.legacy_session_id.len != 0 and self.retry_selected_group == null) {
@@ -2174,6 +2208,15 @@ fn encryptServerFlight(
     errdefer {
         next_tx.deinit();
         self.clearServerApplicationWriteSecret();
+    }
+    if (self.carrier == .message) {
+        // The caller frames the flight. Promote the write keys the same way the
+        // record path does, so both carriers leave the same state behind.
+        self.tx.deinit();
+        self.tx = next_tx;
+        if (out.len < plaintext.len) return error.BufferTooShort;
+        @memcpy(out[0..plaintext.len], plaintext);
+        return out[0..plaintext.len];
     }
     const record = try self.tx.encrypt(.handshake, plaintext, out);
     self.tx.deinit();
@@ -2817,6 +2860,9 @@ pub fn sendAlert(
     description: alert.Description,
     out: []u8,
 ) AlertError![]const u8 {
+    // Message mode has no alert records: QUIC turns a TLS alert into
+    // CONNECTION_CLOSE, so the engine emits nothing and the caller carries it.
+    if (self.carrier == .message) return &.{};
     if (self.pending_write.isPending()) return error.PendingWrite;
     const record: []const u8 = switch (self.state) {
         // RFC 8446 §6 — alerts before handshake protection are plaintext.
@@ -5044,6 +5090,121 @@ fn awaitingClientFinishedServer(
     var flight_out: [512]u8 = undefined;
     _ = try server.sendAnonymousFlightForTest(&flight_out);
     return server;
+}
+
+// The carrier decides who frames the bytes, not what they are. Two identical
+// deterministic servers send the same flight; the message-mode bytes must be
+// exactly what the record path encrypts.
+// Message mode has no alert records; the caller maps the alert to its own
+// transport error (QUIC CONNECTION_CLOSE).
+test "carrier: message mode emits no alert record" {
+    const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x41)));
+    var config = try testConfig(server_keypair);
+    config.carrier = .message;
+    var server: ServerHandshake = .init(.{}, config);
+    defer server.deinit();
+    var out: [64]u8 = undefined;
+    const bytes = try server.sendAlert(.unexpected_message, &out);
+    try testing.expectEqual(@as(usize, 0), bytes.len);
+}
+
+// A full handshake with no record layer on either side: bare messages in, bare
+// messages out, the same state machine the record path runs.
+test "carrier: a message-mode handshake completes without any record" {
+    const client_keypair: x25519.KeyPair = .generate();
+    const server_keypair: x25519.KeyPair = .generate();
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(client_keypair),
+        .host_name = "ztls.server.test",
+        .now_sec = 0,
+        .random = .zero,
+        .carrier = .message,
+    });
+    defer client.deinit();
+    client.policy.insecure_no_chain_anchor = true;
+
+    var server_config = try testConfig(server_keypair);
+    server_config.carrier = .message;
+    var server: ServerHandshake = .init(.{}, server_config);
+    defer server.deinit();
+
+    var buf: [4096]u8 = undefined;
+    const ch = try client.start(&buf);
+
+    var out: [4096]u8 = undefined;
+    const sh = try server.acceptClientHelloMessage(ch, &out);
+    try client.processServerHello(sh);
+
+    var signer = try signature.PrivateKey.fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer signer.deinit();
+    var plaintext: [4096]u8 = undefined;
+    const flight = try server.sendAuthenticatedFlight(
+        &.{serverEcdsaCertDer()},
+        signer.signer(),
+        &plaintext,
+        &out,
+    );
+    // Message mode returns handshake messages: EncryptedExtensions first.
+    try testing.expectEqual(
+        @as(u8, @intFromEnum(HandshakeType.encrypted_extensions)),
+        flight[0],
+    );
+    try client.processFlight(flight, client.policy);
+
+    var finished_buf: [1024]u8 = undefined;
+    const client_flight = try client.clientFinished(&finished_buf);
+    // Message mode returns the bare flight: a handshake message, not a record.
+    try testing.expectEqual(
+        @as(u8, @intFromEnum(HandshakeType.finished)),
+        client_flight[0],
+    );
+    try server.processClientFinishedMessage(client_flight);
+
+    try testing.expect(client.isConnected());
+    try testing.expect(server.isConnected());
+    try testing.expectEqual(client.cipherSuite(), server.cipherSuite());
+}
+
+test "carrier: the server flight in message mode is the record payload" {
+    const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x31)));
+    const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x32)));
+    var ch_buf: [512]u8 = undefined;
+    const ch = try client_hello.encode(&ch_buf, .zero, client_keypair.public_key, null, &.{});
+    var ch_record: [1024]u8 = undefined;
+    const header: frame.Header = .init(.handshake, @intCast(ch.len));
+    header.write(ch_record[0..frame.header_len]);
+    @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
+
+    var record_config = try testConfig(server_keypair);
+    record_config.carrier = .record;
+    var by_record: ServerHandshake = .init(.{}, record_config);
+    defer by_record.deinit();
+
+    var message_config = try testConfig(server_keypair);
+    message_config.carrier = .message;
+    var by_message: ServerHandshake = .init(.{}, message_config);
+    defer by_message.deinit();
+
+    var sh_out: [256]u8 = undefined;
+    _ = try by_record.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
+    _ = try by_message.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
+
+    // Mirror of the server flight encryptor, captured before keys are promoted.
+    var peer = try by_record.tx.clone();
+    defer peer.deinit();
+
+    var record_out: [2048]u8 = undefined;
+    const record = try by_record.sendAnonymousFlightForTest(&record_out);
+    var message_out: [2048]u8 = undefined;
+    const message = try by_message.sendAnonymousFlightForTest(&message_out);
+
+    var dec_buf: [2048]u8 = undefined;
+    @memcpy(dec_buf[0..record.len], record);
+    const dec = try peer.decrypt(dec_buf[0..record.len]);
+    try testing.expectEqual(.handshake, dec.content_type);
+    try testing.expectEqualSlices(u8, message, dec.content);
+    try testing.expectEqual(@as(usize, message.len), dec.content.len);
 }
 
 test "processClientFinishedMessage: the bare entry reaches the same state" {
