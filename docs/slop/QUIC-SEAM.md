@@ -1,148 +1,195 @@
 # QUIC handshake seam
 
 Plan for letting `baskingspot/quic` drive this TLS 1.3 handshake. Written for the
-decision, not the implementation. Cites are against `567257a`.
+decision, not the implementation. Cites are against `cf98e22`.
 
-The shape: the handshake emits and accepts bare handshake messages, and the caller
-wraps them - `RecordLayer` for TLS, CRYPTO frames for QUIC. The engine keeps one
-runtime `carrier` field.
+## 1. The real inventory
 
-A comptime carrier lost because the choice is per connection, not per type: it
-would instantiate both handshake state machines twice, and generate two copies of
-the largest types in the repository, to save a branch at nine sites.
+The first version of this note counted nine sites. That was wrong. Recounted from
+a clean tree, excluding test helpers and crypto primitives, the handshake touches
+the record layer at **32 production sites in four files**.
 
-The read side stays engine-owned because a TLS record does not carry its
-encryption level and a QUIC packet header does. The engine swaps `rx` as the
-handshake advances, so a caller holding TLS ciphertext cannot choose a key; QUIC
-callers can, and only they invert. That asymmetry is the reason full inversion
-does not work here.
+Client, `src/ClientHandshake.zig` (10):
 
-## 1. The record sites
+| Line | What it is |
+| --- | --- |
+| 1039 | `start` frames the ClientHello as a record |
+| 1133 | `startWithPsk` frames the ClientHello as a record |
+| 1342 | `sendAlert` frames a plaintext alert before keys exist |
+| 1343 | `sendAlert` encrypts an alert |
+| 1371 | `sendEarlyData` encrypts 0-RTT data |
+| 1471 | `processHandshakeRecord` decrypts the server flight |
+| 1764 | `processHelloRetryRequest` frames ClientHello2 |
+| 2193 | `clientFinished` encrypts EndOfEarlyData |
+| 2222 | `clientFinished` encrypts the Finished |
+| 2390 | `receiveRecord` decrypts |
 
-Nine in production code, counted outside `test` blocks. Two are the kTLS path, so
-eight touch the handshake itself.
+Server, `src/ServerHandshake.zig` (15):
 
-| Site | Today | Becomes |
-| --- | --- | --- |
-| `ClientHandshake.zig:1225` | `sendAlert` encrypts | alert message + epoch |
-| `ClientHandshake.zig:1253` | `sendEarlyData` | app data + `.early` epoch |
-| `ClientHandshake.zig:2060` | `EndOfEarlyData` under early keys | suppressed for QUIC (see §5) |
-| `ClientHandshake.zig:2157` | client `Finished` under handshake keys | message + `.handshake` |
-| `ClientHandshake.zig:2671` | decrypt inbound in `processHandshakeRecord` | unchanged for TLS; QUIC passes plaintext |
-| `ClientHandshake.zig:2715` | kTLS inline encrypt | unchanged |
-| `ServerHandshake.zig:2086` | server flight encrypt | message sequence + `.handshake` |
-| `ServerHandshake.zig:4785` | kTLS inline encrypt | unchanged |
-| `ServerHandshake.zig:4840` | client `Finished` (mTLS) | message + `.handshake` |
+| Line | What it is |
+| --- | --- |
+| 1559 | `processClientHelloMessage` frames the ServerHello |
+| 1593 | `appendCompatibilityChangeCipherSpec` frames a CCS record |
+| 1614 | `encodeHelloRetryRequest` frames the HRR |
+| 2031 | `sendPreparedCertificateChainFlight` encrypts |
+| 2074 | `sendPreparedServerFlight` encrypts |
+| 2178 | `encryptServerFlight` encrypts |
+| 2194 | `encryptPreparedServerFlight` encrypts |
+| 2229 | `processClientFinished` decrypts |
+| 2602 | `handleWaitClientFinished` decrypts early data |
+| 2654 | `handleWaitClientFinished` decrypts |
+| 2671 | `handleWaitClientFinished` decrypts |
+| 2827 | `sendAlert` frames a plaintext alert |
+| 2885 | `sendNewSessionTicket` encrypts |
+| 2935 | `receiveApplicationData` decrypts |
+| 3480 | `deferredServerHello` frames a ServerHello |
 
-Each site already knows only the bytes and the epoch. None needs record framing,
-a sequence number, or a content type. `sendAlert` (`ServerHandshake.zig:2698`)
-also has a plaintext branch, which becomes "no epoch yet".
+Shared, `src/handshake.zig` (6) and `src/alert.zig` (1):
 
-## 2. Prerequisites, in order
+| Line | What it is |
+| --- | --- |
+| handshake.zig:140 | `decryptProtected`, the single decrypt entry for established paths |
+| handshake.zig:157 | `sendApplicationData` encrypts |
+| handshake.zig:173 | `sendPreparedApplicationData` encrypts |
+| handshake.zig:192 | `sendKeyUpdate` encrypts |
+| handshake.zig:339 | `serverReceiveRecord` decrypts |
+| handshake.zig:375 | `sendEstablishedAlert` encrypts |
+| alert.zig:81 | `plaintextRecord` frames pre-key alerts |
 
-**Secret capture at derivation.** Handshake traffic secrets are derived and wiped
-inside `installHandshakeArm` (`ServerHandshake.zig:1805`); application secrets
-live on the private `suite_state.HashArm`. Capture all of them where they are
-derived and hold them on the engine until teardown. Additive, and it is what QUIC
-packet protection needs first.
+Not counted, and not to be touched: `RecordLayer.encrypt`/`decrypt`,
+`aead.zig`, `RecordBuffer` header parsing. Those are the primitives the adapter
+uses; they already exist and work.
 
-**A bare-message entry for the server `Finished`.** `processClientFinished`
-(`ServerHandshake.zig:2133`) takes a record and decrypts inside, so the server
-cannot complete a handshake from plaintext. The client already has this entry:
-`processFlight` (`ClientHandshake.zig:1781`).
+The old table also counted four file-scope test helpers as production sites:
+`expectEncryptedAlert`, the two `encryptAllZeroInnerForTest`, and
+`connectedTestServerConfigure`. They are tests, and they move with the tests.
 
-## 3. Public surface
+## 2. Why the carrier flag was the wrong shape
 
-Additive:
+The cancelled design added `Config.carrier = .record | .message` and branched at
+the call sites. Three things are wrong with it, in increasing order of severity.
+
+It cannot express encryption levels. A QUIC handshake has four (plaintext, early,
+handshake, application), and RFC 9001 §4.1.3 requires a receiver to **reject**
+CRYPTO data delivered at the wrong level. A boolean says nothing about level, so
+every one of the 32 sites would need a second branch, and the caller would still
+have to re-derive the level from the message type.
+
+It leaves the handshake owning the RecordLayer. The engine would still build,
+retain, and promote record layers; "message mode" would merely decline to use
+them. The concept survives; only its output changes. That is the old architecture
+wearing a new name, which is what a flag always is.
+
+`clientFinished` already emits two epochs into one buffer. EndOfEarlyData under
+early keys and Finished under handshake keys are coalesced by the record path
+today (ClientHandshake.zig:2193 and :2222). Any design that returns "bytes" from
+the handshake without a level cannot represent that, and a message-mode client
+with 0-RTT silently loses a message.
+
+## 3. The shape
+
+The handshake stops knowing what a record is. It consumes handshake messages
+tagged with a level and produces handshake messages tagged with a level.
 
 ```zig
-pub const TrafficSecrets = struct {
-    client_handshake: Secret,   // zeroed until derived
-    server_handshake: Secret,
-    client_application: Secret,
-    server_application: Secret,
-    client_early: ?Secret,      // 0-RTT only
-    len: u8,                    // 32 for SHA-256 suites, 48 for SHA-384
+pub const Level = enum { plaintext, early, handshake, application };
+
+/// Feed bytes the caller obtained at `level`. The engine checks the level
+/// against the message it parses and fails on a mismatch (RFC 9001 §4.1.3).
+pub fn provide(self: *Handshake, level: Level, bytes: []const u8) Error!void;
+
+/// Exactly one outcome per call, in order.
+pub const Output = union(enum) {
+    /// A handshake message the caller must protect at `level` and send.
+    message: struct { level: Level, bytes: []const u8 },
+    /// The level the caller must use for reads from now on.
+    read_level: Level,
+    /// The level the caller must use for writes from now on.
+    write_level: Level,
+    /// A read key became available for `level`. The caller fetches the secret
+    /// and derives its own keys; tls never derives record keys in this path.
+    key_available: Level,
+    /// The handshake is complete for this role.
+    done,
 };
-pub const Secret = struct { data: [48]u8, pub fn secureZero(*Secret) void };
 
-pub fn trafficSecrets(self: *const ClientHandshake) TrafficSecrets;
-pub fn trafficSecrets(self: *const ServerHandshake) TrafficSecrets;
-
-pub fn expandLabel(secret: *const Secret, label: []const u8, out: []u8) void;
-
-pub const ExtraExtension = struct { extension_type: u16, data: []const u8 };
-pub fn addExtraExtension(self: *ClientHandshake, ext: ExtraExtension) void;
-pub fn requireExtraExtension(self: *ClientHandshake, extension_type: u16) void;
+pub fn next(self: *Handshake) ?Output;
 ```
 
-The three QUIC labels (`quic key`, `quic iv`, `quic hp`) stay in
-`baskingspot/quic`. `tls` hands out the secret and the label expansion and learns
-nothing about QUIC.
+What each piece means:
 
-Changed: `client_hello.encodeWithHybridGroups` (`client_hello.zig:1164`) and the
-EncryptedExtensions encoder/parser (`encrypted_extensions.zig:59`, `:180`) need an
-extension slot. `client_hello` is exported from `root.zig`; the EE module is not.
-Grow them with an options argument rather than a new parallel function, and note
-it in the changelog - there is no API contract yet.
+- `provide` is the only input. It replaces `handleRecord`, `receiveRecord`,
+  `processClientFinished`, `processFlight`, and `acceptClientHello` for a caller
+  that owns protection. The record path becomes `provide` fed by the adapter.
+- `message` carries the level explicitly, so EndOfEarlyData and Finished are two
+  outputs with two levels rather than one coalesced record.
+- `read_level` and `write_level` fire at the transitions the record path computes
+  today: after ServerHello, after the server flight, after the client Finished.
+  The adapter installs its cipher state on those events instead of the handshake
+  promoting `rx`/`tx` internally.
+- `key_available` is the only new ordering constraint: the caller may not protect
+  a message at a level before that event, and a caller that ignores it fails
+  loudly rather than shipping plaintext.
+- Alerts become a terminal outcome carrying the alert description, not bytes. A
+  QUIC caller maps it to CONNECTION_CLOSE; a TLS adapter maps it to an alert
+  record. The engine never frames an alert.
 
-Unchanged for every existing user: `tls_std`, `tls_xev`, `tls_ktls`, the C ABI,
-and the record entry points they call.
+## 4. The record adapter sits outside
 
-## 4. The maintenance risk
+The TLS record path becomes an object beside the handshake, not a mode inside it:
 
-Two carriers means a handshake change tested in one mode ships green and breaks
-the other. Three things hold it:
+```
+caller bytes -> record adapter (parse, decrypt, level) -> provide(level, msg)
+               handshake -> next() -> (level, msg) -> record adapter -> wire
+```
 
-- Every record site switches on `carrier`. Zig's exhaustiveness check then
-  refuses a new epoch or a new site that forgets an arm.
-- The scenario table becomes the test. Each existing handshake scenario runs
-  twice - once through records, once through bare messages - and the record run
-  must equal `wrap(bare run)` byte for byte.
-- The interop tests (OpenSSL `s_server`/`s_client`) keep driving the record path,
-  so the mode nobody ships cannot silently rot without a test failing.
+The adapter owns the `RecordLayer`s, the sequence numbers, the content type, and
+the compatibility CCS. The handshake owns the transcript, the key schedule, and
+the state machine. Nothing in the handshake knows a record header exists.
 
-If a future site cannot be expressed as message-plus-epoch, that is the signal to
-revisit the split, not to add a third carrier.
+The differential test changes shape with it. There is no longer "record mode
+versus message mode", because there is one handshake. The proof becomes:
 
-## 5. Order of work
+- **Record adapter conformance**: the adapter fed the same deterministic inputs
+  reproduces the RFC 8448 §3 byte streams for the handshake, the application
+  data, and the key update. That is a stronger test than the old differential,
+  because it pins real wire bytes.
+- **Interop unchanged**: `openssl s_server` and `s_client` keep driving the
+  adapter path, so the shipping path stays the tested path.
+- **Level discipline**: a table of message type to level, checked at `provide`
+  and at `next`, so a wrong-level delivery fails a test rather than a peer.
 
-| Slice | Content | Size |
+## 5. Sizes
+
+Against the 32 sites, not nine:
+
+| Piece | Content | Size |
 | --- | --- | --- |
-| 1 | Secret capture, accessors, zeroization tests | ~3 days |
-| 2 | Bare-message server `Finished`; message-level client `Finished` | ~4 days |
-| 3 | `carrier` field and the nine sites | ~1 week |
-| 4 | Extra extensions and the required-extension rule | ~4 days |
-| 5 | Suppress `EndOfEarlyData` and `KeyUpdate` for QUIC; alerts to connection errors | ~2 days |
+| `Level`, `Output`, `next()` queue | Types plus the per-role drain | ~3 days |
+| Client handshake migration | 10 sites; two-epoch Finished split is the delicate one | ~1 week |
+| Server handshake migration | 15 sites; the three `handleWaitClientFinished` branches and the prepared-flight wrappers | ~2 weeks |
+| `handshake.zig` established paths | 6 sites; KeyUpdate and alerts become adapter work | ~4 days |
+| Record adapter | Parse, frame, encrypt, decrypt, level events, CCS, tickets | ~1 week |
+| Consumer migration | `tls_std`, `tls_xev`, `tls_ktls`, the C ABI, conformance | ~1-2 weeks |
+| QUIC handshake driver | `provide`/`next` over CRYPTO frames, transport parameters, alerts | ~1 week |
 
-Slices 1 and 2 are useful on their own and land first, as asked. Slice 1 unblocks
-QUIC packet protection, which needs the handshake secrets and nothing else.
+Roughly six to eight weeks, and the risk is the consumer migration, not the
+handshake: four consumers change in lockstep or the tree is broken between
+commits. The old estimate was a week because it counted nine sites.
 
-`EndOfEarlyData` is the one trap: it must not be sent and must not enter the
-transcript (RFC 9001 §4.5), so a carrier cannot drop the message afterwards. It
-is a handshake option either way, not a carrier decision.
+## 6. What is already done
 
-## 6. If the answer is no
+- `1f411ce`: caller-supplied extensions on both handshakes and both
+  encoders, plus a required-extension rule that names the missing type. QUIC's
+  transport parameters need nothing more from tls.
+- Traffic-secret retention (`b2bd024`) gives a QUIC caller the secrets to derive
+  its own packet keys.
+- Alert selection that does not blame the peer for our own failures (`52dc00f`).
 
-Slice 1 is still worth landing: traffic-secret access is useful for kTLS
-diagnostics and for anyone debugging a handshake, and it changes nothing.
+## 7. If the answer is no
 
-QUIC itself can start without this seam. Initial packet protection derives its
-keys from the connection IDs (RFC 9001 §5.2), not from TLS, so header protection,
-Initial packets, ACK handling, and a client/server pair can be built and tested
-against each other before any TLS integration. What waits is the handshake, and
-with it 0-RTT and everything after. I would rather build Initial first than
-duplicate the handshake, and that is what I would say at the next gate.
-
-## Not reusable
-
-Record framing, sequence numbers, content types, `KeyUpdate` (RFC 9001 §6 has no
-such message; both engines send and receive one), alert records (QUIC wants
-`CONNECTION_CLOSE`; `lastPeerAlert()` gives the translation), and `EndOfEarlyData`
-as a wire message.
-
-## Reusable unchanged
-
-ClientHello and ServerHello construction, HRR, transcript hashing, certificate and
-CertificateVerify and Finished verification, certificate policy, ALPN, PSK
-tickets and resumption (`startWithPsk`, `deriveSessionTicket`).
+Initial packet protection derives from the connection IDs (RFC 9001 §5.2), not
+from TLS, so `baskingspot/quic` can build Initial, header protection, ACK
+handling, and a client/server pair without this work. It cannot handshake. That
+is the honest split, and it is why the two shipped slices above are worth having
+either way.
