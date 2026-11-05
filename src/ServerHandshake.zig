@@ -2169,17 +2169,38 @@ fn clearServerApplicationWriteSecret(self: *ServerHandshake) void {
 /// through server Finished, then install application traffic keys. RFC 8446
 /// §4.4.4, §7.1.
 pub fn processClientFinished(self: *ServerHandshake, record: []u8) ClientFinishedError!void {
-    assert(self.state == .wait_client_finished);
-    // RFC 8446 §4.5 — if the server accepted 0-RTT, the client MUST send
-    // EndOfEarlyData (decrypted with early_rx) before the Finished. The
-    // handleRecord path enforces this in handleWaitClientFinished; this
-    // direct entry point must enforce the same gate so a caller using the
-    // public API cannot accept a Finished that skips EndOfEarlyData.
-    if (self.early_rx != null and !self.end_of_early_data_received)
-        return error.UnexpectedMessage;
+    try self.gateClientFinished();
     const dec = try handshake.decryptProtected(&self.rx, record);
     if (dec.content_type != .handshake) return error.UnexpectedRecord;
     return self.processClientFinishedPlaintext(dec.content);
+}
+
+/// Verify a client Finished the caller already decrypted, entering the same
+/// state machine as `processClientFinished` at the plaintext boundary. The
+/// caller owns the record layer - QUIC delivers these bytes from CRYPTO
+/// frames. RFC 8446 §4.4.4.
+///
+/// `plaintext` is one or more complete handshake messages starting at the
+/// client's [Certificate] when client authentication is on, and ending with
+/// Finished. Only the Finished that `processClientFinished` would accept is
+/// valid; nothing about the state transition differs between the two entries.
+pub fn processClientFinishedMessage(
+    self: *ServerHandshake,
+    plaintext: []const u8,
+) ClientFinishedError!void {
+    try self.gateClientFinished();
+    return self.processClientFinishedPlaintext(plaintext);
+}
+
+/// RFC 8446 §4.5 - if the server accepted 0-RTT, the client MUST send
+/// EndOfEarlyData (decrypted with early_rx) before the Finished. The
+/// handleRecord path enforces this in handleWaitClientFinished; every direct
+/// entry point enforces the same gate so a caller cannot accept a Finished
+/// that skips EndOfEarlyData.
+fn gateClientFinished(self: *ServerHandshake) ClientFinishedError!void {
+    assert(self.state == .wait_client_finished);
+    if (self.early_rx != null and !self.end_of_early_data_received)
+        return error.UnexpectedMessage;
 }
 
 fn processClientFinishedPlaintext(
@@ -4942,6 +4963,82 @@ test "traffic secrets: server retains handshake and application secrets on reque
     // Lent memory is never wiped by the engine.
     server.deinit();
     try testing.expect(store.client_application != null);
+}
+
+/// A deterministic server that has sent its flight and awaits the client
+/// Finished, with traffic-secret retention optionally enabled.
+fn awaitingClientFinishedServer(
+    keep: ?*traffic_secrets.TrafficSecrets,
+) !ServerHandshake {
+    const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
+    const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
+    var ch_buf: [512]u8 = undefined;
+    const ch = try client_hello.encode(&ch_buf, .zero, client_keypair.public_key, null, &.{});
+    var ch_record: [1024]u8 = undefined;
+    const header: frame.Header = .init(.handshake, @intCast(ch.len));
+    header.write(ch_record[0..frame.header_len]);
+    @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
+
+    var config = try testConfig(server_keypair);
+    config.traffic_secrets = keep;
+    var server: ServerHandshake = .init(.{}, config);
+    errdefer server.deinit();
+    var sh_out: [256]u8 = undefined;
+    _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
+    var flight_out: [512]u8 = undefined;
+    _ = try server.sendAnonymousFlightForTest(&flight_out);
+    return server;
+}
+
+test "processClientFinishedMessage: the bare entry reaches the same state" {
+    var record_store: traffic_secrets.TrafficSecrets = .init();
+    defer record_store.secureZero();
+    var message_store: traffic_secrets.TrafficSecrets = .init();
+    defer message_store.secureZero();
+
+    var by_record = try awaitingClientFinishedServer(&record_store);
+    defer by_record.deinit();
+    var by_message = try awaitingClientFinishedServer(&message_store);
+    defer by_message.deinit();
+
+    // One client Finished, built from the shared deterministic transcript.
+    var fin_plain: [64]u8 = undefined;
+    const fin = switch (by_record.suite_state) {
+        inline .sha256, .sha384 => |*arm| blk: {
+            const th = arm.transcript.peek();
+            break :blk try finished.encode(
+                @TypeOf(arm.transcript),
+                &fin_plain,
+                &arm.client_finished_key.data,
+                &th,
+            );
+        },
+    };
+    var client_tx = try by_record.rx.clone();
+    defer client_tx.deinit();
+    var fin_wire: [128]u8 = undefined;
+    const fin_record = try client_tx.encrypt(.handshake, fin, &fin_wire);
+
+    try by_record.processClientFinished(fin_wire[0..fin_record.len]);
+    try by_message.processClientFinishedMessage(fin);
+
+    // Both entries are the same state machine: identical negotiated state and
+    // identical application traffic secrets.
+    try testing.expect(by_record.isConnected());
+    try testing.expect(by_message.isConnected());
+    try testing.expectEqual(by_record.cipherSuite(), by_message.cipherSuite());
+    const record_secrets = try by_record.trafficSecrets();
+    const message_secrets = try by_message.trafficSecrets();
+    try testing.expectEqualSlices(
+        u8,
+        record_secrets.client_application.?.bytes(),
+        message_secrets.client_application.?.bytes(),
+    );
+    try testing.expectEqualSlices(
+        u8,
+        record_secrets.server_application.?.bytes(),
+        message_secrets.server_application.?.bytes(),
+    );
 }
 
 /// Same as connectedTestServer, but negotiating TLS_AES_256_GCM_SHA384: the

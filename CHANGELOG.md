@@ -7,6 +7,7 @@ All notable changes to tls are recorded here. The format follows
 
 ### Added
 
+- `ClientHandshake.clientFinishedMessage` and `ServerHandshake.processClientFinishedMessage` exchange the Finished as bare handshake messages, for a caller that owns its own record layer (QUIC CRYPTO frames). Both enter the same state machine as the record paths: `clientFinished` and `processClientFinished` are now thin wrappers around the shared assembly and verification code, and the record output is unchanged.
 - `ClientHandshake` and `ServerHandshake` can retain the TLS 1.3 traffic secrets when the caller asks: set `Config.traffic_secrets` or call `useTrafficSecretStorage`, and `trafficSecrets()` returns them. Without it the engine derives and wipes exactly as before, and the accessor returns `error.NotRetained` rather than zeros. `traffic_secrets.TrafficSecrets.expand` applies HKDF-Expand-Label to a held secret for callers that derive their own keys, such as QUIC (RFC 8446 §7.1, RFC 9001 §5.1).
 
 ## [0.2.1] - 2026-11-05

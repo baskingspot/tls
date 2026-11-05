@@ -2169,6 +2169,38 @@ pub fn clientFinished(self: *ClientHandshake, out: []u8) ClientFinishedError![]c
     // plaintext limit. RFC 8446 §5.2.
     var plain_buf: [frame.max_plaintext_len]u8 = undefined;
     defer crypto.secureZero(u8, &plain_buf);
+    var flight = try self.assembleClientFlight(&plain_buf);
+    errdefer {
+        flight.keys.tx.deinit();
+        flight.keys.rx.deinit();
+    }
+
+    // Encrypt under the handshake-traffic key that is still installed, then
+    // promote: the Finished is the last handshake-protected message.
+    const record = self.tx.encrypt(
+        .handshake,
+        flight.plaintext,
+        out[out_pos..],
+    ) catch return error.BufferTooShort;
+    self.promoteToApplicationKeys(flight.keys);
+    return out[0 .. out_pos + record.len];
+}
+
+/// Assemble [Certificate] [CertificateVerify] Finished into `scratch` and
+/// derive the application traffic keys. Does not encrypt and does not promote:
+/// the record path encrypts the plaintext with the handshake keys and then
+/// calls `promoteToApplicationKeys`, and the bare-message path does the same
+/// without a record.
+///
+/// Shared by `clientFinished` and `clientFinishedMessage` so the two entry
+/// points cannot drift.
+fn assembleClientFlight(
+    self: *ClientHandshake,
+    scratch: []u8,
+) ClientFinishedError!struct {
+    plaintext: []const u8,
+    keys: HandshakeKeys.WithFinished,
+} {
     var plain_len: usize = 0;
 
     if (self.received_certificate_request) {
@@ -2178,11 +2210,11 @@ pub fn clientFinished(self: *ClientHandshake, out: []u8) ClientFinishedError![]c
         // Certificate: real chain when credentials are configured, empty
         // otherwise (existing behavior). RFC 8446 §4.4.2.
         const cert = if (creds) |c|
-            c.chain.encodeWithRequestContext(plain_buf[plain_len..], ctx) catch
+            c.chain.encodeWithRequestContext(scratch[plain_len..], ctx) catch
                 return error.BufferTooShort
         else
             certificate.encodeWithRequestContext(
-                plain_buf[plain_len..],
+                scratch[plain_len..],
                 ctx,
                 &.{},
             ) catch unreachable;
@@ -2221,7 +2253,7 @@ pub fn clientFinished(self: *ClientHandshake, out: []u8) ClientFinishedError![]c
                 else => |e| e,
             };
             const cv = certificate.encodeCertificateVerify(
-                plain_buf[plain_len..],
+                scratch[plain_len..],
                 c.signer.scheme,
                 sig,
             ) catch return error.BufferTooShort;
@@ -2231,7 +2263,7 @@ pub fn clientFinished(self: *ClientHandshake, out: []u8) ClientFinishedError![]c
     }
 
     var keys = self.suite.finishHandshake(
-        plain_buf[plain_len..],
+        scratch[plain_len..],
         self.server_finished_hash[0..self.server_finished_hash_len],
         self.traffic_secret_storage,
     ) catch |err| return switch (err) {
@@ -2243,20 +2275,56 @@ pub fn clientFinished(self: *ClientHandshake, out: []u8) ClientFinishedError![]c
         keys.rx.deinit();
     }
     plain_len += keys.finished.len;
+    return .{ .plaintext = scratch[0..plain_len], .keys = keys };
+}
 
-    // Encrypt under the handshake-traffic key that is still installed, then
-    // promote: the Finished is the last handshake-protected message.
-    const record = self.tx.encrypt(
-        .handshake,
-        plain_buf[0..plain_len],
-        out[out_pos..],
-    ) catch return error.BufferTooShort;
+/// Swap the handshake traffic layers for the application ones. The Finished is
+/// the last handshake-protected message; after this both directions carry
+/// application data.
+fn promoteToApplicationKeys(
+    self: *ClientHandshake,
+    keys: HandshakeKeys.WithFinished,
+) void {
     self.tx.deinit();
     self.rx.deinit();
     self.tx = keys.tx;
     self.rx = keys.rx;
     self.state = .connected;
-    return out[0 .. out_pos + record.len];
+}
+
+/// Produce the client Finished as a bare handshake message and promote to
+/// application traffic keys. The wire framing and encryption belong to the
+/// caller: QUIC places these bytes in a CRYPTO frame. RFC 8446 §4.4.4, §7.1.
+///
+/// Same state machine as `clientFinished`: both assemble the flight through
+/// `assembleClientFlight`, so the two entry points cannot drift. `out`
+/// receives the plaintext flight, which is [Certificate] [CertificateVerify]
+/// Finished, and the returned slice is exactly what `clientFinished` would
+/// encrypt into a record.
+///
+/// 0-RTT is rejected here: EndOfEarlyData travels under the early traffic key
+/// and is not part of this plaintext flight (RFC 9001 §4.5 omits it entirely).
+/// A caller that accepted early data must use a later mode.
+pub fn clientFinishedMessage(
+    self: *ClientHandshake,
+    out: []u8,
+) ClientFinishedError![]const u8 {
+    assert(self.state == .send_finished);
+    if (self.server_flight_progress != .finished_verified) return error.UnexpectedMessage;
+    if (self.server_finished_hash_len == 0) return error.UnexpectedMessage;
+    if (self.server_accepted_early_data) return error.UnexpectedMessage;
+    if (self.early_tx != null) {
+        self.early_tx.?.deinit();
+        self.early_tx = null;
+    }
+
+    var flight = try self.assembleClientFlight(out);
+    errdefer {
+        flight.keys.tx.deinit();
+        flight.keys.rx.deinit();
+    }
+    self.promoteToApplicationKeys(flight.keys);
+    return flight.plaintext;
 }
 
 pub const ReceiveError = RecordLayer.DecryptError || alert.ParseError ||
@@ -3529,6 +3597,44 @@ const rfc8448_client_finished = [_]u8{
     0xfa, 0xc6, 0xe9, 0x85, 0x27, 0xb6, 0x42, 0xf2,
     0xed, 0xd5, 0xce, 0x61,
 };
+
+// The bare-message entry must be the same state machine as the record entry:
+// same plaintext flight, same key promotion, same terminal state.
+test "clientFinishedMessage: bare flight equals what the record path encrypts" {
+    var by_record: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
+    defer by_record.deinit();
+    var by_message: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
+    defer by_message.deinit();
+    inline for (.{ &by_record, &by_message }) |hs| {
+        hs.policy.insecure_no_chain_anchor = true;
+        hs.injectClientHello(&rfc8448_client_hello);
+        try hs.processServerHello(&rfc8448_server_hello);
+        var flight_buf: [1024]u8 = undefined;
+        try hs.processFlight(rfc8448Fixture("server_flight.b64", &flight_buf), hs.policy);
+    }
+
+    // Mirror of the handshake-traffic encryptor at seq 0, captured before the
+    // record path promotes the layers.
+    var peer = try by_record.tx.clone();
+    defer peer.deinit();
+
+    var record_out: [128]u8 = undefined;
+    const record = try by_record.clientFinished(&record_out);
+
+    var message_out: [128]u8 = undefined;
+    const message = try by_message.clientFinishedMessage(&message_out);
+
+    var dec_buf: [128]u8 = undefined;
+    @memcpy(dec_buf[0..record.len], record);
+    const dec = try peer.decrypt(dec_buf[0..record.len]);
+    try testing.expectEqual(.handshake, dec.content_type);
+    try testing.expectEqualSlices(u8, message, dec.content);
+    try testing.expectEqualSlices(u8, &rfc8448_client_finished, message);
+
+    try testing.expectEqual(.connected, by_record.state);
+    try testing.expectEqual(.connected, by_message.state);
+    try testing.expectEqual(by_record.cipherSuite(), by_message.cipherSuite());
+}
 
 // RFC 8446 §4.4.4, §7.1 — client Finished + application-key upgrade.
 // Capture the client handshake-traffic layer before clientFinished swaps it,
