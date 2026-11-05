@@ -17,6 +17,7 @@
 const std = @import("std");
 const testing = std.testing;
 
+const alert = @import("alert.zig");
 const ClientHandshake = @import("ClientHandshake.zig");
 const ServerHandshake = @import("ServerHandshake.zig");
 
@@ -260,4 +261,81 @@ test "classify: remaining buckets" {
     try testing.expectEqual(Class.unsupported_suite, classify(error.UnsupportedCipherSuite));
     try testing.expectEqual(Class.missing_credentials, classify(error.MissingServerCredentials));
     try testing.expectEqual(Class.client_certificate, classify(error.ClientCertificateRequired));
+}
+
+// A new error must not ship without deciding what the peer is told about it.
+// That decision lives in `alert.alertForError`, which switches over `anyerror`
+// with an `else` arm, so an unlisted error silently becomes `internal_error`.
+//
+// This walks the closed error set at comptime, so adding a member fails the
+// test until it is either mapped to a specific alert, classified as ours (and
+// thus mapped to `internal_error`), or listed in `known_fallthrough` below.
+// The list is checked both ways: an entry that gains a real alert must be
+// removed, which keeps it from rotting into a comment.
+//
+// `error.EarlyDataUnsupported` is why this exists: it was briefly classified
+// as `unexpected_message`, which would have told a peer its legal 0-RTT
+// handshake was a protocol violation.
+test "every handshake error has a deliberate peer-visible alert" {
+    @setEvalBranchQuota(200_000);
+    // Peer-caused errors that have no specific alert yet and fall through to
+    // `internal_error`. Each is a mapping gap, not a lie about fault. Fixing
+    // one means removing its name here in the same change.
+    const known_fallthrough = [_][]const u8{
+        "TooManyAlpnBytes",
+        "EmptyAlpnProtocol",
+        "AlpnProtocolTooLong",
+        "BufferTooShort",
+        "DeterministicNonceUnsupported",
+        "HelloRetryRequest",
+        "InvalidHybridPolicy",
+        "HybridGroupUnavailable",
+        "MissingP384KeyPair",
+        "TooManyNewSessionTickets",
+        "UnsupportedGroup",
+        "MissingServerCredentials",
+        "UnexpectedContentType",
+        "CertificateChainTooLong",
+        "CertificateHasDuplicateExtension",
+        "CertificateSignatureInvalid",
+        "CertificateSignatureUnsupportedBitCount",
+        "CertificateSignatureNamedCurveUnsupported",
+        "ClientCertificateTooLarge",
+        "TooManyKeyUpdates",
+        "PeerAlert",
+        "InvalidServerName",
+        "ServerNameTooLong",
+        "NotHelloRetryRequest",
+        "IdentityTooLong",
+        "InvalidBinderLength",
+        "HandshakeBufferTooShort",
+        "TooManyAlpnProtocols",
+    };
+
+    const members = @typeInfo(HandshakeError).error_set orelse
+        @compileError("HandshakeError must be a closed error set");
+    inline for (members) |member| {
+        const err = @field(HandshakeError, member.name);
+        const class = classify(err);
+        const description = alert.alertForError(err);
+        const listed = comptime blk: {
+            for (known_fallthrough) |name| {
+                if (std.mem.eql(u8, name, member.name)) break :blk true;
+            }
+            break :blk false;
+        };
+
+        if (class == .internal) {
+            // Ours: the peer must not be blamed for it, and it must not be
+            // parked on the fall-through list.
+            try testing.expectEqual(alert.Description.internal_error, description);
+            try testing.expect(!listed);
+        } else if (description == .internal_error) {
+            // Peer-caused with no specific alert yet: it has to be a known gap.
+            try testing.expect(listed);
+        } else {
+            // A real alert: the fall-through list must not still claim it.
+            try testing.expect(!listed);
+        }
+    }
 }
