@@ -73,6 +73,11 @@ When already inside the devshell, run commands directly. Don't wrap normal
 checks in `nix develop --command` unless there is evidence the current shell is
 missing the updated environment.
 
+`just ci` is the gate before a push. `just test` and `just integrations-ci` are
+subsets of it: the conformance subproject has its own call sites, so neither
+compiles anything under `conformance/`. A public signature change can pass both
+and still break the push.
+
 ---
 
 ## Project State and Continuity
