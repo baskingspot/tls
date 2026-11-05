@@ -214,6 +214,29 @@ Stop rule: if any of the three requires a change to external behaviour, the
 extraction stops and comes back as a question. A refactor that needs an API
 change is not this plan.
 
+### 5.2.1 The full replay gate
+
+The end-to-end gate was moved out of 1b deliberately, not lost. A gate that
+cannot be met inside its slice is a wish, and wishes get dropped; this one is
+written down where 1c ends.
+
+1c is not done until RFC 8448 §3's complete trace replays through `provide` and
+`next` with no engine in the path:
+
+- every `Output` compared in order, including the encrypted flight composition
+  and the two-epoch client Finished;
+- the traffic secrets asserted at each derivation point, both handshake and
+  application;
+- every level transition asserted, `read_level` and `write_level` included, and a
+  wrong-level `provide` rejected with `WrongLevel`.
+
+1b's gate is narrower and stays: the plaintext half only - ClientHello bytes,
+transcript absorption, ServerHello acceptance, key-share extraction, and the
+derived handshake traffic secrets, all against the recorded trace.
+
+If the full replay cannot pass at the end of 1c, the premise is broken and the
+work stops for a decision.
+
 ### 5.3 Who owns what
 
 | Concern | Core | Record adapter |
