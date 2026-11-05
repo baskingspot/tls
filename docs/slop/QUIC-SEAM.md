@@ -159,7 +159,102 @@ versus message mode", because there is one handshake. The proof becomes:
 - **Level discipline**: a table of message type to level, checked at `provide`
   and at `next`, so a wrong-level delivery fails a test rather than a peer.
 
-## 5. Sizes
+## 5. The extraction plan
+
+This is additive for callers. One core, two adapters: the existing engines keep
+their public surface and become one adapter, the message-level type is the other.
+
+### 5.1 The extraction boundary
+
+Into the core:
+
+- the `State` enum and every transition currently on `ClientHandshake` and
+  `ServerHandshake`;
+- the transcript (`Suite`, `HashArm`, the buffering dual-hash arm);
+- the key schedule: `handshake_secret`, the handshake and application traffic
+  secrets, finished keys, resumption master, and the ratchet inputs;
+- handshake message encode and parse, which already live in their own modules
+  (`client_hello`, `server_hello`, `encrypted_extensions`, `certificate`,
+  `certificate_request`, `finished`, `new_session_ticket`);
+- policy decisions: suite, group, ALPN, certificate chain verification calls,
+  PSK selection, early-data acceptance, extension requirements;
+- level assignment per message, and the `provide`/`next` queue.
+
+Stays in the adapter:
+
+- `RecordLayer` construction, rotation, and lifetime;
+- record framing and parsing, including content type and length;
+- sequence numbers and the pending-write latch;
+- encryption and decryption, including the early-data trial-decrypt path;
+- the compatibility CCS record;
+- alerts as records, and the pre-key plaintext alert record;
+- kTLS handoff (`txKtlsInfo`, `rxKtlsInfo`, `receiveKtlsRecord`).
+
+"Unchanged public surface" means, concretely, that every existing public
+declaration on `ClientHandshake` and `ServerHandshake` keeps its name, parameter
+list, error set, and observable behaviour. `@sizeOf` may change, and the size
+ceilings move deliberately with a comment. `Config` fields are not removed. The
+`EstablishedSession` extraction keeps working, because it is the same spine the
+core needs for post-handshake.
+
+### 5.2 Proof that step one is a pure refactor
+
+Three independent gates, all already in the tree:
+
+- **RFC 8448 §3**: the deterministic transcript, Finished verify data, and
+  traffic-secret vectors are asserted byte for byte today.
+- **Wire goldens**: record output for deterministic inputs is captured from the
+  current engine into a committed fixture before the extraction, and compared
+  afterwards. This is the new test, and it is the one that catches a refactor
+  that is "equivalent" but not identical.
+- **OpenSSL interop, untouched**: `openssl s_server` and `s_client`, including
+  PSK resumption, 0-RTT, P-384, and the client/server role matrix.
+
+Stop rule: if any of the three requires a change to external behaviour, the
+extraction stops and comes back as a question. A refactor that needs an API
+change is not this plan.
+
+### 5.3 Who owns what
+
+| Concern | Core | Record adapter |
+| --- | --- | --- |
+| State machine transitions | owns | - |
+| Transcript and key schedule | owns | - |
+| Message encode/parse | owns | - |
+| Policy (suite, group, ALPN, certs, PSK) | owns | - |
+| Level assignment | owns | - |
+| Record framing and parsing | - | owns |
+| Sequence numbers, pending write | - | owns |
+| Encrypt/decrypt, early-data trial decrypt | - | owns |
+| Compatibility CCS | - | owns |
+| Alerts as records | decides the alert | frames it |
+| kTLS handoff | - | owns |
+| Buffer sizing for records | - | owns |
+
+The boundary in one sentence: the core decides **what** happens and **at which
+level**, the adapter decides **how it is protected and framed**.
+
+### 5.4 Order and size
+
+| Step | Content | Size |
+| --- | --- | --- |
+| 1 | `Level`, `Output`, `provide`/`next` skeleton; transcript and key schedule moved into the core with no behaviour change | ~1 week |
+| 2 | `ClientHandshake` rebuilt as an adapter over the core; RFC 8448, wire goldens, and interop green | ~1 week |
+| 3 | `ServerHandshake` rebuilt the same way, including prepared flights, tickets, and the three wait-finished decrypt branches | ~1 week |
+| 4 | The message-level type as the second adapter; level-discipline tests including wrong-level rejection | ~1 week |
+| 5 | Conformance runs, size ceilings, docs, changelog | ~3-5 days |
+
+Four to five weeks, and every step ends with the same public API and a green
+interop suite. Nobody has to move in lockstep, because nobody's API changes.
+
+The alternative in §6 is what this replaces: six to eight weeks with the
+consumer migration inside the critical path.
+
+## 6. The lockstep alternative
+
+Kept only so the difference is on the record. Here the new type is built by
+rewriting the engines in place and migrating every consumer in the same window,
+because there is no shared core to sit behind.
 
 Against the 32 sites, not nine:
 
@@ -177,7 +272,7 @@ Roughly six to eight weeks, and the risk is the consumer migration, not the
 handshake: four consumers change in lockstep or the tree is broken between
 commits. The old estimate was a week because it counted nine sites.
 
-## 6. What is already done
+## 7. What is already done
 
 - `1f411ce`: caller-supplied extensions on both handshakes and both
   encoders, plus a required-extension rule that names the missing type. QUIC's
@@ -186,7 +281,7 @@ commits. The old estimate was a week because it counted nine sites.
   its own packet keys.
 - Alert selection that does not blame the peer for our own failures (`52dc00f`).
 
-## 7. If the answer is no
+## 8. If the answer is no
 
 Initial packet protection derives from the connection IDs (RFC 9001 §5.2), not
 from TLS, so `baskingspot/quic` can build Initial, header protection, ACK
