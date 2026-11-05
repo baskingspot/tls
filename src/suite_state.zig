@@ -9,8 +9,8 @@ const RecordLayer = @import("RecordLayer.zig");
 const hkdf = @import("hkdf.zig");
 
 const sha2 = @import("crypto/backend.zig").sha2;
-const Sha256 = sha2.Sha256;
-const Sha384 = sha2.Sha384;
+pub const Sha256 = sha2.Sha256;
+pub const Sha384 = sha2.Sha384;
 
 pub fn HashArm(comptime Hkdf_: type, comptime Hash: type) type {
     return struct {
@@ -22,6 +22,12 @@ pub fn HashArm(comptime Hkdf_: type, comptime Hash: type) type {
         handshake_secret: Hkdf.Prk = undefined,
         client_finished_key: Hkdf.FinishedKey = undefined,
         server_finished_key: Hkdf.FinishedKey = undefined,
+        /// RFC 8446 §7.1 handshake traffic secrets, retained for a caller that
+        /// derives its own protection (QUIC, or the record adapter outside the
+        /// core). The record path builds its layers from these and never reads
+        /// them again; the step core hands them out.
+        client_hs_secret: Hkdf.TrafficSecret = undefined,
+        server_hs_secret: Hkdf.TrafficSecret = undefined,
         client_app_secret: Hkdf.TrafficSecret = undefined,
         server_app_secret: Hkdf.TrafficSecret = undefined,
         /// RFC 8446 §7.5 — resumption_master_secret, derived from the master
@@ -41,6 +47,8 @@ pub fn HashArm(comptime Hkdf_: type, comptime Hash: type) type {
                 .handshake_secret = undefined,
                 .client_finished_key = undefined,
                 .server_finished_key = undefined,
+                .client_hs_secret = undefined,
+                .server_hs_secret = undefined,
                 .client_app_secret = undefined,
                 .server_app_secret = undefined,
                 .resumption_master = undefined,
@@ -75,6 +83,9 @@ pub fn HashArm(comptime Hkdf_: type, comptime Hash: type) type {
             const start = @offsetOf(Self, "handshake_secret");
             const end = @offsetOf(Self, "server_finished_key") + @sizeOf(Hkdf.FinishedKey);
             crypto.secureZero(u8, mem.asBytes(self)[start..end]);
+            // Handshake traffic secrets are handshake-scoped too.
+            self.client_hs_secret.secureZero();
+            self.server_hs_secret.secureZero();
         }
 
         pub fn ratchetClientKey(self: *Self) aead.Error!RecordLayer {

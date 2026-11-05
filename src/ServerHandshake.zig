@@ -7126,12 +7126,14 @@ fn expectSameEstablishedEvent(expected: Event, actual: Event) !void {
 // sizes measured at the #138 change on aarch64-linux: OpenSSL 3.6.4,
 // AWS-LC 5.9.0, BoringSSL 0.20260803.0. A deliberate growth updates them.
 // #161 added 16 bytes to ServerHandshake (PskEntry.alpn).
+// The suite gained the two handshake traffic secrets (+96 bytes) so the step
+// core can hand them out; the ceilings move with it deliberately.
 test "per-connection structs stay within their measured sizes" {
     const Ceiling = struct { server: usize, established: usize, suite: usize };
     const ceiling: Ceiling = switch (backend.active) {
-        .openssl, .@"openssl-fips" => .{ .server = 19432, .established = 712, .suite = 520 },
-        .@"aws-lc", .@"aws-lc-fips" => .{ .server = 21136, .established = 1848, .suite = 520 },
-        .boringssl => .{ .server = 21096, .established = 1824, .suite = 512 },
+        .openssl, .@"openssl-fips" => .{ .server = 19528, .established = 808, .suite = 616 },
+        .@"aws-lc", .@"aws-lc-fips" => .{ .server = 21232, .established = 1944, .suite = 616 },
+        .boringssl => .{ .server = 21192, .established = 1920, .suite = 608 },
     };
     try testing.expect(@sizeOf(ServerHandshake) <= ceiling.server);
     try testing.expect(@sizeOf(EstablishedSession) <= ceiling.established);
