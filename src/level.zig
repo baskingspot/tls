@@ -99,3 +99,69 @@ test "check: a message at the wrong level is refused" {
     // Unclassified types are not rejected here; the parser owns them.
     try check(.message_hash, .application);
 }
+
+/// A bounded FIFO of `Output`s, over caller-owned storage. The handshake fills
+/// it and the caller drains it with `next()`; nothing here allocates, and the
+/// byte slices in `message` outputs borrow whatever buffer produced them.
+pub const Queue = struct {
+    slots: []Output,
+    head: usize,
+    tail: usize,
+
+    pub const Error = error{QueueFull};
+
+    pub fn init(slots: []Output) Queue {
+        return .{ .slots = slots, .head = 0, .tail = 0 };
+    }
+
+    pub fn isEmpty(self: *const Queue) bool {
+        return self.head == self.tail;
+    }
+
+    pub fn isFull(self: *const Queue) bool {
+        return self.tail - self.head == self.slots.len;
+    }
+
+    pub fn push(self: *Queue, item: Output) Error!void {
+        if (self.isFull()) return error.QueueFull;
+        self.slots[self.tail % self.slots.len] = item;
+        self.tail += 1;
+    }
+
+    pub fn pop(self: *Queue) ?Output {
+        if (self.isEmpty()) return null;
+        const item = self.slots[self.head % self.slots.len];
+        self.head += 1;
+        return item;
+    }
+
+    /// Drop everything without freeing; used when a handshake fails.
+    pub fn clear(self: *Queue) void {
+        self.head = 0;
+        self.tail = 0;
+    }
+};
+
+test "queue: FIFO order, bounded, and reusable after draining" {
+    var slots: [2]Output = undefined;
+    var q: Queue = .init(&slots);
+    try testing.expect(q.isEmpty());
+
+    const a = [_]u8{ 1, 2 };
+    const b = [_]u8{3};
+    try q.push(.{ .message = .{ .level = .plaintext, .bytes = &a } });
+    try q.push(.{ .write_level = .handshake });
+    try testing.expect(q.isFull());
+    try testing.expectError(error.QueueFull, q.push(.done));
+
+    const first = q.pop().?;
+    try testing.expectEqual(Level.plaintext, first.message.level);
+    try testing.expectEqualSlices(u8, &a, first.message.bytes);
+    try testing.expectEqual(Level.handshake, q.pop().?.write_level);
+    try testing.expect(q.isEmpty());
+    try testing.expectEqual(@as(?Output, null), q.pop());
+
+    // Drain-then-refill reuses the slots.
+    try q.push(.{ .message = .{ .level = .early, .bytes = &b } });
+    try testing.expectEqual(Level.early, q.pop().?.message.level);
+}
