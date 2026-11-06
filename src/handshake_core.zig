@@ -17,7 +17,7 @@
 
 /// Derive the handshake traffic secrets from a finished exchange transcript.
 /// Shared by both roles: RFC 8446 §7.1 does not care who is asking.
-fn deriveHandshakeSecrets(suite: *suite_state.Suite, dhe: []const u8) void {
+fn deriveHandshakeSecrets(suite: *suite_state.Suite, dhe: []const u8) aead.Error!void {
     switch (suite.*) {
         .buffering => unreachable,
         inline .sha256, .sha384 => |*arm| {
@@ -28,6 +28,14 @@ fn deriveHandshakeSecrets(suite: *suite_state.Suite, dhe: []const u8) void {
             defer handshake_key.secureZero();
             arm.client_hs_secret = H.deriveSecretKeyed(&handshake_key, "c hs traffic", &th);
             arm.server_hs_secret = H.deriveSecretKeyed(&handshake_key, "s hs traffic", &th);
+            // The Finished MAC needs the finished key derived from the same
+            // traffic secret; the layer it builds with is not wanted here.
+            var discard = try H.makeRecordLayerAndFinishedKey(
+                arm.aead,
+                arm.server_hs_secret,
+                &arm.server_finished_key,
+            );
+            discard.deinit();
         },
     }
 }
@@ -58,14 +66,27 @@ pub const HandshakeSecrets = struct {
 const std = @import("std");
 const testing = std.testing;
 
+const backend = @import("crypto/backend.zig");
 const certificate = @import("certificate.zig");
+const encrypted_extensions = @import("encrypted_extensions.zig");
+const extension_type = @import("extension_type.zig");
+const finished = @import("finished.zig");
+const handshake = @import("handshake.zig");
 const level = @import("level.zig");
 const server_hello = @import("server_hello.zig");
+const aead = @import("aead.zig");
+// Test-only fixture module; not needed by the core itself.
+const fixtures = @import("fixtures");
 const suite_state = @import("suite_state.zig");
 
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 
+/// Largest leaf public key the core retains between Certificate and
+/// CertificateVerify (RSA-4096 is the practical ceiling).
+const crypto_max_pub_key = 1024;
+
 pub const Error = error{
+    /// A message arrived at a level it cannot occupy. RFC 9001 §4.1.3.
     /// A message arrived at a level it cannot occupy. RFC 9001 §4.1.3.
     WrongLevel,
     /// The caller asked for an output the queue has no room for.
@@ -73,7 +94,11 @@ pub const Error = error{
     /// A message arrived out of order, or before the handshake reached the
     /// point that accepts it.
     UnexpectedMessage,
-} || server_hello.ParseError;
+    /// The peer's leaf public key does not fit the core's retention buffer.
+    CertificateKeyTooLarge,
+} || server_hello.ParseError || certificate.VerifyError ||
+    certificate.ParseError || finished.VerifyError ||
+    encrypted_extensions.ParseError || aead.Error;
 
 pub const Client = struct {
     /// Transcript and key schedule. The client starts buffering both candidate
@@ -83,19 +108,39 @@ pub const Client = struct {
     /// transcript requires it. Required at construction: there is no default,
     /// so no caller can compile a handshake that verifies nothing by omission.
     policy: certificate.Policy,
+    /// The extensions this client offered, which the EncryptedExtensions
+    /// parser uses to reject anything the peer was not entitled to send.
+    /// RFC 8446 §4.2.
+    offered: extension_type.OfferedExtensions,
+    /// The server leaf public key, retained between Certificate and
+    /// CertificateVerify because the signature is checked against it.
+    leaf_pub_key: [crypto_max_pub_key]u8,
+    leaf_pub_key_len: u8,
     queue: level.Queue,
     /// Set once ServerHello selects the suite, so later messages can be checked
     /// against the chosen arm.
     selected: ?CipherSuite,
     state: State,
 
-    pub const State = enum { start, wait_server_hello, server_hello_done };
+    pub const State = enum {
+        start,
+        wait_server_hello,
+        server_hello_done,
+        wait_encrypted_extensions,
+        wait_certificate,
+        wait_certificate_verify,
+        wait_finished,
+        server_finished_verified,
+    };
 
     pub fn init(slots: []level.Output, policy: certificate.Policy) Client {
         return .{
             .suite = .init(),
             .queue = .init(slots),
             .policy = policy,
+            .offered = .initEmpty(),
+            .leaf_pub_key = undefined,
+            .leaf_pub_key_len = 0,
             .selected = null,
             .state = .start,
         };
@@ -165,7 +210,103 @@ pub const Client = struct {
         self.queue.push(.{ .read_level = .handshake }) catch return error.QueueFull;
         self.queue.push(.{ .write_level = .handshake }) catch return error.QueueFull;
         self.queue.push(.{ .key_available = .handshake }) catch return error.QueueFull;
-        self.state = .server_hello_done;
+        self.state = .wait_encrypted_extensions;
+    }
+
+    /// Feed one message of the server's encrypted flight at `.handshake`. The
+    /// core applies the caller's verification policy at the point the
+    /// transcript requires it, and surfaces the specific failure rather than a
+    /// single "bad certificate": the error sets of `certificate` and `finished`
+    /// pass through unchanged.
+    pub fn provideHandshake(
+        self: *Client,
+        provided: level.Level,
+        msg: []const u8,
+    ) Error!void {
+        if (msg.len < 4) return error.UnexpectedEof;
+        const msg_type: handshake.Type = @enumFromInt(msg[0]);
+        try level.check(msg_type, provided);
+
+        switch (self.state) {
+            .start, .wait_server_hello => return error.UnexpectedMessage,
+            .server_hello_done, .wait_encrypted_extensions => {
+                if (msg_type != .encrypted_extensions) return error.UnexpectedMessage;
+                _ = try encrypted_extensions.parse(msg, &.{}, .{
+                    .offered_extensions = self.offered,
+                });
+                self.suite.update(msg);
+                self.state = .wait_certificate;
+            },
+            .wait_certificate => {
+                if (msg_type != .certificate) return error.UnexpectedMessage;
+                const leaf = try certificate.parse(msg, self.policy);
+                if (leaf.len > self.leaf_pub_key.len) return error.CertificateKeyTooLarge;
+                @memcpy(self.leaf_pub_key[0..leaf.len], leaf);
+                self.leaf_pub_key_len = @intCast(leaf.len);
+                self.suite.update(msg);
+                self.state = .wait_certificate_verify;
+            },
+            .wait_certificate_verify => {
+                if (msg_type != .certificate_verify) return error.UnexpectedMessage;
+                const th = self.transcriptHash();
+                try certificate.verifyServerSignatureWithSchemes(
+                    msg,
+                    self.leaf_pub_key[0..self.leaf_pub_key_len],
+                    th.slice(),
+                    backend.capabilities.certificate_verify_schemes,
+                );
+                self.suite.update(msg);
+                self.state = .wait_finished;
+            },
+            .wait_finished, .server_finished_verified => {
+                if (msg_type != .finished) return error.UnexpectedMessage;
+                const th = self.transcriptHash();
+                try self.verifyFinished(msg, th.slice());
+                self.suite.update(msg);
+                self.state = .server_finished_verified;
+            },
+        }
+    }
+
+    fn verifyFinished(self: *Client, msg: []const u8, transcript_hash: []const u8) Error!void {
+        switch (self.suite) {
+            .buffering => return error.UnexpectedMessage,
+            inline .sha256, .sha384 => |*arm| {
+                const Hash = @TypeOf(arm.transcript);
+                try finished.verify(
+                    Hash,
+                    msg,
+                    &arm.server_finished_key.data,
+                    transcript_hash,
+                );
+            },
+        }
+    }
+
+    pub const TranscriptHash = struct {
+        data: [48]u8,
+        len: u8,
+
+        pub fn init() TranscriptHash {
+            return .{ .data = @splat(0), .len = 0 };
+        }
+
+        pub fn slice(self: *const TranscriptHash) []const u8 {
+            return self.data[0..self.len];
+        }
+    };
+
+    fn transcriptHash(self: *const Client) TranscriptHash {
+        var out: TranscriptHash = .init();
+        switch (self.suite) {
+            .buffering => {},
+            inline .sha256, .sha384 => |*arm| {
+                const th = arm.transcript.peek();
+                out.len = @intCast(th.len);
+                @memcpy(out.data[0..th.len], &th);
+            },
+        }
+        return out;
     }
 
     /// RFC 8446 §7.1 - mix the DHE shared secret into the key schedule and keep
@@ -173,7 +314,7 @@ pub const Client = struct {
     /// problem, so only the secrets live here.
     fn deriveHandshakeKeys(self: *Client, dhe: []const u8) Error!void {
         if (self.suite == .buffering) return error.UnexpectedMessage;
-        deriveHandshakeSecrets(&self.suite, dhe);
+        try deriveHandshakeSecrets(&self.suite, dhe);
     }
 
     /// The handshake traffic secrets, once ServerHello has been provided.
@@ -353,7 +494,7 @@ pub const Server = struct {
         };
         self.suite.update(client_hello_msg);
         self.suite.update(server_hello_msg);
-        deriveHandshakeSecrets(&self.suite, dhe);
+        try deriveHandshakeSecrets(&self.suite, dhe);
 
         self.queue.push(.{ .message = .{
             .level = .plaintext,
@@ -418,4 +559,62 @@ test "core: the server queues its ServerHello at plaintext" {
     try testing.expectEqual(level.Level.handshake, server.next().?.read_level);
     try testing.expectEqual(level.Level.handshake, server.next().?.write_level);
     try testing.expectEqual(level.Level.handshake, server.next().?.key_available);
+}
+
+// RFC 8448 §3's server flight, message by message, through the core with the
+// caller's policy applied at the Certificate and CertificateVerify points. No
+// engine underneath: the transcript, the ordering and the verification are the
+// core's.
+test "core client: RFC 8448 §3 encrypted flight verifies in order" {
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+
+    var slots: [16]level.Output = undefined;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    // The RFC 8448 ClientHello offers SNI and record_size_limit, so the trace's
+    // EncryptedExtensions answers both.
+    client.offered.insert(.server_name);
+    client.offered.insert(.record_size_limit);
+
+    try client.start(&rfc8448_client_hello);
+    _ = client.next().?;
+    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+
+    var flight_buf: [4096]u8 = undefined;
+    const flight = fixtures.rfc8448.b64("server_flight.b64");
+    @memcpy(flight_buf[0..flight.len], flight);
+
+    var reader: handshake.Reader = .init(flight_buf[0..flight.len]);
+    var messages: usize = 0;
+    while (try reader.next()) |msg| {
+        // Level discipline: everything in this flight rides handshake keys.
+        try client.provideHandshake(.handshake, msg.raw);
+        messages += 1;
+    }
+    try testing.expectEqual(@as(usize, 4), messages);
+    try testing.expectEqual(Client.State.server_finished_verified, client.state);
+}
+
+test "core client: the flight is refused at the wrong level" {
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var slots: [16]level.Output = undefined;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    try client.start(&rfc8448_client_hello);
+    _ = client.next().?;
+    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+
+    var flight_buf: [4096]u8 = undefined;
+    const flight = fixtures.rfc8448.b64("server_flight.b64");
+    @memcpy(flight_buf[0..flight.len], flight);
+    var reader: handshake.Reader = .init(flight_buf[0..flight.len]);
+    const ee = (try reader.next()).?;
+    try testing.expectError(
+        error.WrongLevel,
+        client.provideHandshake(.application, ee.raw),
+    );
 }
