@@ -63,6 +63,12 @@ fn copyHandshakeSecrets(suite: *const suite_state.Suite) ?HandshakeSecrets {
     };
 }
 
+/// What a role signs with when it authenticates.
+pub const Credentials = struct {
+    chain: CertificateChain,
+    signer: signature.Signer,
+};
+
 pub const HandshakeSecrets = struct {
     len: u8,
     client: [48]u8,
@@ -74,6 +80,7 @@ const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
 const certificate = @import("certificate.zig");
+const certificate_request = @import("certificate_request.zig");
 const CertificateChain = @import("certificate_chain.zig").CertificateChain;
 const signature = @import("signature.zig");
 const encrypted_extensions = @import("encrypted_extensions.zig");
@@ -83,8 +90,9 @@ const handshake = @import("handshake.zig");
 const level = @import("level.zig");
 const server_hello = @import("server_hello.zig");
 const aead = @import("aead.zig");
-// Test-only fixture module; not needed by the core itself.
+// Test-only modules; not needed by the core itself.
 const fixtures = @import("fixtures");
+const x25519 = @import("x25519.zig");
 const suite_state = @import("suite_state.zig");
 
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
@@ -104,10 +112,13 @@ pub const Error = error{
     UnexpectedMessage,
     /// The peer's leaf public key does not fit the core's retention buffer.
     CertificateKeyTooLarge,
+    /// The server asked for a client certificate and the client sent none.
+    ClientCertificateRequired,
 } || server_hello.ParseError || certificate.VerifyError ||
     certificate.ParseError || certificate.EncodeError ||
     finished.VerifyError || encrypted_extensions.ParseError ||
-    encrypted_extensions.EncodeError || signature.SignError || aead.Error;
+    encrypted_extensions.EncodeError || certificate_request.ParseError ||
+    signature.SignError || aead.Error;
 
 pub const Client = struct {
     /// Transcript and key schedule. The client starts buffering both candidate
@@ -121,6 +132,11 @@ pub const Client = struct {
     /// parser uses to reject anything the peer was not entitled to send.
     /// RFC 8446 §4.2.
     offered: extension_type.OfferedExtensions,
+    /// Client credentials, used only when the server sent a CertificateRequest.
+    credentials: ?Credentials,
+    /// True once the server asked for a client certificate; the flight then
+    /// carries Certificate and CertificateVerify before Finished.
+    received_certificate_request: bool,
     /// The server leaf public key, retained between Certificate and
     /// CertificateVerify because the signature is checked against it.
     leaf_pub_key: [crypto_max_pub_key]u8,
@@ -148,6 +164,8 @@ pub const Client = struct {
             .suite = .init(),
             .queue = .init(slots),
             .policy = policy,
+            .credentials = null,
+            .received_certificate_request = false,
             .offered = .initEmpty(),
             .leaf_pub_key = undefined,
             .leaf_pub_key_len = 0,
@@ -248,6 +266,15 @@ pub const Client = struct {
                 self.state = .wait_certificate;
             },
             .wait_certificate => {
+                if (msg_type == .certificate_request) {
+                    const cr = try certificate_request.parse(msg);
+                    if (!std.mem.eql(u8, cr.request_context, &.{})) {
+                        return error.UnexpectedCertificateRequestContext;
+                    }
+                    self.received_certificate_request = true;
+                    self.suite.update(msg);
+                    return;
+                }
                 if (msg_type != .certificate) return error.UnexpectedMessage;
                 const leaf = try certificate.parse(msg, self.policy);
                 if (leaf.len > self.leaf_pub_key.len) return error.CertificateKeyTooLarge;
@@ -288,6 +315,56 @@ pub const Client = struct {
     /// until the caller drains it.
     pub fn sendClientFinished(self: *Client, out: []u8) Error![]const u8 {
         if (self.state != .server_finished_verified) return error.UnexpectedMessage;
+        var pos: usize = 0;
+
+        // RFC 8446 §4.4.2, §4.4.3 - when the server asked for a certificate,
+        // the client flight is Certificate, CertificateVerify, Finished. Each
+        // message is its own output at `.handshake`, in that order.
+        if (self.received_certificate_request) {
+            if (self.credentials) |creds| {
+                const cert = try creds.chain.encodeWithRequestContext(out[pos..], &.{});
+                try self.queue.push(.{ .message = .{
+                    .level = .handshake,
+                    .bytes = cert,
+                } });
+                pos += cert.len;
+                self.suite.update(cert);
+
+                const cv_th = self.transcriptHash();
+                const ctx_len = certificate.client_certificate_verify_context.len;
+                var sign_input: [ctx_len + 48]u8 = undefined;
+                sign_input[0..ctx_len].* = certificate.client_certificate_verify_context.*;
+                @memcpy(sign_input[ctx_len..][0..cv_th.len], cv_th.slice());
+                var sig_buf: [512]u8 = undefined;
+                const sig = try creds.signer.sign(
+                    creds.signer.context,
+                    sign_input[0 .. ctx_len + cv_th.len],
+                    &sig_buf,
+                );
+                const cv = try certificate.encodeCertificateVerify(
+                    out[pos..],
+                    creds.signer.scheme,
+                    sig,
+                );
+                try self.queue.push(.{ .message = .{
+                    .level = .handshake,
+                    .bytes = cv,
+                } });
+                pos += cv.len;
+                self.suite.update(cv);
+            } else {
+                // An empty Certificate is what a client without credentials
+                // sends, and the server decides whether that is acceptable.
+                const empty = try certificate.encodeWithRequestContext(out[pos..], &.{}, &.{});
+                try self.queue.push(.{ .message = .{
+                    .level = .handshake,
+                    .bytes = empty,
+                } });
+                pos += empty.len;
+                self.suite.update(empty);
+            }
+        }
+
         const th = self.transcriptHash();
         const msg = switch (self.suite) {
             .buffering => return error.UnexpectedMessage,
@@ -295,7 +372,7 @@ pub const Client = struct {
                 const Hash = @TypeOf(arm.transcript);
                 break :blk try finished.encode(
                     Hash,
-                    out,
+                    out[pos..],
                     &arm.client_finished_key.data,
                     th.slice(),
                 );
@@ -536,9 +613,23 @@ pub const Server = struct {
     suite: suite_state.Suite,
     queue: level.Queue,
     state: State,
+    /// Policy for a client certificate. Null means the server never asks for
+    /// one, so a client Certificate is unexpected.
+    client_policy: ?certificate.Policy,
+    /// The client leaf public key, retained between its Certificate and
+    /// CertificateVerify.
+    client_pub_key: [1024]u8,
+    client_pub_key_len: u8,
 
     pub fn init(slots: []level.Output) Server {
-        return .{ .suite = .init(), .queue = .init(slots), .state = .wait_client_hello };
+        return .{
+            .suite = .init(),
+            .queue = .init(slots),
+            .state = .wait_client_hello,
+            .client_policy = null,
+            .client_pub_key = undefined,
+            .client_pub_key_len = 0,
+        };
     }
 
     pub fn deinit(self: *Server) void {
@@ -589,15 +680,93 @@ pub const Server = struct {
         self.state = .server_hello_queued;
     }
 
+    /// Ask the client for a certificate under this policy. Call before
+    /// `sendFlight`.
+    pub fn requireClientCertificate(self: *Server, policy: certificate.Policy) void {
+        self.client_policy = policy;
+    }
+
+    /// Feed one message of the client's flight at `.handshake`: Certificate,
+    /// CertificateVerify, and Finished, when a client certificate was
+    /// requested. Verification happens here, with the caller's policy, for the
+    /// same reason the client does it: the ordering is the state machine.
+    pub fn provideClientFlight(
+        self: *Server,
+        provided: level.Level,
+        msg: []const u8,
+    ) Error!void {
+        if (msg.len < 4) return error.UnexpectedEof;
+        const msg_type: handshake.Type = @enumFromInt(msg[0]);
+        try level.check(msg_type, provided);
+
+        switch (self.state) {
+            .flight_sent => {
+                self.state = if (self.client_policy != null)
+                    .wait_client_certificate
+                else
+                    .wait_client_finished;
+                return self.provideClientFlight(provided, msg);
+            },
+            .wait_client_certificate => {
+                if (msg_type != .certificate) return error.UnexpectedMessage;
+                const policy = self.client_policy orelse return error.UnexpectedMessage;
+                _ = policy;
+                const cert_der = try certificate.parseClientCertificate(msg, &.{});
+                switch (cert_der) {
+                    .empty => return error.ClientCertificateRequired,
+                    .present => |leaf_der| {
+                        // The signature check needs the leaf public key, which
+                        // the client chain parse extracts.
+                        const verified = try certificate.parseClientChain(
+                            msg,
+                            &.{},
+                            self.client_policy.?,
+                        );
+                        @memcpy(self.client_pub_key[0..verified.pub_key.len], verified.pub_key);
+                        self.client_pub_key_len = @intCast(verified.pub_key.len);
+                        _ = leaf_der;
+                    },
+                }
+                self.suite.update(msg);
+                self.state = .wait_client_verify;
+            },
+            .wait_client_verify => {
+                if (msg_type != .certificate_verify) return error.UnexpectedMessage;
+                const th = self.transcriptHash();
+                try certificate.verifyClientSignatureWithSchemes(
+                    msg,
+                    self.client_pub_key[0..self.client_pub_key_len],
+                    th.slice(),
+                    backend.capabilities.certificate_verify_schemes,
+                );
+                self.suite.update(msg);
+                self.state = .wait_client_finished;
+            },
+            .wait_client_finished, .connected => {
+                if (msg_type != .finished) return error.UnexpectedMessage;
+                const th = self.transcriptHash();
+                switch (self.suite) {
+                    .buffering => return error.UnexpectedMessage,
+                    inline .sha256, .sha384 => |*arm| {
+                        const Hash = @TypeOf(arm.transcript);
+                        try finished.verify(
+                            Hash,
+                            msg,
+                            &arm.client_finished_key.data,
+                            th.slice(),
+                        );
+                    },
+                }
+                self.suite.update(msg);
+                self.state = .connected;
+            },
+            .wait_client_hello, .server_hello_queued => return error.UnexpectedMessage,
+        }
+    }
+
     pub fn handshakeSecrets(self: *const Server) ?HandshakeSecrets {
         return copyHandshakeSecrets(&self.suite);
     }
-
-    /// Credentials the flight signs with. Borrowed for the call.
-    pub const Credentials = struct {
-        chain: CertificateChain,
-        signer: signature.Signer,
-    };
 
     /// Compose the authenticated server flight as four bare messages at
     /// `.handshake`: EncryptedExtensions, Certificate, CertificateVerify, and
@@ -622,6 +791,18 @@ pub const Server = struct {
         try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = ee } });
         pos += ee.len;
         self.suite.update(ee);
+
+        // RFC 8446 §4.3.2 - a CertificateRequest sits between
+        // EncryptedExtensions and Certificate, and is part of the transcript.
+        if (self.client_policy != null) {
+            const cr = try certificate_request.encode(
+                out[pos..],
+                backend.capabilities.certificate_verify_schemes,
+            );
+            try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = cr } });
+            pos += cr.len;
+            self.suite.update(cr);
+        }
 
         const cert = try creds.chain.encode(out[pos..]);
         try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = cert } });
@@ -664,7 +845,15 @@ pub const Server = struct {
         self.state = .flight_sent;
     }
 
-    pub const State = enum { wait_client_hello, server_hello_queued, flight_sent };
+    pub const State = enum {
+        wait_client_hello,
+        server_hello_queued,
+        flight_sent,
+        wait_client_certificate,
+        wait_client_verify,
+        wait_client_finished,
+        connected,
+    };
 
     pub const TranscriptHash = Client.TranscriptHash;
 
@@ -864,7 +1053,6 @@ test "core client: RFC 8448 §3 full replay closes the gate" {
 // the milestone the adapter phase depends on.
 test "core: client and server complete a handshake with each other" {
     const server_hello_mod = server_hello;
-    const x25519 = @import("x25519.zig");
 
     const ecdsa_cert = fixtures.server_ecdsa_cert_der;
     const ecdsa_scalar = fixtures.server_ecdsa_scalar;
@@ -934,4 +1122,93 @@ test "core: client and server complete a handshake with each other" {
     var fin_buf: [128]u8 = undefined;
     const fin = try client.sendClientFinished(&fin_buf);
     try testing.expectEqual(@as(u8, @intFromEnum(handshake.Type.finished)), fin[0]);
+}
+
+// Mutual authentication, core to core: the server asks for a certificate, the
+// client signs the CertificateVerify, and the server checks both against the
+// policy it was given. No engine in the path.
+test "core: client authentication completes both ways" {
+    const server_hello_mod = server_hello;
+
+    var server_key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer server_key.deinit();
+    var client_key = try signature.PrivateKey.fromP256Scalar(fixtures.client_ecdsa_scalar[0..32]);
+    defer client_key.deinit();
+
+    const share: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x71)));
+    const key_share: server_hello_mod.KeyShare = .{ .x25519 = share.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello_mod.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0x72),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    const dhe = [_]u8{0x6b} ** 32;
+
+    var server_policy: certificate.Policy = .init;
+    server_policy.now_sec = 0;
+    server_policy.insecure_no_chain_anchor = true;
+    // A client certificate must be a client certificate (RFC 5280 EKU).
+    server_policy.leaf_usage = .client_auth;
+
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    server.requireClientCertificate(server_policy);
+    try server.provide(.plaintext, &rfc8448_client_hello, .aes_128_gcm_sha256, sh, &dhe);
+
+    // Drain the ServerHello and its level events; the flight is next.
+    while (server.next()) |_| {}
+
+    var flight_buf: [2048]u8 = undefined;
+    try server.sendFlight(
+        .{ .chain = .{ .single = &fixtures.server_ecdsa_cert_der }, .signer = server_key.signer() },
+        null,
+        &flight_buf,
+    );
+
+    var client_policy: certificate.Policy = .init;
+    client_policy.now_sec = 0;
+    client_policy.insecure_no_chain_anchor = true;
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, client_policy);
+    defer client.deinit();
+    client.credentials = .{
+        .chain = .{ .single = &fixtures.client_ecdsa_cert_der },
+        .signer = client_key.signer(),
+    };
+    try client.start(&rfc8448_client_hello);
+    _ = client.next().?;
+    try client.provide(.plaintext, sh, &dhe);
+
+    // The server's flight, with a CertificateRequest in its legal position:
+    // after EncryptedExtensions and before Certificate (RFC 8446 §4.3.2).
+    var flight: [8][]const u8 = undefined;
+    var flight_len: usize = 0;
+    while (server.next()) |out| switch (out) {
+        .message => |m| {
+            flight[flight_len] = m.bytes;
+            flight_len += 1;
+        },
+        else => {},
+    };
+    for (flight[0..flight_len]) |m| try client.provideHandshake(.handshake, m);
+    try testing.expectEqual(Client.State.server_finished_verified, client.state);
+
+    var fin_buf: [1024]u8 = undefined;
+    _ = try client.sendClientFinished(&fin_buf);
+
+    // Drain the client's queued flight and hand it to the server in order.
+    var count: usize = 0;
+    while (client.next()) |out| switch (out) {
+        .message => |m| {
+            try server.provideClientFlight(.handshake, m.bytes);
+            count += 1;
+        },
+        else => {},
+    };
+    try testing.expectEqual(@as(usize, 3), count);
+    try testing.expectEqual(Server.State.connected, server.state);
 }
