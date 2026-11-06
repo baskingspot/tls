@@ -81,6 +81,8 @@ const testing = std.testing;
 const backend = @import("crypto/backend.zig");
 const certificate = @import("certificate.zig");
 const certificate_request = @import("certificate_request.zig");
+const client_hello = @import("client_hello.zig");
+const hkdf = @import("hkdf.zig");
 const CertificateChain = @import("certificate_chain.zig").CertificateChain;
 const signature = @import("signature.zig");
 const encrypted_extensions = @import("encrypted_extensions.zig");
@@ -1273,13 +1275,6 @@ test "core client: resumption_master_secret and PSK match RFC 8448 §4" {
         0xda, 0xf8, 0x6c, 0xc8, 0x56, 0x23, 0x1f, 0x2d,
         0x5a, 0xba, 0x46, 0xc4, 0x34, 0xec, 0x19, 0x6c,
     };
-    const rfc8448_resumption_psk = [_]u8{
-        0x4e, 0xcd, 0x0e, 0xb6, 0xec, 0x3b, 0x4d, 0x87,
-        0xf5, 0xd6, 0x02, 0x8f, 0x92, 0x2c, 0xa4, 0xc5,
-        0x85, 0x1a, 0x27, 0x7f, 0xd4, 0x13, 0x11, 0xc9,
-        0xe6, 0x2d, 0x2c, 0x94, 0x92, 0xe1, 0xc4, 0xf3,
-    };
-
     var policy: certificate.Policy = .init;
     policy.now_sec = 0;
     policy.insecure_no_chain_anchor = true;
@@ -1331,15 +1326,8 @@ pub fn binderFor(
 }
 
 test "psk binder: RFC 8448 §4 binder key and value" {
-    const hkdf = @import("hkdf.zig");
     const H = hkdf.HkdfSha256;
 
-    const rfc8448_resumption_psk = [_]u8{
-        0x4e, 0xcd, 0x0e, 0xb6, 0xec, 0x3b, 0x4d, 0x87,
-        0xf5, 0xd6, 0x02, 0x8f, 0x92, 0x2c, 0xa4, 0xc5,
-        0x85, 0x1a, 0x27, 0x7f, 0xd4, 0x13, 0x11, 0xc9,
-        0xe6, 0x2d, 0x2c, 0x94, 0x92, 0xe1, 0xc4, 0xf3,
-    };
     const rfc8448_binder_key = [_]u8{
         0x69, 0xfe, 0x13, 0x1a, 0x3b, 0xba, 0xd5, 0xd6,
         0x3c, 0x64, 0xee, 0xbc, 0xc3, 0x0e, 0x39, 0x5b,
@@ -1365,3 +1353,137 @@ test "psk binder: RFC 8448 §4 binder key and value" {
     const binder = binderFor(H, key, &rfc8448_binder_hash);
     try testing.expectEqualSlices(u8, &rfc8448_binder, &binder);
 }
+
+/// How the core asks for a ticket's PSK. The storage is the caller's; the core
+/// only knows how to ask and how to check what comes back.
+pub const PskLookup = struct {
+    context: *anyopaque,
+    lookup: *const fn (context: *anyopaque, identity: []const u8) ?[]const u8,
+};
+
+pub const PskSelection = struct {
+    /// Index into the ClientHello's identity list, which is what the server
+    /// echoes in ServerHello.selected_identity.
+    index: u16,
+    psk: []const u8,
+};
+
+/// RFC 8446 §4.2.11.2 - pick a PSK from a ClientHello's pre_shared_key offer
+/// and verify its binder.
+///
+/// The binder covers the ClientHello truncated before the binders vector, and
+/// each binder must be checked against the identity at the same index. Checking
+/// identity 0 against identity 1's prefix would accept a forgery, so the
+/// iterator advances both lists together and the index is what the caller gets
+/// back.
+///
+/// Returns null when the ClientHello offers no PSK or no identity resolves.
+pub fn selectPsk(
+    comptime Hkdf: type,
+    comptime Hash: type,
+    client_hello_msg: []const u8,
+    lookup: PskLookup,
+) error{ InvalidExtensionLength, InvalidVectorLength, UnexpectedEof }!?PskSelection {
+    const psk_type: u16 = 0x0029;
+    const ext_offset = client_hello.extensionOffset(client_hello_msg, psk_type) orelse return null;
+    const ext_data = client_hello.extension(client_hello_msg, psk_type) orelse return null;
+
+    // Prefix: the ClientHello up to and including the identities vector, i.e.
+    // everything before the binders' 2-byte length field.
+    const identities_len = std.mem.readInt(u16, ext_data[0..2], .big);
+    const binders_offset = ext_offset + 4 + 2 + @as(usize, identities_len);
+    if (binders_offset + 2 > client_hello_msg.len) return error.InvalidExtensionLength;
+    const prefix = client_hello_msg[0..binders_offset];
+
+    var offers: client_hello.PskOfferIter = try .init(ext_data);
+    var index: u16 = 0;
+    while (try offers.next()) |offer| {
+        defer index += 1;
+        const psk = lookup.lookup(lookup.context, offer.identity) orelse continue;
+        var binder_key: [Hkdf.prk_len]u8 = undefined;
+        @memcpy(&binder_key, &pskBinderKey(Hkdf, psk));
+        defer @memset(&binder_key, 0);
+        var th: Hkdf.TranscriptHash = undefined;
+        Hash.hash(prefix, &th.data, .{});
+        const expected = binderFor(Hkdf, binder_key, &th.data);
+        if (std.crypto.timing_safe.eql([Hkdf.prk_len]u8, expected, blk: {
+            var got: [Hkdf.prk_len]u8 = undefined;
+            @memcpy(&got, offer.binder[0..Hkdf.prk_len]);
+            break :blk got;
+        })) {
+            return .{ .index = index, .psk = psk };
+        }
+    }
+    return null;
+}
+
+// RFC 8448 §4's recorded ClientHello, offered for resumption. The binder is
+// verified against the trace, so the parse path is proven without any encoder.
+const psk_ch_hex =
+    "010001fc03031bc3ceb6bbe39cff938355b5a50adb6db21b7a6af649d7b4bc419d787648" ++
+    "7d95000006130113031302010001cd0000000b0009000006736572766572ff0100010000" ++
+    "0a00140012001d00170018001901000101010201030104003300260024001d0020e4ffb6" ++
+    "8ac05f8d96c99da26698346c6be16482badddafe051a66b4f18d668f0b002a0000002b00" ++
+    "03020304000d0020001e0403050306030203080408050806040105010601020104020502" ++
+    "06020202002d00020101001c000240010015005700000000000000000000000000000000" ++
+    "000000000000000000000000000000000000000000000000000000000000000000000000" ++
+    "000000000000000000000000000000000000000000000000000000000000000000000000" ++
+    "2900dd00b800b22c035d829359ee5ff7af4ec900000000262a6494dc486d2c8a34cb33fa" ++
+    "90bf1b0070ad3c498883c9367c09a2be785abc55cd226097a3a982117283f82a03a143ef" ++
+    "d3ff5dd36d64e861be7fd61d2827db279cce145077d454a3664d4e6da4d29ee03725a6a4" ++
+    "dafcd0fc67d2aea70529513e3da2677fa5906c5b3f7d8f92f228bda40dda721470f9fbf2" ++
+    "97b5aea617646fac5c03272e970727c621a79141ef5f7de6505e5bfbc388e93343694093" ++
+    "934ae4d357fad6aacb0021203add4fb2d8fdf822a0ca3cf7678ef5e88dae990141c5924d" ++
+    "57bb6fa31b9e5f9d";
+
+test "psk: the recorded resumption offer resolves and verifies" {
+    const H = hkdf.HkdfSha256;
+    var buf: [1024]u8 = undefined;
+    const ch = try std.fmt.hexToBytes(&buf, psk_ch_hex);
+
+    const Lookup = struct {
+        fn get(ctx: *anyopaque, identity: []const u8) ?[]const u8 {
+            _ = ctx;
+            if (identity.len == 0) return null;
+            return rfc8448_resumption_psk[0..];
+        }
+    };
+
+    const selected = try selectPsk(H, backend.sha2.Sha256, ch, .{
+        .context = undefined,
+        .lookup = Lookup.get,
+    });
+    try testing.expect(selected != null);
+    try testing.expectEqual(@as(u16, 0), selected.?.index);
+    try testing.expectEqualSlices(u8, &rfc8448_resumption_psk, selected.?.psk);
+}
+
+// A binder that does not match the prefix must not select, even when the
+// identity resolves. This is the forgery the index-matching rule prevents.
+test "psk: a tampered binder is refused" {
+    const H = hkdf.HkdfSha256;
+    var buf: [1024]u8 = undefined;
+    const ch = try std.fmt.hexToBytes(&buf, psk_ch_hex);
+    ch[ch.len - 1] ^= 0x01;
+
+    const Lookup = struct {
+        fn get(ctx: *anyopaque, identity: []const u8) ?[]const u8 {
+            _ = ctx;
+            if (identity.len == 0) return null;
+            return rfc8448_resumption_psk[0..];
+        }
+    };
+
+    const selected = try selectPsk(H, backend.sha2.Sha256, ch, .{
+        .context = undefined,
+        .lookup = Lookup.get,
+    });
+    try testing.expect(selected == null);
+}
+
+const rfc8448_resumption_psk = [_]u8{
+    0x4e, 0xcd, 0x0e, 0xb6, 0xec, 0x3b, 0x4d, 0x87,
+    0xf5, 0xd6, 0x02, 0x8f, 0x92, 0x2c, 0xa4, 0xc5,
+    0x85, 0x1a, 0x27, 0x7f, 0xd4, 0x13, 0x11, 0xc9,
+    0xe6, 0x2d, 0x2c, 0x94, 0x92, 0xe1, 0xc4, 0xf3,
+};

@@ -2658,6 +2658,33 @@ const compression_method_offset = 48;
 const extensions_len_offset = 49;
 const extensions_offset = extensions_len_offset + 2;
 
+/// Byte offset of the extension entry (type field) for `wanted`, or null.
+/// The PSK binder is computed over everything before the binders vector, so a
+/// verifier needs the entry's position, not just its data.
+pub fn extensionOffset(msg: []const u8, wanted: u16) ?usize {
+    if (msg.len < extensions_offset) return null;
+    var r: wire.Reader = .init(msg);
+    r.assumeSkip(1 + 3 + 2 + 32);
+    const session_id_len = r.assumeRead(u8);
+    r.assumeSkip(session_id_len);
+    const cipher_suites_len = r.assumeRead(u16);
+    r.assumeSkip(cipher_suites_len);
+    const compression_len = r.assumeRead(u8);
+    r.assumeSkip(compression_len);
+    const extensions_len = r.assumeRead(u16);
+    const end = r.end + extensions_len;
+    if (end > msg.len) return null;
+    while (r.end + 4 <= end) {
+        const offset = r.end;
+        const current = r.assumeRead(u16);
+        const ext_len = r.assumeRead(u16);
+        if (r.end + ext_len > end) return null;
+        if (current == wanted) return offset;
+        r.assumeSkip(ext_len);
+    }
+    return null;
+}
+
 /// The raw extension_data for `wanted`, or null when the ClientHello does not
 /// carry it. The slice borrows `msg`. Used by callers that require an
 /// extension to be present (RFC 8446 §4.2: a server that requires one aborts
