@@ -36,6 +36,12 @@ fn deriveHandshakeSecrets(suite: *suite_state.Suite, dhe: []const u8) aead.Error
                 &arm.server_finished_key,
             );
             discard.deinit();
+            var discard_client = try H.makeRecordLayerAndFinishedKey(
+                arm.aead,
+                arm.client_hs_secret,
+                &arm.client_finished_key,
+            );
+            discard_client.deinit();
         },
     }
 }
@@ -131,6 +137,7 @@ pub const Client = struct {
         wait_certificate_verify,
         wait_finished,
         server_finished_verified,
+        connected,
     };
 
     pub fn init(slots: []level.Output, policy: certificate.Policy) Client {
@@ -258,6 +265,7 @@ pub const Client = struct {
                 self.suite.update(msg);
                 self.state = .wait_finished;
             },
+            .connected => return error.UnexpectedMessage,
             .wait_finished, .server_finished_verified => {
                 if (msg_type != .finished) return error.UnexpectedMessage;
                 const th = self.transcriptHash();
@@ -266,6 +274,80 @@ pub const Client = struct {
                 self.state = .server_finished_verified;
             },
         }
+    }
+
+    /// Produce the client Finished as a bare handshake message, derive the
+    /// application traffic secrets from the transcript through the server
+    /// Finished, and move both directions to `.application`. RFC 8446 §4.4.4,
+    /// §7.1.
+    ///
+    /// `out` receives the Finished and stays borrowed by the queued output
+    /// until the caller drains it.
+    pub fn sendClientFinished(self: *Client, out: []u8) Error![]const u8 {
+        if (self.state != .server_finished_verified) return error.UnexpectedMessage;
+        const th = self.transcriptHash();
+        const msg = switch (self.suite) {
+            .buffering => return error.UnexpectedMessage,
+            inline .sha256, .sha384 => |*arm| blk: {
+                const Hash = @TypeOf(arm.transcript);
+                break :blk try finished.encode(
+                    Hash,
+                    out,
+                    &arm.client_finished_key.data,
+                    th.slice(),
+                );
+            },
+        };
+        try self.deriveApplicationSecrets(th.slice());
+        self.suite.update(msg);
+
+        self.queue.push(.{ .message = .{
+            .level = .handshake,
+            .bytes = msg,
+        } }) catch return error.QueueFull;
+        self.queue.push(.{ .read_level = .application }) catch return error.QueueFull;
+        self.queue.push(.{ .write_level = .application }) catch return error.QueueFull;
+        self.queue.push(.{ .key_available = .application }) catch return error.QueueFull;
+        self.queue.push(.done) catch return error.QueueFull;
+        self.state = .connected;
+        return msg;
+    }
+
+    /// RFC 8446 §7.1 - application traffic secrets, over the transcript through
+    /// the server Finished.
+    fn deriveApplicationSecrets(self: *Client, transcript_hash: []const u8) Error!void {
+        switch (self.suite) {
+            .buffering => return error.UnexpectedMessage,
+            inline .sha256, .sha384 => |*arm| {
+                const H = @TypeOf(arm.*).Hkdf;
+                var th_bytes: [H.prk_len]u8 = undefined;
+                @memcpy(&th_bytes, transcript_hash[0..H.prk_len]);
+                const th: H.TranscriptHash = .init(th_bytes);
+                var master = H.masterSecret(arm.handshake_secret);
+                defer master.secureZero();
+                var master_key: H.Keyed = .init(&master.data);
+                defer master_key.secureZero();
+                arm.client_app_secret = H.deriveSecretKeyed(&master_key, "c ap traffic", &th);
+                arm.server_app_secret = H.deriveSecretKeyed(&master_key, "s ap traffic", &th);
+            },
+        }
+    }
+
+    /// The application traffic secrets, once the client Finished has been sent.
+    pub fn applicationSecrets(self: *const Client) ?HandshakeSecrets {
+        return switch (self.suite) {
+            .buffering => null,
+            inline .sha256, .sha384 => |*arm| blk: {
+                var secrets: HandshakeSecrets = .{
+                    .len = @TypeOf(arm.*).Hkdf.prk_len,
+                    .client = @splat(0),
+                    .server = @splat(0),
+                };
+                @memcpy(secrets.client[0..secrets.len], arm.client_app_secret.data[0..secrets.len]);
+                @memcpy(secrets.server[0..secrets.len], arm.server_app_secret.data[0..secrets.len]);
+                break :blk secrets;
+            },
+        };
     }
 
     fn verifyFinished(self: *Client, msg: []const u8, transcript_hash: []const u8) Error!void {
@@ -617,4 +699,73 @@ test "core client: the flight is refused at the wrong level" {
         error.WrongLevel,
         client.provideHandshake(.application, ee.raw),
     );
+}
+
+// The replay gate from §5.2.1: RFC 8448 §3's complete trace through
+// `provide`/`next`, no engine in the path. Every recorded value is asserted:
+// the flight verifies in order, the client Finished is the recorded one, the
+// application secrets are the recorded ones, and the levels move to
+// `.application` before `done`.
+test "core client: RFC 8448 §3 full replay closes the gate" {
+    const rfc8448_client_finished = [_]u8{
+        0x14, 0x00, 0x00, 0x20, 0xa8, 0xec, 0x43, 0x6d,
+        0x67, 0x76, 0x34, 0xae, 0x52, 0x5a, 0xc1, 0xfc,
+        0xeb, 0xe1, 0x1a, 0x03, 0x9e, 0xc1, 0x76, 0x94,
+        0xfa, 0xc6, 0xe9, 0x85, 0x27, 0xb6, 0x42, 0xf2,
+        0xed, 0xd5, 0xce, 0x61,
+    };
+    const rfc8448_client_ap_secret = [_]u8{
+        0x9e, 0x40, 0x64, 0x6c, 0xe7, 0x9a, 0x7f, 0x9d,
+        0xc0, 0x5a, 0xf8, 0x88, 0x9b, 0xce, 0x65, 0x52,
+        0x87, 0x5a, 0xfa, 0x0b, 0x06, 0xdf, 0x00, 0x87,
+        0xf7, 0x92, 0xeb, 0xb7, 0xc1, 0x75, 0x04, 0xa5,
+    };
+    const rfc8448_server_ap_secret = [_]u8{
+        0xa1, 0x1a, 0xf9, 0xf0, 0x55, 0x31, 0xf8, 0x56,
+        0xad, 0x47, 0x11, 0x6b, 0x45, 0xa9, 0x50, 0x32,
+        0x82, 0x04, 0xb4, 0xf4, 0x4b, 0xfb, 0x6b, 0x3a,
+        0x4b, 0x4f, 0x1f, 0x3f, 0xcb, 0x63, 0x16, 0x43,
+    };
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+
+    var slots: [16]level.Output = undefined;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    client.offered.insert(.server_name);
+    client.offered.insert(.record_size_limit);
+
+    try client.start(&rfc8448_client_hello);
+    try testing.expectEqual(level.Level.plaintext, client.next().?.message.level);
+
+    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    try testing.expectEqual(level.Level.handshake, client.next().?.read_level);
+    try testing.expectEqual(level.Level.handshake, client.next().?.write_level);
+    try testing.expectEqual(level.Level.handshake, client.next().?.key_available);
+
+    var flight_buf: [4096]u8 = undefined;
+    const flight = fixtures.rfc8448.b64("server_flight.b64");
+    @memcpy(flight_buf[0..flight.len], flight);
+    var reader: handshake.Reader = .init(flight_buf[0..flight.len]);
+    while (try reader.next()) |msg| try client.provideHandshake(.handshake, msg.raw);
+
+    var out: [128]u8 = undefined;
+    const fin = try client.sendClientFinished(&out);
+    try testing.expectEqualSlices(u8, &rfc8448_client_finished, fin);
+
+    // Outputs in order, then the queue empties.
+    const fin_out = client.next().?;
+    try testing.expectEqual(level.Level.handshake, fin_out.message.level);
+    try testing.expectEqualSlices(u8, &rfc8448_client_finished, fin_out.message.bytes);
+    try testing.expectEqual(level.Level.application, client.next().?.read_level);
+    try testing.expectEqual(level.Level.application, client.next().?.write_level);
+    try testing.expectEqual(level.Level.application, client.next().?.key_available);
+    try testing.expectEqual(level.Output.done, client.next().?);
+    try testing.expectEqual(@as(?level.Output, null), client.next());
+
+    const app = client.applicationSecrets().?;
+    try testing.expectEqualSlices(u8, &rfc8448_client_ap_secret, app.client[0..32]);
+    try testing.expectEqualSlices(u8, &rfc8448_server_ap_secret, app.server[0..32]);
 }
