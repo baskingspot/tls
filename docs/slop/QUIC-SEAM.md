@@ -237,6 +237,11 @@ derived handshake traffic secrets, all against the recorded trace.
 If the full replay cannot pass at the end of 1c, the premise is broken and the
 work stops for a decision.
 
+Status: closed at `b062beb`. `handshake_core.zig` replays the §3 trace through
+`provide` and `next` with no engine in the path, asserting the queued messages,
+every level transition, the derived handshake and application traffic secrets,
+and the client Finished bytes against the recorded values.
+
 ### 5.3 Who owns what
 
 | Concern | Core | Record adapter |
