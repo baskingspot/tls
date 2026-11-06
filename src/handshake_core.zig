@@ -58,6 +58,7 @@ pub const HandshakeSecrets = struct {
 const std = @import("std");
 const testing = std.testing;
 
+const certificate = @import("certificate.zig");
 const level = @import("level.zig");
 const server_hello = @import("server_hello.zig");
 const suite_state = @import("suite_state.zig");
@@ -78,6 +79,10 @@ pub const Client = struct {
     /// Transcript and key schedule. The client starts buffering both candidate
     /// hashes because the suite is unknown until ServerHello (RFC 8446 §4.4.1).
     suite: suite_state.Suite,
+    /// The caller's verification policy, applied by the core at the moment the
+    /// transcript requires it. Required at construction: there is no default,
+    /// so no caller can compile a handshake that verifies nothing by omission.
+    policy: certificate.Policy,
     queue: level.Queue,
     /// Set once ServerHello selects the suite, so later messages can be checked
     /// against the chosen arm.
@@ -86,10 +91,11 @@ pub const Client = struct {
 
     pub const State = enum { start, wait_server_hello, server_hello_done };
 
-    pub fn init(slots: []level.Output) Client {
+    pub fn init(slots: []level.Output, policy: certificate.Policy) Client {
         return .{
             .suite = .init(),
             .queue = .init(slots),
+            .policy = policy,
             .selected = null,
             .state = .start,
         };
@@ -174,6 +180,12 @@ pub const Client = struct {
     pub fn handshakeSecrets(self: *const Client) ?HandshakeSecrets {
         return copyHandshakeSecrets(&self.suite);
     }
+
+    /// The policy this handshake verifies against. Present so a caller can
+    /// inspect what it constructed with; the core applies it, not the caller.
+    pub fn policyOf(self: *const Client) certificate.Policy {
+        return self.policy;
+    }
 };
 
 // RFC 8448 §3, the plaintext half of the trace, driven through the core with no
@@ -246,7 +258,7 @@ const rfc8448_server_hs_secret = [_]u8{
 
 test "core client: RFC 8448 §3 plaintext half" {
     var slots: [8]level.Output = undefined;
-    var client: Client = .init(&slots);
+    var client: Client = .init(&slots, .init);
     defer client.deinit();
 
     // The ClientHello goes out at plaintext, after absorption.
@@ -268,9 +280,21 @@ test "core client: RFC 8448 §3 plaintext half" {
     try testing.expectEqualSlices(u8, &rfc8448_server_hs_secret, secrets.server[0..32]);
 }
 
+test "core client: verification policy is required, never defaulted" {
+    var slots: [8]level.Output = undefined;
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    try testing.expect(client.policyOf().insecure_no_chain_anchor);
+    // There is no `init(slots)` overload on purpose: a caller cannot reach a
+    // handshake that verifies nothing by leaving a field out.
+}
+
 test "core client: a wrong-level ServerHello is refused" {
     var slots: [8]level.Output = undefined;
-    var client: Client = .init(&slots);
+    var client: Client = .init(&slots, .init);
     defer client.deinit();
     try client.start(&rfc8448_client_hello);
     _ = client.next().?;
@@ -351,7 +375,7 @@ pub const Server = struct {
 test "core: client and server derive the same handshake secrets" {
     var client_slots: [8]level.Output = undefined;
     var server_slots: [8]level.Output = undefined;
-    var client: Client = .init(&client_slots);
+    var client: Client = .init(&client_slots, .init);
     defer client.deinit();
     var server: Server = .init(&server_slots);
     defer server.deinit();
