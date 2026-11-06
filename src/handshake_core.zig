@@ -10,10 +10,50 @@
 //! handshake; RFC 9001 §4.1.3 requires the level to be checked at this
 //! boundary, which is what `level.check` does.
 //!
-//! Scope of this first slice: the client's plaintext half. ClientHello out,
-//! ServerHello in, transcript absorbed, handshake traffic secrets derived. The
-//! encrypted paths and the server role land after it, and the full RFC 8448
-//! replay gate marks the end of that work.
+//! Scope so far: the plaintext half of both roles. ClientHello and ServerHello
+//! are absorbed, the key schedule runs, and both roles derive the same
+//! handshake traffic secrets. Message encoding stays with the engines until the
+//! adapter exists, so callers pass already-encoded messages in.
+
+/// Derive the handshake traffic secrets from a finished exchange transcript.
+/// Shared by both roles: RFC 8446 §7.1 does not care who is asking.
+fn deriveHandshakeSecrets(suite: *suite_state.Suite, dhe: []const u8) void {
+    switch (suite.*) {
+        .buffering => unreachable,
+        inline .sha256, .sha384 => |*arm| {
+            const H = @TypeOf(arm.*).Hkdf;
+            arm.handshake_secret = H.handshakeSecretFor(null, dhe);
+            const th: H.TranscriptHash = .init(arm.transcript.peek());
+            var handshake_key: H.Keyed = .init(&arm.handshake_secret.data);
+            defer handshake_key.secureZero();
+            arm.client_hs_secret = H.deriveSecretKeyed(&handshake_key, "c hs traffic", &th);
+            arm.server_hs_secret = H.deriveSecretKeyed(&handshake_key, "s hs traffic", &th);
+        },
+    }
+}
+
+/// Copy the two handshake traffic secrets out of whichever arm is active.
+fn copyHandshakeSecrets(suite: *const suite_state.Suite) ?HandshakeSecrets {
+    return switch (suite.*) {
+        .buffering => null,
+        inline .sha256, .sha384 => |*arm| blk: {
+            var secrets: HandshakeSecrets = .{
+                .len = @TypeOf(arm.*).Hkdf.prk_len,
+                .client = @splat(0),
+                .server = @splat(0),
+            };
+            @memcpy(secrets.client[0..secrets.len], arm.client_hs_secret.data[0..secrets.len]);
+            @memcpy(secrets.server[0..secrets.len], arm.server_hs_secret.data[0..secrets.len]);
+            break :blk secrets;
+        },
+    };
+}
+
+pub const HandshakeSecrets = struct {
+    len: u8,
+    client: [48]u8,
+    server: [48]u8,
+};
 
 const std = @import("std");
 const testing = std.testing;
@@ -126,42 +166,14 @@ pub const Client = struct {
     /// the handshake traffic secrets. The record layers are the adapter's
     /// problem, so only the secrets live here.
     fn deriveHandshakeKeys(self: *Client, dhe: []const u8) Error!void {
-        switch (self.suite) {
-            .buffering => return error.UnexpectedMessage,
-            inline .sha256, .sha384 => |*arm| {
-                const H = @TypeOf(arm.*).Hkdf;
-                arm.handshake_secret = H.handshakeSecretFor(null, dhe);
-                const th: H.TranscriptHash = .init(arm.transcript.peek());
-                var handshake_key: H.Keyed = .init(&arm.handshake_secret.data);
-                defer handshake_key.secureZero();
-                arm.client_hs_secret = H.deriveSecretKeyed(&handshake_key, "c hs traffic", &th);
-                arm.server_hs_secret = H.deriveSecretKeyed(&handshake_key, "s hs traffic", &th);
-            },
-        }
+        if (self.suite == .buffering) return error.UnexpectedMessage;
+        deriveHandshakeSecrets(&self.suite, dhe);
     }
 
     /// The handshake traffic secrets, once ServerHello has been provided.
     pub fn handshakeSecrets(self: *const Client) ?HandshakeSecrets {
-        return switch (self.suite) {
-            .buffering => null,
-            inline .sha256, .sha384 => |*arm| blk: {
-                var secrets: HandshakeSecrets = .{
-                    .len = @TypeOf(arm.*).Hkdf.prk_len,
-                    .client = @splat(0),
-                    .server = @splat(0),
-                };
-                @memcpy(secrets.client[0..secrets.len], arm.client_hs_secret.data[0..secrets.len]);
-                @memcpy(secrets.server[0..secrets.len], arm.server_hs_secret.data[0..secrets.len]);
-                break :blk secrets;
-            },
-        };
+        return copyHandshakeSecrets(&self.suite);
     }
-
-    pub const HandshakeSecrets = struct {
-        len: u8,
-        client: [48]u8,
-        server: [48]u8,
-    };
 };
 
 // RFC 8448 §3, the plaintext half of the trace, driven through the core with no
@@ -266,4 +278,120 @@ test "core client: a wrong-level ServerHello is refused" {
         error.WrongLevel,
         client.provide(.handshake, &rfc8448_server_hello, &dhe_rfc8448),
     );
+}
+
+/// The server's plaintext half: accept the ClientHello, queue the ServerHello,
+/// derive the same handshake traffic secrets the client derives.
+pub const Server = struct {
+    suite: suite_state.Suite,
+    queue: level.Queue,
+    state: State,
+
+    pub const State = enum { wait_client_hello, server_hello_queued };
+
+    pub fn init(slots: []level.Output) Server {
+        return .{ .suite = .init(), .queue = .init(slots), .state = .wait_client_hello };
+    }
+
+    pub fn deinit(self: *Server) void {
+        self.suite.secureZero();
+        self.queue.clear();
+        self.* = undefined;
+    }
+
+    pub fn next(self: *Server) ?level.Output {
+        return self.queue.pop();
+    }
+
+    /// Absorb the ClientHello and the ServerHello that answers it, then run the
+    /// key schedule. The ServerHello bytes are the caller's, encoded by the
+    /// policy that chose them; the core owns the transcript and the level.
+    pub fn provide(
+        self: *Server,
+        provided: level.Level,
+        client_hello_msg: []const u8,
+        cipher_suite: CipherSuite,
+        server_hello_msg: []const u8,
+        dhe: []const u8,
+    ) Error!void {
+        if (self.state != .wait_client_hello) return error.UnexpectedMessage;
+        try level.check(.client_hello, provided);
+
+        // The server picks the suite, so the arm exists before the transcript
+        // starts: no buffering arm, and the ClientHello is absorbed once.
+        self.suite = switch (cipher_suite) {
+            .aes_128_gcm_sha256, .chacha20_poly1305_sha256 => .{
+                .sha256 = .init(suite_state.Sha256.init(.{}), cipher_suite),
+            },
+            .aes_256_gcm_sha384 => .{
+                .sha384 = .init(suite_state.Sha384.init(.{}), cipher_suite),
+            },
+        };
+        self.suite.update(client_hello_msg);
+        self.suite.update(server_hello_msg);
+        deriveHandshakeSecrets(&self.suite, dhe);
+
+        self.queue.push(.{ .message = .{
+            .level = .plaintext,
+            .bytes = server_hello_msg,
+        } }) catch return error.QueueFull;
+        self.queue.push(.{ .read_level = .handshake }) catch return error.QueueFull;
+        self.queue.push(.{ .write_level = .handshake }) catch return error.QueueFull;
+        self.queue.push(.{ .key_available = .handshake }) catch return error.QueueFull;
+        self.state = .server_hello_queued;
+    }
+
+    pub fn handshakeSecrets(self: *const Server) ?HandshakeSecrets {
+        return copyHandshakeSecrets(&self.suite);
+    }
+};
+
+// Both roles, same transcript, same DHE: the secrets must agree. This is the
+// minimal statement of "one key schedule" and it needs no engine underneath.
+test "core: client and server derive the same handshake secrets" {
+    var client_slots: [8]level.Output = undefined;
+    var server_slots: [8]level.Output = undefined;
+    var client: Client = .init(&client_slots);
+    defer client.deinit();
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+
+    try client.start(&rfc8448_client_hello);
+    _ = client.next().?;
+    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+
+    try server.provide(
+        .plaintext,
+        &rfc8448_client_hello,
+        .aes_128_gcm_sha256,
+        &rfc8448_server_hello,
+        &dhe_rfc8448,
+    );
+
+    const from_client = client.handshakeSecrets().?;
+    const from_server = server.handshakeSecrets().?;
+    try testing.expectEqualSlices(u8, from_client.client[0..32], from_server.client[0..32]);
+    try testing.expectEqualSlices(u8, from_client.server[0..32], from_server.server[0..32]);
+    // And both are the recorded RFC 8448 values.
+    try testing.expectEqualSlices(u8, &rfc8448_client_hs_secret, from_server.client[0..32]);
+    try testing.expectEqualSlices(u8, &rfc8448_server_hs_secret, from_server.server[0..32]);
+}
+
+test "core: the server queues its ServerHello at plaintext" {
+    var slots: [8]level.Output = undefined;
+    var server: Server = .init(&slots);
+    defer server.deinit();
+    try server.provide(
+        .plaintext,
+        &rfc8448_client_hello,
+        .aes_128_gcm_sha256,
+        &rfc8448_server_hello,
+        &dhe_rfc8448,
+    );
+    const first = server.next().?;
+    try testing.expectEqual(level.Level.plaintext, first.message.level);
+    try testing.expectEqualSlices(u8, &rfc8448_server_hello, first.message.bytes);
+    try testing.expectEqual(level.Level.handshake, server.next().?.read_level);
+    try testing.expectEqual(level.Level.handshake, server.next().?.write_level);
+    try testing.expectEqual(level.Level.handshake, server.next().?.key_available);
 }
