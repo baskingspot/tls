@@ -76,7 +76,8 @@ missing the updated environment.
 `just ci` is the gate before a push. `just test` and `just integrations-ci` are
 subsets of it: the conformance subproject has its own call sites, so neither
 compiles anything under `conformance/`. A public signature change can pass both
-and still break the push.
+and still break the push. `.githooks/pre-push` enforces this: enable it once per
+checkout with `git config core.hooksPath .githooks`.
 
 ---
 

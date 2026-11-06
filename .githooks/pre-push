@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The gate before a push. `just ci` is the whole thing; a commit hook that runs
+# lint is not enough, because lint is a subset and the conformance subproject is
+# no subset of anything else.
+set -euo pipefail
+
+if ! command -v just >/dev/null 2>&1; then
+    echo "pre-push: just is not on PATH; run inside the devshell" >&2
+    exit 1
+fi
+
+echo "pre-push: running just ci (the full gate)" >&2
+if ! just ci; then
+    echo "pre-push: just ci failed; push refused" >&2
+    exit 1
+fi
