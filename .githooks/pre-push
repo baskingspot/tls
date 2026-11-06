@@ -4,6 +4,10 @@
 # no subset of anything else.
 set -euo pipefail
 
+# git writes the ref list to this hook's stdin. Reading it fully keeps git from
+# taking SIGPIPE on a large push, which looks like the hook failing.
+cat >/dev/null
+
 if ! command -v just >/dev/null 2>&1; then
     echo "pre-push: just is not on PATH; run inside the devshell" >&2
     exit 1

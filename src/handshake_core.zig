@@ -15,6 +15,28 @@
 //! handshake traffic secrets. Message encoding stays with the engines until the
 //! adapter exists, so callers pass already-encoded messages in.
 
+/// RFC 8446 §4.4.1 - the HRR transcript replaces ClientHello1 with a
+/// message_hash handshake message, then absorbs the HelloRetryRequest.
+fn resetTranscriptForHrr(suite: *suite_state.Suite, ch1_hash: []const u8, hrr: []const u8) void {
+    switch (suite.*) {
+        .buffering => unreachable,
+        inline .sha256, .sha384 => |*arm| blk: {
+            const Hash = @TypeOf(arm.transcript);
+            const hlen = Hash.digest_length;
+            arm.transcript = Hash.init(.{});
+            var prefix: [4 + 48]u8 = undefined;
+            prefix[0] = @intFromEnum(handshake.Type.message_hash);
+            prefix[1] = 0;
+            prefix[2] = 0;
+            prefix[3] = @intCast(hlen);
+            @memcpy(prefix[4..][0..hlen], ch1_hash[0..hlen]);
+            arm.transcript.update(prefix[0 .. 4 + hlen]);
+            arm.transcript.update(hrr);
+            break :blk;
+        },
+    }
+}
+
 /// Derive the handshake traffic secrets from a finished exchange transcript.
 /// Shared by both roles: RFC 8446 §7.1 does not care who is asking.
 fn deriveHandshakeSecrets(suite: *suite_state.Suite, dhe: []const u8) aead.Error!void {
@@ -82,6 +104,9 @@ const backend = @import("crypto/backend.zig");
 const certificate = @import("certificate.zig");
 const certificate_request = @import("certificate_request.zig");
 const client_hello = @import("client_hello.zig");
+const kex = @import("kex.zig");
+const Random = @import("root.zig").Random;
+const KeyPairs = @import("handshake_key_pairs.zig").KeyPairs;
 const hkdf = @import("hkdf.zig");
 const CertificateChain = @import("certificate_chain.zig").CertificateChain;
 const signature = @import("signature.zig");
@@ -120,7 +145,8 @@ pub const Error = error{
     certificate.ParseError || certificate.EncodeError ||
     finished.VerifyError || encrypted_extensions.ParseError ||
     encrypted_extensions.EncodeError || certificate_request.ParseError ||
-    signature.SignError || aead.Error;
+    signature.SignError || aead.Error ||
+    server_hello.HrrParseError || client_hello.RetryEncodeError;
 
 pub const Client = struct {
     /// Transcript and key schedule. The client starts buffering both candidate
@@ -157,6 +183,7 @@ pub const Client = struct {
         wait_certificate,
         wait_certificate_verify,
         wait_finished,
+        wait_client_hello2,
         server_finished_verified,
         connected,
     };
@@ -258,7 +285,7 @@ pub const Client = struct {
         try level.check(msg_type, provided);
 
         switch (self.state) {
-            .start, .wait_server_hello => return error.UnexpectedMessage,
+            .start, .wait_server_hello, .wait_client_hello2 => return error.UnexpectedMessage,
             .server_hello_done, .wait_encrypted_extensions => {
                 if (msg_type != .encrypted_extensions) return error.UnexpectedMessage;
                 _ = try encrypted_extensions.parse(msg, &.{}, .{
@@ -306,6 +333,84 @@ pub const Client = struct {
                 self.state = .server_finished_verified;
             },
         }
+    }
+
+    /// Accept a HelloRetryRequest at `.plaintext` and reset the transcript per
+    /// RFC 8446 §4.4.1: ClientHello1 collapses to a message_hash message and
+    /// the HRR is absorbed after it.
+    ///
+    /// The caller supplies nothing but the HRR; the selected group comes back
+    /// through `helloRetryGroup()` so the caller can build ClientHello2 with the
+    /// matching key share.
+    pub fn acceptHelloRetryRequest(
+        self: *Client,
+        provided: level.Level,
+        hrr: []const u8,
+    ) Error!kex.NamedGroup {
+        if (self.state != .wait_server_hello) return error.UnexpectedMessage;
+        try level.check(.server_hello, provided);
+        const parsed = try server_hello.parseHelloRetryRequest(hrr);
+        // ClientHello1 was absorbed while buffering both candidate hashes. The
+        // HRR names the suite, so the message_hash uses that suite's hash.
+        const buffered = switch (self.suite) {
+            .buffering => |b| b,
+            inline .sha256, .sha384 => return error.UnexpectedMessage,
+        };
+        var ch1_hash: [48]u8 = undefined;
+        const ch1_len: usize = switch (parsed.cipher_suite) {
+            .aes_128_gcm_sha256, .chacha20_poly1305_sha256 => blk: {
+                const th = buffered.sha256.peek();
+                @memcpy(ch1_hash[0..th.len], &th);
+                break :blk th.len;
+            },
+            .aes_256_gcm_sha384 => blk: {
+                const th = buffered.sha384.peek();
+                @memcpy(ch1_hash[0..th.len], &th);
+                break :blk th.len;
+            },
+        };
+
+        self.suite = switch (parsed.cipher_suite) {
+            .aes_128_gcm_sha256, .chacha20_poly1305_sha256 => .{
+                .sha256 = .init(suite_state.Sha256.init(.{}), parsed.cipher_suite),
+            },
+            .aes_256_gcm_sha384 => .{
+                .sha384 = .init(suite_state.Sha384.init(.{}), parsed.cipher_suite),
+            },
+        };
+        resetTranscriptForHrr(&self.suite, ch1_hash[0..ch1_len], hrr);
+        self.state = .wait_client_hello2;
+        // A HRR without key_share selects no group; the caller then reuses its
+        // existing share, which the engine's retry encoder supports by taking
+        // the group it is given.
+        return parsed.selected_group orelse .x25519;
+    }
+
+    /// Encode and queue ClientHello2 with a fresh key share for `group`, absorb
+    /// it, and return to `.wait_server_hello`. RFC 8446 §4.1.2.
+    pub fn sendClientHello2(
+        self: *Client,
+        group: kex.NamedGroup,
+        random: Random,
+        keypairs: KeyPairs,
+        out: []u8,
+    ) Error![]const u8 {
+        if (self.state != .wait_client_hello2) return error.UnexpectedMessage;
+        const ch2 = try client_hello.encodeRetryAfterHrr(
+            out,
+            random,
+            keypairs.x25519.public_key,
+            keypairs.p256.public_key,
+            if (keypairs.p384) |k| k.public_key else null,
+            group,
+            null,
+            null,
+            &.{},
+        );
+        self.suite.update(ch2);
+        try self.queue.push(.{ .message = .{ .level = .plaintext, .bytes = ch2 } });
+        self.state = .wait_server_hello;
+        return ch2;
     }
 
     /// Produce the client Finished as a bare handshake message, derive the
@@ -673,6 +778,9 @@ pub const Server = struct {
     /// CertificateVerify.
     client_pub_key: [1024]u8,
     client_pub_key_len: u8,
+    /// Transcript hash of ClientHello1, needed for the HRR message_hash.
+    ch1_hash: Client.TranscriptHash,
+    hrr_sent: bool,
 
     pub fn init(slots: []level.Output) Server {
         return .{
@@ -682,6 +790,8 @@ pub const Server = struct {
             .client_policy = null,
             .client_pub_key = undefined,
             .client_pub_key_len = 0,
+            .ch1_hash = .init(),
+            .hrr_sent = false,
         };
     }
 
@@ -706,11 +816,21 @@ pub const Server = struct {
         server_hello_msg: []const u8,
         dhe: []const u8,
     ) Error!void {
+        try self.provideClientHello(provided, client_hello_msg, cipher_suite);
+        try self.provideServerHello(.plaintext, server_hello_msg, dhe);
+    }
+
+    /// Absorb a ClientHello at `.plaintext`. A server picks the suite, so the
+    /// arm exists before the transcript starts and the message is absorbed
+    /// once, with no buffering arm.
+    pub fn provideClientHello(
+        self: *Server,
+        provided: level.Level,
+        client_hello_msg: []const u8,
+        cipher_suite: CipherSuite,
+    ) Error!void {
         if (self.state != .wait_client_hello) return error.UnexpectedMessage;
         try level.check(.client_hello, provided);
-
-        // The server picks the suite, so the arm exists before the transcript
-        // starts: no buffering arm, and the ClientHello is absorbed once.
         self.suite = switch (cipher_suite) {
             .aes_128_gcm_sha256, .chacha20_poly1305_sha256 => .{
                 .sha256 = .init(suite_state.Sha256.init(.{}), cipher_suite),
@@ -720,6 +840,44 @@ pub const Server = struct {
             },
         };
         self.suite.update(client_hello_msg);
+        self.ch1_hash = self.transcriptHash();
+        self.state = .ch_absorbed;
+    }
+
+    /// Emit a HelloRetryRequest at `.plaintext` for `selected_group`, replacing
+    /// ClientHello1 in the transcript with the RFC 8446 §4.4.1 message_hash.
+    pub fn sendHelloRetryRequest(
+        self: *Server,
+        selected_group: kex.NamedGroup,
+        out: []u8,
+    ) Error![]const u8 {
+        if (self.state != .ch_absorbed) return error.UnexpectedMessage;
+        const suite: CipherSuite = switch (self.suite) {
+            .buffering => return error.UnexpectedMessage,
+            inline .sha256, .sha384 => |*arm| arm.aead,
+        };
+        const hrr = try server_hello.encodeHelloRetryRequest(
+            out,
+            &.{},
+            suite,
+            selected_group,
+        );
+        resetTranscriptForHrr(&self.suite, self.ch1_hash.slice(), hrr);
+        try self.queue.push(.{ .message = .{ .level = .plaintext, .bytes = hrr } });
+        self.hrr_sent = true;
+        return hrr;
+    }
+
+    /// Absorb the ServerHello that answers ClientHello2 (or ClientHello1 when
+    /// no HRR was sent), then run the key schedule.
+    pub fn provideServerHello(
+        self: *Server,
+        provided: level.Level,
+        server_hello_msg: []const u8,
+        dhe: []const u8,
+    ) Error!void {
+        if (self.state != .ch_absorbed) return error.UnexpectedMessage;
+        try level.check(.server_hello, provided);
         self.suite.update(server_hello_msg);
         try deriveHandshakeSecrets(&self.suite, dhe);
 
@@ -813,7 +971,10 @@ pub const Server = struct {
                 self.suite.update(msg);
                 self.state = .connected;
             },
-            .wait_client_hello, .server_hello_queued => return error.UnexpectedMessage,
+            .wait_client_hello,
+            .ch_absorbed,
+            .server_hello_queued,
+            => return error.UnexpectedMessage,
         }
     }
 
@@ -900,6 +1061,7 @@ pub const Server = struct {
 
     pub const State = enum {
         wait_client_hello,
+        ch_absorbed,
         server_hello_queued,
         flight_sent,
         wait_client_certificate,
@@ -1106,7 +1268,6 @@ test "core client: RFC 8448 §3 full replay closes the gate" {
 // the milestone the adapter phase depends on.
 test "core: client and server complete a handshake with each other" {
     const server_hello_mod = server_hello;
-
     const ecdsa_cert = fixtures.server_ecdsa_cert_der;
     const ecdsa_scalar = fixtures.server_ecdsa_scalar;
 
@@ -1182,7 +1343,6 @@ test "core: client and server complete a handshake with each other" {
 // policy it was given. No engine in the path.
 test "core: client authentication completes both ways" {
     const server_hello_mod = server_hello;
-
     var server_key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
     defer server_key.deinit();
     var client_key = try signature.PrivateKey.fromP256Scalar(fixtures.client_ecdsa_scalar[0..32]);
@@ -1487,3 +1647,57 @@ const rfc8448_resumption_psk = [_]u8{
     0x85, 0x1a, 0x27, 0x7f, 0xd4, 0x13, 0x11, 0xc9,
     0xe6, 0x2d, 0x2c, 0x94, 0x92, 0xe1, 0xc4, 0xf3,
 };
+
+// HelloRetryRequest, core to core: the server emits it, the client resets the
+// transcript to message_hash(ClientHello1) || HRR, emits ClientHello2, and both
+// sides must then agree on the transcript before any key exchange happens.
+test "hrr: both roles reset the transcript to message_hash(ClientHello1) || HRR" {
+    var client_keypairs: KeyPairs = try .init(try .generateDeterministic(.init(@splat(0x81))));
+    client_keypairs.p256 = try .generateDeterministic(.init(@splat(0x82)));
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+
+    var ch1_buf: [1024]u8 = undefined;
+    const ch1 = try client_hello.encodeWithHybridGroupsAndExtensions(
+        &ch1_buf,
+        .zero,
+        client_keypairs.x25519.public_key,
+        client_keypairs.p256.public_key,
+        null,
+        null,
+        &.{},
+        &.{},
+        null,
+        &.{},
+    );
+    try client.start(ch1);
+    _ = client.next().?;
+
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    try server.provideClientHello(.plaintext, ch1, .aes_128_gcm_sha256);
+
+    var hrr_buf: [256]u8 = undefined;
+    const hrr = try server.sendHelloRetryRequest(.secp256r1, &hrr_buf);
+
+    const group = try client.acceptHelloRetryRequest(.plaintext, hrr);
+    try testing.expectEqual(kex.NamedGroup.secp256r1, group);
+
+    // Both roles must now hold the same transcript, before any ClientHello2.
+    const client_th = client.transcriptHash();
+    const server_th = server.transcriptHash();
+    try testing.expectEqual(client_th.len, server_th.len);
+    try testing.expectEqualSlices(u8, client_th.slice(), server_th.slice());
+
+    var ch2_buf: [1024]u8 = undefined;
+    const ch2 = try client.sendClientHello2(group, .zero, client_keypairs, &ch2_buf);
+    try testing.expect(!std.mem.eql(u8, ch1, ch2));
+    // ClientHello2 carries the requested group's key share.
+}
