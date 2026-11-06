@@ -74,6 +74,8 @@ const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
 const certificate = @import("certificate.zig");
+const CertificateChain = @import("certificate_chain.zig").CertificateChain;
+const signature = @import("signature.zig");
 const encrypted_extensions = @import("encrypted_extensions.zig");
 const extension_type = @import("extension_type.zig");
 const finished = @import("finished.zig");
@@ -103,8 +105,9 @@ pub const Error = error{
     /// The peer's leaf public key does not fit the core's retention buffer.
     CertificateKeyTooLarge,
 } || server_hello.ParseError || certificate.VerifyError ||
-    certificate.ParseError || finished.VerifyError ||
-    encrypted_extensions.ParseError || aead.Error;
+    certificate.ParseError || certificate.EncodeError ||
+    finished.VerifyError || encrypted_extensions.ParseError ||
+    encrypted_extensions.EncodeError || signature.SignError || aead.Error;
 
 pub const Client = struct {
     /// Transcript and key schedule. The client starts buffering both candidate
@@ -534,8 +537,6 @@ pub const Server = struct {
     queue: level.Queue,
     state: State,
 
-    pub const State = enum { wait_client_hello, server_hello_queued };
-
     pub fn init(slots: []level.Output) Server {
         return .{ .suite = .init(), .queue = .init(slots), .state = .wait_client_hello };
     }
@@ -590,6 +591,94 @@ pub const Server = struct {
 
     pub fn handshakeSecrets(self: *const Server) ?HandshakeSecrets {
         return copyHandshakeSecrets(&self.suite);
+    }
+
+    /// Credentials the flight signs with. Borrowed for the call.
+    pub const Credentials = struct {
+        chain: CertificateChain,
+        signer: signature.Signer,
+    };
+
+    /// Compose the authenticated server flight as four bare messages at
+    /// `.handshake`: EncryptedExtensions, Certificate, CertificateVerify, and
+    /// Finished. One `message` output per message, in wire order, because a
+    /// caller framing these itself (QUIC CRYPTO, or a record adapter) must see
+    /// each one and its level rather than a coalesced blob.
+    ///
+    /// `out` must hold the largest message in the flight; the queued outputs
+    /// borrow slices inside it.
+    pub fn sendFlight(
+        self: *Server,
+        creds: Credentials,
+        alpn: ?[]const u8,
+        out: []u8,
+    ) Error!void {
+        if (self.state != .server_hello_queued) return error.UnexpectedMessage;
+
+        // Each message gets its own bytes in `out`: the queue borrows, so they
+        // cannot share a start offset.
+        var pos: usize = 0;
+        const ee = try encrypted_extensions.encode(out[pos..], alpn, false);
+        try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = ee } });
+        pos += ee.len;
+        self.suite.update(ee);
+
+        const cert = try creds.chain.encode(out[pos..]);
+        try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = cert } });
+        pos += cert.len;
+        self.suite.update(cert);
+
+        // RFC 8446 §4.4.3 - the signature covers the server context and the
+        // transcript through Certificate, snapshotted before CV is absorbed.
+        const th = self.transcriptHash();
+        const ctx_len = certificate.server_certificate_verify_context.len;
+        var sign_input: [ctx_len + 48]u8 = undefined;
+        sign_input[0..ctx_len].* = certificate.server_certificate_verify_context.*;
+        @memcpy(sign_input[ctx_len..][0..th.len], th.slice());
+        var sig_buf: [512]u8 = undefined;
+        const sig = try creds.signer.sign(
+            creds.signer.context,
+            sign_input[0 .. ctx_len + th.len],
+            &sig_buf,
+        );
+        const cv = try certificate.encodeCertificateVerify(out[pos..], creds.signer.scheme, sig);
+        try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = cv } });
+        pos += cv.len;
+        self.suite.update(cv);
+
+        const fin_th = self.transcriptHash();
+        const fin = switch (self.suite) {
+            .buffering => return error.UnexpectedMessage,
+            inline .sha256, .sha384 => |*arm| blk: {
+                const Hash = @TypeOf(arm.transcript);
+                break :blk try finished.encode(
+                    Hash,
+                    out[pos..],
+                    &arm.server_finished_key.data,
+                    fin_th.slice(),
+                );
+            },
+        };
+        try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = fin } });
+        self.suite.update(fin);
+        self.state = .flight_sent;
+    }
+
+    pub const State = enum { wait_client_hello, server_hello_queued, flight_sent };
+
+    pub const TranscriptHash = Client.TranscriptHash;
+
+    fn transcriptHash(self: *const Server) TranscriptHash {
+        var out: TranscriptHash = .init();
+        switch (self.suite) {
+            .buffering => {},
+            inline .sha256, .sha384 => |*arm| {
+                const th = arm.transcript.peek();
+                out.len = @intCast(th.len);
+                @memcpy(out.data[0..th.len], &th);
+            },
+        }
+        return out;
     }
 };
 
@@ -768,4 +857,81 @@ test "core client: RFC 8448 §3 full replay closes the gate" {
     const app = client.applicationSecrets().?;
     try testing.expectEqualSlices(u8, &rfc8448_client_ap_secret, app.client[0..32]);
     try testing.expectEqualSlices(u8, &rfc8448_server_ap_secret, app.server[0..32]);
+}
+
+// The core talking to itself: no engine, both roles, a real certificate and a
+// real signature. The client accepts the flight the server composed, which is
+// the milestone the adapter phase depends on.
+test "core: client and server complete a handshake with each other" {
+    const server_hello_mod = server_hello;
+    const x25519 = @import("x25519.zig");
+
+    const ecdsa_cert = fixtures.server_ecdsa_cert_der;
+    const ecdsa_scalar = fixtures.server_ecdsa_scalar;
+
+    var key = try signature.PrivateKey.fromP256Scalar(ecdsa_scalar[0..32]);
+    defer key.deinit();
+    const signer = key.signer();
+
+    const server_share_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x61)));
+    const key_share: server_hello_mod.KeyShare = .{ .x25519 = server_share_keypair.public_key };
+
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello_mod.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0x62),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+
+    const dhe = [_]u8{0x5a} ** 32;
+
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    try server.provide(
+        .plaintext,
+        &rfc8448_client_hello,
+        .aes_128_gcm_sha256,
+        sh,
+        &dhe,
+    );
+
+    // Drain the ServerHello and its level events; the flight is next.
+    while (server.next()) |_| {}
+
+    var flight_buf: [2048]u8 = undefined;
+    try server.sendFlight(
+        .{ .chain = .{ .single = &ecdsa_cert }, .signer = signer },
+        null,
+        &flight_buf,
+    );
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+    try client.start(&rfc8448_client_hello);
+    _ = client.next().?;
+    try client.provide(.plaintext, sh, &dhe);
+
+    // Drain the server's queued flight and hand each message to the client.
+    var flight_messages: usize = 0;
+    while (server.next()) |out| switch (out) {
+        .message => |m| {
+            try testing.expectEqual(level.Level.handshake, m.level);
+            try client.provideHandshake(.handshake, m.bytes);
+            flight_messages += 1;
+        },
+        else => {},
+    };
+    try testing.expectEqual(@as(usize, 4), flight_messages);
+    try testing.expectEqual(Client.State.server_finished_verified, client.state);
+
+    var fin_buf: [128]u8 = undefined;
+    const fin = try client.sendClientFinished(&fin_buf);
+    try testing.expectEqual(@as(u8, @intFromEnum(handshake.Type.finished)), fin[0]);
 }
