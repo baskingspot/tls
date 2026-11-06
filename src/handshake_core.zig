@@ -380,6 +380,7 @@ pub const Client = struct {
         };
         try self.deriveApplicationSecrets(th.slice());
         self.suite.update(msg);
+        self.deriveResumptionMaster();
 
         self.queue.push(.{ .message = .{
             .level = .handshake,
@@ -409,6 +410,56 @@ pub const Client = struct {
                 defer master_key.secureZero();
                 arm.client_app_secret = H.deriveSecretKeyed(&master_key, "c ap traffic", &th);
                 arm.server_app_secret = H.deriveSecretKeyed(&master_key, "s ap traffic", &th);
+            },
+        }
+    }
+
+    /// RFC 8446 §7.5 - resumption_master_secret over the transcript through the
+    /// client Finished. Ticket issuance and PSK derivation both need it.
+    fn deriveResumptionMaster(self: *Client) void {
+        switch (self.suite) {
+            .buffering => {},
+            inline .sha256, .sha384 => |*arm| {
+                const H = @TypeOf(arm.*).Hkdf;
+                const res_th: H.TranscriptHash = .init(arm.transcript.peek());
+                var master = H.masterSecret(arm.handshake_secret);
+                defer master.secureZero();
+                var master_key: H.Keyed = .init(&master.data);
+                defer master_key.secureZero();
+                arm.resumption_master = H.deriveSecretKeyed(&master_key, "res master", &res_th);
+                arm.resumption_master_valid = true;
+            },
+        }
+    }
+
+    /// The resumption master secret, once the client Finished has gone out.
+    pub fn resumptionMaster(self: *const Client) ?[48]u8 {
+        return switch (self.suite) {
+            .buffering => null,
+            inline .sha256, .sha384 => |*arm| blk: {
+                if (!arm.resumption_master_valid) break :blk null;
+                var out: [48]u8 = @splat(0);
+                const len = @TypeOf(arm.*).Hkdf.prk_len;
+                @memcpy(out[0..len], arm.resumption_master.data[0..len]);
+                break :blk out;
+            },
+        };
+    }
+
+    /// RFC 8446 §4.6.1 - derive a PSK from the resumption master and a ticket
+    /// nonce. The nonce is the ticket's, from the server's NewSessionTicket.
+    pub fn resumptionPsk(self: *const Client, nonce: []const u8, out: []u8) Error!void {
+        switch (self.suite) {
+            .buffering => return error.UnexpectedMessage,
+            inline .sha256, .sha384 => |*arm| {
+                if (!arm.resumption_master_valid) return error.UnexpectedMessage;
+                const H = @TypeOf(arm.*).Hkdf;
+                // HKDF-Expand-Label(resumption_master_secret, "resumption",
+                // nonce, Hash.length); the nonce is the label context, not a
+                // length-prefixed hash, so expand it directly.
+                var key: H.Keyed = .init(&arm.resumption_master.data);
+                defer key.secureZero();
+                H.expandLabelKeyed(out, "resumption", nonce, &key);
             },
         }
     }
@@ -1211,4 +1262,50 @@ test "core: client authentication completes both ways" {
     };
     try testing.expectEqual(@as(usize, 3), count);
     try testing.expectEqual(Server.State.connected, server.state);
+}
+
+// RFC 8448 §4, the resumption secret: after the client Finished, the core's
+// resumption master must produce the PSK the trace records for nonce 0x0000.
+test "core client: resumption_master_secret and PSK match RFC 8448 §4" {
+    const rfc8448_resumption_master = [_]u8{
+        0x7d, 0xf2, 0x35, 0xf2, 0x03, 0x1d, 0x2a, 0x05,
+        0x12, 0x87, 0xd0, 0x2b, 0x02, 0x41, 0xb0, 0xbf,
+        0xda, 0xf8, 0x6c, 0xc8, 0x56, 0x23, 0x1f, 0x2d,
+        0x5a, 0xba, 0x46, 0xc4, 0x34, 0xec, 0x19, 0x6c,
+    };
+    const rfc8448_resumption_psk = [_]u8{
+        0x4e, 0xcd, 0x0e, 0xb6, 0xec, 0x3b, 0x4d, 0x87,
+        0xf5, 0xd6, 0x02, 0x8f, 0x92, 0x2c, 0xa4, 0xc5,
+        0x85, 0x1a, 0x27, 0x7f, 0xd4, 0x13, 0x11, 0xc9,
+        0xe6, 0x2d, 0x2c, 0x94, 0x92, 0xe1, 0xc4, 0xf3,
+    };
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var slots: [16]level.Output = undefined;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    client.offered.insert(.server_name);
+    client.offered.insert(.record_size_limit);
+
+    try client.start(&rfc8448_client_hello);
+    _ = client.next().?;
+    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+
+    var flight_buf: [4096]u8 = undefined;
+    const flight = fixtures.rfc8448.b64("server_flight.b64");
+    @memcpy(flight_buf[0..flight.len], flight);
+    var reader: handshake.Reader = .init(flight_buf[0..flight.len]);
+    while (try reader.next()) |msg| try client.provideHandshake(.handshake, msg.raw);
+
+    var out: [128]u8 = undefined;
+    _ = try client.sendClientFinished(&out);
+
+    const master = client.resumptionMaster().?;
+    try testing.expectEqualSlices(u8, &rfc8448_resumption_master, master[0..32]);
+
+    var psk: [32]u8 = undefined;
+    try client.resumptionPsk(&.{ 0x00, 0x00 }, &psk);
+    try testing.expectEqualSlices(u8, &rfc8448_resumption_psk, &psk);
 }

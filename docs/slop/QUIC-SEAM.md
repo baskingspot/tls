@@ -237,6 +237,12 @@ derived handshake traffic secrets, all against the recorded trace.
 If the full replay cannot pass at the end of 1c, the premise is broken and the
 work stops for a decision.
 
+One rule the work produced: anything that enters one side's transcript must be
+an actual output of the other side. The first mutual-auth test injected a
+CertificateRequest the server never sent, transcripts diverged, and the failure
+surfaced at CertificateVerify - far from the cause. Tests drive the peer's real
+outputs; they do not fabricate messages.
+
 Status: closed at `b062beb`. `handshake_core.zig` replays the §3 trace through
 `provide` and `next` with no engine in the path, asserting the queued messages,
 every level transition, the derived handshake and application traffic secrets,
