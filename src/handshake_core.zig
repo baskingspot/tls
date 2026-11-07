@@ -195,6 +195,10 @@ pub const Client = struct {
     ticket: ?NewSessionTicket,
     /// Storage for the KeyUpdate response message the queue may hand out.
     ku_response: [5]u8,
+
+    /// The client early traffic secret, when 0-RTT was offered.
+    early_secret: [48]u8,
+    early_len: u8,
     /// The cipher suite a PSK resumption offer uses. Set by the caller from the
     /// ticket; null means TLS_AES_128_GCM_SHA256.
     psk_suite: ?CipherSuite,
@@ -217,6 +221,43 @@ pub const Client = struct {
         server_finished_verified,
         connected,
     };
+    /// RFC 8446 §4.2.10, §7.1 - derive the client early traffic secret over the
+    /// ClientHello that carries the offer, and tell the caller early keys exist.
+    /// Only legal before ServerHello, and only when a PSK is offered with early
+    /// data.
+    pub fn offerEarlyData(self: *Client, psk: []const u8) Error!void {
+        if (self.state != .wait_server_hello) return error.UnexpectedMessage;
+        const buffered = switch (self.suite) {
+            .buffering => |b| b,
+            inline .sha256, .sha384 => return error.UnexpectedMessage,
+        };
+        const suite = self.psk_suite orelse .aes_128_gcm_sha256;
+        switch (suite) {
+            .aes_256_gcm_sha384 => {
+                const H = hkdf.HkdfSha384;
+                const early = H.pskEarlySecret(psk);
+                const th: H.TranscriptHash = .init(buffered.sha384.peek());
+                const secret = H.clientEarlyTrafficSecret(early, &th);
+                @memcpy(self.early_secret[0..48], secret.data[0..48]);
+                self.early_len = 48;
+            },
+            else => {
+                const H = hkdf.HkdfSha256;
+                const early = H.pskEarlySecret(psk);
+                const th: H.TranscriptHash = .init(buffered.sha256.peek());
+                const secret = H.clientEarlyTrafficSecret(early, &th);
+                @memcpy(self.early_secret[0..32], secret.data[0..32]);
+                self.early_len = 32;
+            },
+        }
+        try self.queue.push(.{ .key_available = .early });
+    }
+
+    /// The early traffic secret, when 0-RTT was offered.
+    pub fn earlySecret(self: *const Client) ?[]const u8 {
+        if (self.early_len == 0) return null;
+        return self.early_secret[0..self.early_len];
+    }
 
     pub fn init(slots: []level.Output, policy: certificate.Policy) Client {
         return .{
@@ -232,6 +273,8 @@ pub const Client = struct {
             .ticket = null,
             .ku_response = undefined,
             .psk_suite = null,
+            .early_secret = undefined,
+            .early_len = 0,
             .post_handshake_count = 0,
             .selected = null,
             .state = .start,
@@ -2226,4 +2269,46 @@ test "tickets: server issues one and both sides derive the same PSK" {
     var client_psk_buf: [48]u8 = undefined;
     try client.resumptionPsk(&nonce, &client_psk_buf);
     try testing.expectEqualSlices(u8, server_psk[0..32], client_psk_buf[0..32]);
+}
+
+// RFC 8448 §4 gives the client early traffic secret for the 0-RTT offer. The
+// core derives it over the ClientHello it just encoded, and announces the key.
+test "early data: the client early secret matches RFC 8448 §4" {
+    const rfc8448_early_secret = [_]u8{
+        0x3f, 0xbb, 0xe6, 0xa6, 0x0d, 0xeb, 0x66, 0xc3,
+        0x0a, 0x32, 0x79, 0x5a, 0xba, 0x0e, 0xff, 0x7e,
+        0xaa, 0x10, 0x10, 0x55, 0x86, 0xe7, 0xbe, 0x5c,
+        0x09, 0x67, 0x8d, 0x63, 0xb6, 0xca, 0xab, 0x62,
+    };
+
+    var keypairs: KeyPairs = try .init(try .generateDeterministic(.init(@splat(0xb1))));
+    keypairs.p256 = try .generateDeterministic(.init(@splat(0xb2)));
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var slots: [16]level.Output = undefined;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    client.psk_suite = .aes_128_gcm_sha256;
+
+    // The RFC's resumption PSK; the transcript is the recorded ClientHello.
+    const psk = [_]u8{
+        0x4e, 0xcd, 0x0e, 0xb6, 0xec, 0x3b, 0x4d, 0x87,
+        0xf5, 0xd6, 0x02, 0x8f, 0x92, 0x2c, 0xa4, 0xc5,
+        0x85, 0x1a, 0x27, 0x7f, 0xd4, 0x13, 0x11, 0xc9,
+        0xe6, 0x2d, 0x2c, 0x94, 0x92, 0xe1, 0xc4, 0xf3,
+    };
+
+    var buf: [1024]u8 = undefined;
+    var ch_buf: [1024]u8 = undefined;
+    const recorded = try std.fmt.hexToBytes(&ch_buf, psk_ch_hex);
+    @memcpy(buf[0..recorded.len], recorded);
+    try client.start(buf[0..recorded.len]);
+    _ = client.next().?;
+    try client.offerEarlyData(&psk);
+
+    const out = client.next().?;
+    try testing.expectEqual(level.Level.early, out.key_available);
+    try testing.expectEqualSlices(u8, &rfc8448_early_secret, client.earlySecret().?);
 }

@@ -87,6 +87,14 @@ tell is that adding `set -x` makes the failure disappear, which means descriptor
 lifetime, not the gate. If the hook breaks, unset `core.hooksPath` so it is
 visibly off; never push with `--no-verify`.
 
+Derivations: the length in a TLS HKDF label is part of the encoding, not a
+buffer size. Expanding into a differently sized buffer derives a *different
+key*, silently - the engine passed 32 bytes and was correct by accident while a
+48-byte caller derived garbage. Every derivation in the core slices to `prk_len`
+internally so a caller cannot get it wrong. Two independent implementations of
+the same transcript disagree loudly, which is why the core-to-core tests exist
+and why they have found two bugs the engine's own passing tests could not.
+
 Exit 141 has two causes now: the descriptor race above, and GitHub closing the
 connection itself. The tell is a `Connection to github.com closed by remote
 host` line in the push output; retry rather than touching the hook.
