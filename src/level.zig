@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const testing = std.testing;
+const alert = @import("alert.zig");
 const handshake = @import("handshake.zig");
 
 /// The four encryption levels a TLS 1.3 handshake uses. `plaintext` is the
@@ -34,10 +35,18 @@ pub const Output = union(enum) {
     key_available: Level,
     /// The handshake is complete for this role.
     done,
+    /// An alert the caller must carry: a record for a TLS stream, a
+    /// CONNECTION_CLOSE for QUIC. The core never frames or encrypts one.
+    alert: Struct,
 
     pub const Message = struct {
         level: Level,
         bytes: []const u8,
+    };
+
+    pub const Struct = struct {
+        level: alert.Level,
+        description: alert.Description,
     };
 };
 

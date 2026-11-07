@@ -101,7 +101,9 @@ const std = @import("std");
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
+const alert = @import("alert.zig");
 const certificate = @import("certificate.zig");
+const NewSessionTicket = @import("NewSessionTicket.zig");
 const certificate_request = @import("certificate_request.zig");
 const client_hello = @import("client_hello.zig");
 const kex = @import("kex.zig");
@@ -146,7 +148,9 @@ pub const Error = error{
     finished.VerifyError || encrypted_extensions.ParseError ||
     encrypted_extensions.EncodeError || certificate_request.ParseError ||
     signature.SignError || aead.Error ||
-    server_hello.HrrParseError || client_hello.RetryEncodeError;
+    server_hello.HrrParseError || client_hello.RetryEncodeError ||
+    alert.ParseError || NewSessionTicket.ParseError ||
+    error{ TooManyKeyUpdates, InvalidHandshakeType };
 
 pub const Client = struct {
     /// Transcript and key schedule. The client starts buffering both candidate
@@ -170,6 +174,14 @@ pub const Client = struct {
     leaf_pub_key: [crypto_max_pub_key]u8,
     leaf_pub_key_len: u8,
     queue: level.Queue,
+    /// The last alert the peer sent.
+    last_alert: ?alert.Alert,
+    /// The most recent NewSessionTicket the peer sent.
+    ticket: ?NewSessionTicket,
+    /// Storage for the KeyUpdate response message the queue may hand out.
+    ku_response: [5]u8,
+    /// Consecutive post-handshake key updates, capped per RFC 8446 §4.6.3.
+    post_handshake_count: u16,
     /// Set once ServerHello selects the suite, so later messages can be checked
     /// against the chosen arm.
     selected: ?CipherSuite,
@@ -198,6 +210,10 @@ pub const Client = struct {
             .offered = .initEmpty(),
             .leaf_pub_key = undefined,
             .leaf_pub_key_len = 0,
+            .last_alert = null,
+            .ticket = null,
+            .ku_response = undefined,
+            .post_handshake_count = 0,
             .selected = null,
             .state = .start,
         };
@@ -569,6 +585,106 @@ pub const Client = struct {
                 H.expandLabelKeyed(out, "resumption", nonce, &key);
             },
         }
+    }
+
+    /// RFC 8446 §4.6.3 - send a KeyUpdate at `.application`, ratchet the write
+    /// secret, and tell the caller to re-derive its write key. The message and
+    /// the key change travel as separate outputs so the caller cannot apply one
+    /// without the other.
+    pub fn sendKeyUpdate(
+        self: *Client,
+        request: handshake.KeyUpdateRequest,
+        out: []u8,
+    ) Error![]const u8 {
+        if (self.state != .connected) return error.UnexpectedMessage;
+        out[0] = @intFromEnum(handshake.Type.key_update);
+        out[1] = 0;
+        out[2] = 0;
+        out[3] = 1;
+        out[4] = @intFromEnum(request);
+        const msg = out[0..5];
+        try self.queue.push(.{ .message = .{ .level = .application, .bytes = msg } });
+        // The ratchet is the point; the layer it hands back is the adapter's
+        // business, so it is released here rather than leaked.
+        var discard_tx = try self.suite.ratchetClientKey();
+        discard_tx.deinit();
+        try self.queue.push(.{ .key_available = .application });
+        try self.queue.push(.{ .write_level = .application });
+        return msg;
+    }
+
+    /// Process one post-handshake message at `.application`: KeyUpdate, an
+    /// alert, or a NewSessionTicket.
+    ///
+    /// KeyUpdate ratchets the read secret *before* returning, so the caller's
+    /// next message is decrypted with the new key, and consecutive updates are
+    /// capped at `handshake.max_post_handshake_messages` (RFC 8446 §4.6.3).
+    pub fn provideApplication(
+        self: *Client,
+        provided: level.Level,
+        msg: []const u8,
+    ) Error!void {
+        if (self.state != .connected) return error.UnexpectedMessage;
+        if (msg.len < 4) return error.UnexpectedEof;
+        const msg_type: handshake.Type = @enumFromInt(msg[0]);
+        try level.check(msg_type, provided);
+
+        switch (msg_type) {
+            .key_update => {
+                const request = try handshake.parseKeyUpdate(msg);
+                self.post_handshake_count +|= 1;
+                if (self.post_handshake_count > handshake.max_post_handshake_messages)
+                    return error.TooManyKeyUpdates;
+                // Ratchet first: the next message must use the new key.
+                var discard_rx = try self.suite.ratchetServerKey();
+                discard_rx.deinit();
+                try self.queue.push(.{ .key_available = .application });
+                try self.queue.push(.{ .read_level = .application });
+                if (request == .update_requested) {
+                    self.ku_response = .{
+                        @intFromEnum(handshake.Type.key_update),
+                        0,
+                        0,
+                        1,
+                        @intFromEnum(handshake.KeyUpdateRequest.update_not_requested),
+                    };
+                    try self.queue.push(.{ .message = .{
+                        .level = .application,
+                        .bytes = &self.ku_response,
+                    } });
+                }
+            },
+            .new_session_ticket => {
+                self.ticket = try NewSessionTicket.parse(msg);
+            },
+            else => return error.UnexpectedMessage,
+        }
+    }
+
+    /// A peer alert, whose body is the two alert bytes (level, description).
+    /// Alerts are not handshake messages and carry no handshake header, so they
+    /// have their own entry point. The core reports the description and level;
+    /// it never frames a record.
+    pub fn provideAlert(self: *Client, level_: level.Level, body: []const u8) Error!void {
+        if (self.state != .connected) return error.UnexpectedMessage;
+        if (level_ == .plaintext) return error.WrongLevel;
+        const parsed = try alert.parse(body);
+        self.last_alert = parsed;
+        try self.queue.push(.{ .alert = .{
+            .level = parsed.level,
+            .description = parsed.description,
+        } });
+    }
+
+    /// The last alert the peer sent, if any.
+    pub fn lastAlert(self: *const Client) ?alert.Alert {
+        return self.last_alert;
+    }
+
+    /// The most recent NewSessionTicket, borrowed from the message that carried
+    /// it. Valid until the caller's buffer is reused.
+    pub fn lastTicket(self: *const Client) ?NewSessionTicket {
+        return self.ticket;
     }
 
     /// The application traffic secrets, once the client Finished has been sent.
@@ -1700,4 +1816,99 @@ test "hrr: both roles reset the transcript to message_hash(ClientHello1) || HRR"
     const ch2 = try client.sendClientHello2(group, .zero, client_keypairs, &ch2_buf);
     try testing.expect(!std.mem.eql(u8, ch1, ch2));
     // ClientHello2 carries the requested group's key share.
+}
+
+/// Drive a client core to `.connected` against the RFC 8448 §3 trace, so the
+/// post-handshake tests start from a real state rather than a fabricated one.
+fn rfc8448ConnectedClient(slots: []level.Output) !Client {
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client: Client = .init(slots, policy);
+    client.offered.insert(.server_name);
+    client.offered.insert(.record_size_limit);
+    try client.start(&rfc8448_client_hello);
+    _ = client.next().?;
+    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+
+    var flight_buf: [4096]u8 = undefined;
+    const flight = fixtures.rfc8448.b64("server_flight.b64");
+    @memcpy(flight_buf[0..flight.len], flight);
+    var reader: handshake.Reader = .init(flight_buf[0..flight.len]);
+    while (try reader.next()) |msg| try client.provideHandshake(.handshake, msg.raw);
+
+    var out: [128]u8 = undefined;
+    _ = try client.sendClientFinished(&out);
+    // Drain the handshake outputs so the post-handshake queue starts empty.
+    while (client.next()) |_| {}
+    return client;
+}
+
+// RFC 8446 §4.6.3 - a KeyUpdate ratchets the read secret before the next
+// message is decrypted, and the caller learns about it through the queue.
+test "key update: the ratchet is queued before the next message is accepted" {
+    var slots: [32]level.Output = undefined;
+    var client = try rfc8448ConnectedClient(&slots);
+    defer client.deinit();
+
+    const update = [_]u8{
+        @intFromEnum(handshake.Type.key_update),                       0, 0, 1,
+        @intFromEnum(handshake.KeyUpdateRequest.update_not_requested),
+    };
+    try client.provideApplication(.application, &update);
+
+    const first = client.next().?;
+    try testing.expectEqual(level.Level.application, first.key_available);
+    const second = client.next().?;
+    try testing.expectEqual(level.Level.application, second.read_level);
+    try testing.expectEqual(@as(?level.Output, null), client.next());
+}
+
+// A peer that asks for a response gets one, at the same level, and the core
+// does not exceed the §4.6.3 consecutive-update cap.
+test "key update: a requested response is queued, and the flood cap holds" {
+    var slots: [64]level.Output = undefined;
+    var client = try rfc8448ConnectedClient(&slots);
+    defer client.deinit();
+
+    const request = [_]u8{
+        @intFromEnum(handshake.Type.key_update),                   0, 0, 1,
+        @intFromEnum(handshake.KeyUpdateRequest.update_requested),
+    };
+    try client.provideApplication(.application, &request);
+    _ = client.next().?; // key_available
+    _ = client.next().?; // read_level
+    const response = client.next().?.message;
+    try testing.expectEqual(level.Level.application, response.level);
+    try testing.expectEqual(@as(u8, @intFromEnum(handshake.Type.key_update)), response.bytes[0]);
+    try testing.expectEqual(
+        @as(u8, @intFromEnum(handshake.KeyUpdateRequest.update_not_requested)),
+        response.bytes[4],
+    );
+
+    // Drive past the cap: the next update past the bound is refused.
+    var accepted: usize = 1;
+    while (accepted <= handshake.max_post_handshake_messages) : (accepted += 1) {
+        client.provideApplication(.application, &request) catch |err| {
+            try testing.expectEqual(error.TooManyKeyUpdates, err);
+            return;
+        };
+        while (client.next()) |_| {}
+    }
+    try testing.expect(false); // the cap never triggered
+}
+
+test "alerts: the core reports level and description, never bytes" {
+    var slots: [16]level.Output = undefined;
+    var client = try rfc8448ConnectedClient(&slots);
+    defer client.deinit();
+
+    try client.provideAlert(.application, &.{
+        2,
+        @intFromEnum(alert.Description.unexpected_message),
+    });
+    const out = client.next().?;
+    try testing.expectEqual(alert.Level.fatal, out.alert.level);
+    try testing.expectEqual(alert.Description.unexpected_message, out.alert.description);
+    try testing.expectEqual(alert.Description.unexpected_message, client.lastAlert().?.description);
 }
