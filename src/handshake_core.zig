@@ -2035,6 +2035,14 @@ fn binderLookup(ctx: *anyopaque, identity: []const u8) ?[]const u8 {
 // The core encodes the offer, and the core's own verifier accepts it. That is
 // the seam B was pulled for: one builder in the tree, and the binder patched by
 // the same code that checks it.
+//
+// This is a round trip rather than an RFC 8448 byte comparison on purpose. Our
+// encoder emits an empty session id and a different extension set from the
+// recorded ClientHello, so byte equality is unattainable for this message and
+// chasing it would mean changing the encoder to reproduce a message we have no
+// reason to send. The binder values themselves are pinned to the trace in the
+// slice-2 test (3add4fb2...5f9d), so verifying the offer with the code that
+// would catch a forgery is the stronger check here.
 test "psk offer: encoded by the core, accepted by the core's verifier" {
     var keypairs: KeyPairs = try .init(try .generateDeterministic(.init(@splat(0x91))));
     keypairs.p256 = try .generateDeterministic(.init(@splat(0x92)));

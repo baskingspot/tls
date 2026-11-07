@@ -87,6 +87,10 @@ tell is that adding `set -x` makes the failure disappear, which means descriptor
 lifetime, not the gate. If the hook breaks, unset `core.hooksPath` so it is
 visibly off; never push with `--no-verify`.
 
+Exit 141 has two causes now: the descriptor race above, and GitHub closing the
+connection itself. The tell is a `Connection to github.com closed by remote
+host` line in the push output; retry rather than touching the hook.
+
 ---
 
 ## Project State and Continuity
