@@ -7,7 +7,7 @@
 # is already short and readable; the helper `let` block was the mess.
 #
 # `pkgs` must already carry the mattware + rust-overlay overlays (applied in
-# flake.nix) so pkgs.rust-bin / pkgs.zig_0_16 / pkgs.ast-grep resolve. This file
+# flake.nix) so pkgs.rust-bin / pkgs.zig_0_17 / pkgs.ast-grep resolve. This file
 # never touches `inputs` (which is unavailable inside perSystem anyway).
 { pkgs, lib }:
 rec {
@@ -124,10 +124,19 @@ rec {
       ]
     );
 
-  zig = {
-    zig = pkgs.zig_0_16;
-    zls = pkgs.zls_0_16;
-  };
+  # The compiler a shell is built around, from the version string the flake
+  # module uses ("0.16", "0.17"). commonHook keys the two Zig caches off this
+  # value, so a shell that composes another toolchain must pass its own or the
+  # compiler and the cache dirs disagree. zls comes from the module's shell,
+  # not from here.
+  zigTools =
+    version:
+    let
+      v = builtins.replaceStrings [ "." ] [ "_" ] version;
+    in
+    {
+      zig = pkgs."zig_${v}";
+    };
 
   # The OpenSSL package paths shared by the openssl and docs shells
   # (previously triplicated in flake.nix).
@@ -145,7 +154,7 @@ rec {
       inputsFrom,
       pkgConfigPath,
       packages,
-      zig-tools ? zig,
+      zig-tools,
     }:
     pkgs.mkShell {
       inherit name inputsFrom;

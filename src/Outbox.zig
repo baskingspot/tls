@@ -5,6 +5,7 @@
 //! (for example, WouldBlock). The queued record slice is borrowed and must stay
 //! valid until `writeBlocked()` becomes false.
 const std = @import("std");
+const compat = @import("compat.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
 
@@ -77,7 +78,7 @@ pub fn flush(
 fn requireHandshakePointer(comptime T: type) void {
     switch (@typeInfo(T)) {
         .pointer => |ptr| {
-            if (ptr.size != .one or ptr.is_const)
+            if (ptr.size != .one or compat.pointerIsConst(ptr))
                 @compileError("Outbox expects a mutable *Handshake pointer");
         },
         else => @compileError("Outbox expects a mutable *Handshake pointer"),
@@ -85,16 +86,15 @@ fn requireHandshakePointer(comptime T: type) void {
 }
 
 fn requireWriter(comptime Writer: type) void {
-    if (!@hasDecl(Writer, "write"))
+    if (!compat.hasDecl(Writer, "write"))
         @compileError("Outbox writer must expose write([]const u8) !usize");
-    const write_info = @typeInfo(@TypeOf(Writer.write)).@"fn";
-    if (write_info.params.len != 2)
+    if (comptime compat.fnParamCount(@TypeOf(Writer.write)) != 2)
         @compileError("Outbox writer write method must take self and []const u8");
-    const bytes_type = write_info.params[1].type orelse
+    const bytes_type = compat.fnParamType(@TypeOf(Writer.write), 1) orelse
         @compileError("Outbox writer write method must take []const u8");
     if (bytes_type != []const u8)
         @compileError("Outbox writer write method must take []const u8");
-    const write_return = write_info.return_type orelse
+    const write_return = @typeInfo(@TypeOf(Writer.write)).@"fn".return_type orelse
         @compileError("Outbox writer write method must return !usize");
     switch (@typeInfo(write_return)) {
         .error_union => |err| if (err.payload != usize)
@@ -121,7 +121,7 @@ const FakeHandshake = struct {
     }
 };
 
-const WriterError = error{Failed};
+pub const WriterError = error{Failed};
 
 const StepWriter = struct {
     steps: []const usize,
@@ -130,7 +130,7 @@ const StepWriter = struct {
     captured: [128]u8 = undefined,
     captured_len: usize = 0,
 
-    fn write(self: *StepWriter, bytes: []const u8) WriterError!usize {
+    pub fn write(self: *StepWriter, bytes: []const u8) WriterError!usize {
         if (self.fail_at == self.index) return error.Failed;
         const n = if (self.index < self.steps.len) self.steps[self.index] else bytes.len;
         self.index += 1;
@@ -142,7 +142,7 @@ const StepWriter = struct {
 };
 
 const OverflowWriter = struct {
-    fn write(_: OverflowWriter, bytes: []const u8) WriterError!usize {
+    pub fn write(_: OverflowWriter, bytes: []const u8) WriterError!usize {
         return bytes.len + 1;
     }
 };

@@ -1,5 +1,6 @@
 //! Public compile-time capability discovery for the selected crypto backend.
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
@@ -83,7 +84,7 @@ test "hybrid capability queries match the active backend" {
     }
     try testing.expect(!supportsHybridGroup(.client, .x25519));
     try testing.expect(!supportsHybridGroup(.server, .secp256r1));
-    const unknown: NamedGroup = @enumFromInt(0xdead);
+    const unknown: NamedGroup = compat.enumFromInt(NamedGroup, 0xdead);
     try testing.expect(!supportsHybridGroup(.client, unknown));
     try testing.expect(!supportsHybridGroup(.server, unknown));
 

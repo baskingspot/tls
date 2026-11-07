@@ -44,7 +44,7 @@ choose:
 
 | Module     | Requirement                                      |
 | ---------- | ------------------------------------------------ |
-| `tls`      | Zig 0.16                                         |
+| `tls`      | Zig 0.16 and 0.17                                |
 | `tls_std`  | Zig 0.16                                         |
 | `tls_nonblocking` | Zig 0.16, caller-driven server transport |
 | `tls_xev`  | Zig 0.16 and the dependency option `.xev = true` |

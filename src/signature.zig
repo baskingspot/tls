@@ -147,7 +147,7 @@ test "PrivateKey.sign: short RSA-PSS output buffer is rejected" {
 // RFC 8446 §4.4.3 — the CertificateVerify scheme must be compatible with the
 // signing key; backend failures are not reported as output-buffer failures.
 test "PrivateKey.sign: key and scheme mismatch is a libcrypto failure" {
-    const scalar = [_]u8{0} ** 31 ++ .{1};
+    const scalar = @as([31]u8, @splat(0)) ++ .{1};
     var key: PrivateKey = try .fromP256Scalar(&scalar);
     defer key.deinit();
     key.scheme = .rsa_pss_rsae_sha256;
@@ -480,7 +480,7 @@ test "PrivateKey.pairsWith: cross-algorithm mismatch is a named error" {
 // #113 — an unparseable leaf is a distinct failure from a pairing mismatch,
 // so rotation tooling can tell a corrupt file from a wrong key.
 test "PrivateKey.pairsWith: garbage leaf DER is not a certificate" {
-    const scalar = [_]u8{0} ** 31 ++ .{1};
+    const scalar = @as([31]u8, @splat(0)) ++ .{1};
     var key: PrivateKey = try .fromP256Scalar(&scalar);
     defer key.deinit();
     try testing.expectError(error.InvalidCertificate, key.pairsWith("garbage"));

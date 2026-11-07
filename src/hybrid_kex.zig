@@ -363,7 +363,7 @@ test "hybrid decapsulation rejects wrong server share length" {
     var secret: [max_shared_secret_len]u8 = undefined;
     try testing.expectError(error.MalformedKeyShare, decapsulate(
         &client_key,
-        &[_]u8{0} ** 1119,
+        &@as([1119]u8, @splat(0)),
         &keys,
         &secret,
     ));

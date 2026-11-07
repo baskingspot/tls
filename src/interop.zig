@@ -1352,18 +1352,33 @@ fn serve(
     var storage: tls.RecordBuffer.Storage = .empty;
     var rb: tls.RecordBuffer = .init(&storage.buffer);
     var out: [4096]u8 = undefined;
-    errdefer |err| sendBestEffortAlert(&hs, stream, err, &out);
+    serveRecords(&hs, stream, ticket_state, ticket_phase, &rb, &out) catch |err| {
+        sendBestEffortAlert(&hs, stream, err, &out);
+        return err;
+    };
+}
 
+/// The handshake and application loop of `serve`. Zig 0.17 removed the
+/// capturing `errdefer`, so the caller sends the alert for the error this
+/// returns while the engine is still alive.
+fn serveRecords(
+    hs: *tls.ServerHandshake,
+    stream: Stream,
+    ticket_state: ?*ServerTicketState,
+    ticket_phase: ServerTicketPhase,
+    rb: *tls.RecordBuffer,
+    out: *[4096]u8,
+) !void {
     while (!hs.isConnected()) {
-        const n = try tls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, rb);
         if (n == 0) return error.ClientClosed;
         while (try rb.next()) |record| {
-            const ev = try hs.handleRecord(record, &out);
+            const ev = try hs.handleRecord(record, out);
             switch (ev) {
                 .write => |w| {
                     try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
-                    if (try hs.sendPreparedServerFlight(&out)) |flight| {
+                    if (try hs.sendPreparedServerFlight(out)) |flight| {
                         try tls.io.writeAll(testing.io, stream, flight);
                         hs.completeWrite();
                     }
@@ -1399,7 +1414,7 @@ fn serve(
                     .ticket_age_add = mem.readInt(u32, &age_add_bytes, .big),
                     .ticket = server_ticket_identity,
                 },
-                &out,
+                out,
             );
             try tls.io.writeAll(testing.io, stream, ticket_record);
             hs.completeWrite();
@@ -1407,8 +1422,8 @@ fn serve(
         .reuse => state.did_resume = hs.isResumed(),
     };
     while (true) {
-        while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
-            .application_data => |data| return sendResponse(stream, &hs, data, &out),
+        while (try rb.next()) |record| switch (try hs.handleRecord(record, out)) {
+            .application_data => |data| return sendResponse(stream, hs, data, out),
             .write => |w| {
                 try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();
@@ -1422,7 +1437,7 @@ fn serve(
             .closed => return,
             .none => {},
         };
-        const n = try tls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, rb);
         if (n == 0) return error.ClientClosed;
     }
 }
@@ -1521,18 +1536,29 @@ fn serveClientAuth(stream: Stream) !void {
     var storage: tls.RecordBuffer.Storage = .empty;
     var rb: tls.RecordBuffer = .init(&storage.buffer);
     var out: [4096]u8 = undefined;
-    errdefer |err| sendBestEffortAlert(&hs, stream, err, &out);
+    clientAuthRecords(&hs, stream, &rb, &out) catch |err| {
+        sendBestEffortAlert(&hs, stream, err, &out);
+        return err;
+    };
+}
 
+/// The handshake and request loop of `serveClientAuth`. See `serveRecords`.
+fn clientAuthRecords(
+    hs: *tls.ServerHandshake,
+    stream: Stream,
+    rb: *tls.RecordBuffer,
+    out: *[4096]u8,
+) !void {
     while (!hs.isConnected()) {
-        const n = try tls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, rb);
         if (n == 0) return error.ClientClosed;
         while (try rb.next()) |record| {
-            const ev = try hs.handleRecord(record, &out);
+            const ev = try hs.handleRecord(record, out);
             switch (ev) {
                 .write => |w| {
                     try tls.io.writeAll(testing.io, stream, w);
                     hs.completeWrite();
-                    if (try hs.sendPreparedServerFlight(&out)) |flight| {
+                    if (try hs.sendPreparedServerFlight(out)) |flight| {
                         try tls.io.writeAll(testing.io, stream, flight);
                         hs.completeWrite();
                     }
@@ -1546,7 +1572,7 @@ fn serveClientAuth(stream: Stream) !void {
                 .none => {},
                 .application_data => |data| {
                     if (!hs.isConnected()) return error.UnexpectedDuringHandshake;
-                    return sendResponse(stream, &hs, data, &out);
+                    return sendResponse(stream, hs, data, out);
                 },
                 .closed => return error.UnexpectedDuringHandshake,
             }
@@ -1554,10 +1580,10 @@ fn serveClientAuth(stream: Stream) !void {
     }
 
     while (true) {
-        const n = try tls.io.fill(testing.io, stream, &rb);
+        const n = try tls.io.fill(testing.io, stream, rb);
         if (n == 0) return error.ClientClosed;
-        while (try rb.next()) |record| switch (try hs.handleRecord(record, &out)) {
-            .application_data => |data| return sendResponse(stream, &hs, data, &out),
+        while (try rb.next()) |record| switch (try hs.handleRecord(record, out)) {
+            .application_data => |data| return sendResponse(stream, hs, data, out),
             .write => |w| {
                 try tls.io.writeAll(testing.io, stream, w);
                 hs.completeWrite();

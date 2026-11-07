@@ -10,6 +10,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
 const fuzz_compat = @import("fuzz_compat.zig");
+const compat = @import("compat.zig");
 const mem = std.mem;
 const meta = std.meta;
 
@@ -1077,7 +1078,7 @@ pub const Parsed = struct {
             .public_key_p256 = null,
             .public_key_p384 = null,
             .hybrid_key_shares = .empty,
-            .offered_extensions = .initEmpty(),
+            .offered_extensions = .empty,
             .psk_ext = null,
             .binders_offset = 0,
             .psk_key_exchange_modes = null,
@@ -1088,7 +1089,7 @@ pub const Parsed = struct {
     pub fn offersSuite(self: Parsed, suite: CipherSuite) bool {
         var i: usize = 0;
         while (i < self.cipher_suites.len) : (i += 2) {
-            if (memx.readInt(u16, self.cipher_suites[i..][0..2]) == @intFromEnum(suite))
+            if (memx.readInt(u16, self.cipher_suites[i..][0..2]) == compat.enumToInt(suite))
                 return true;
         }
         return false;
@@ -1453,7 +1454,7 @@ pub fn parse(msg: []const u8) ParseError!Parsed {
     if (body_len != msg.len - handshake_header_len) return error.InvalidHandshakeLength;
 
     const client_legacy_version = r.assumeRead(ProtocolVersion);
-    if (@intFromEnum(client_legacy_version) <= 0x0300) return error.UnsupportedTlsVersion;
+    if (compat.enumToInt(client_legacy_version) <= 0x0300) return error.UnsupportedTlsVersion;
     r.assumeSkip(32); // random
     const session_id_len = r.assumeRead(u8);
     if (session_id_len > 32) return error.InvalidVectorLength;
@@ -1612,7 +1613,10 @@ fn clientHelloWithSniForTest(out: []u8, name: ?[]const u8) ![]const u8 {
 
 // RFC 6066 §3, RFC 1035 §2.3.4 — 253 presentation octets fit a 255-octet DNS name.
 test "parse: preserves boundary SNI names as borrowed slices" {
-    const maximum = "a" ** 63 ++ "." ++ "b" ** 63 ++ "." ++ "c" ** 63 ++ "." ++ "d" ** 61;
+    const maximum = compat.repeatString("a", 63) ++ "." ++
+        compat.repeatString("b", 63) ++ "." ++
+        compat.repeatString("c", 63) ++ "." ++
+        compat.repeatString("d", 61);
     const names: [2][]const u8 = .{ "a", maximum };
     for (names) |name| {
         var buf: [1024]u8 = undefined;
@@ -1645,7 +1649,10 @@ test "parse: rejects an empty SNI host name" {
 
 // RFC 6066 §3, RFC 1035 §2.3.4 — apply the encoder's DNS length policy on input.
 test "parse: rejects an SNI name beyond the DNS length limit" {
-    const name = "a" ** 63 ++ "." ++ "b" ** 63 ++ "." ++ "c" ** 63 ++ "." ++ "d" ** 62;
+    const name = compat.repeatString("a", 63) ++ "." ++
+        compat.repeatString("b", 63) ++ "." ++
+        compat.repeatString("c", 63) ++ "." ++
+        compat.repeatString("d", 62);
     var buf: [1024]u8 = undefined;
     const message = try clientHelloWithSniForTest(&buf, name);
     try testing.expectError(error.InvalidVectorLength, parse(message));
@@ -1730,10 +1737,15 @@ const KnownGroup = enum {
 };
 
 comptime {
-    for (meta.fields(NamedGroup)) |named_group| {
+    for (0..compat.enumFieldCount(NamedGroup)) |i| {
         var found = false;
-        for (meta.fields(KnownGroup)) |known_group| {
-            if (mem.eql(u8, named_group.name, known_group.name)) found = true;
+        for (0..compat.enumFieldCount(KnownGroup)) |j| {
+            const same = mem.eql(
+                u8,
+                compat.enumFieldName(NamedGroup, i),
+                compat.enumFieldName(KnownGroup, j),
+            );
+            if (same) found = true;
         }
         assert(found);
     }
@@ -1743,7 +1755,7 @@ pub const SupportedGroups = struct {
     set: std.EnumSet(KnownGroup),
 
     /// No groups supported.
-    pub const empty: SupportedGroups = .{ .set = .initEmpty() };
+    pub const empty: SupportedGroups = .{ .set = .empty };
 
     pub fn contains(self: SupportedGroups, group: NamedGroup) bool {
         const known = KnownGroup.fromNamed(group) orelse return false;
@@ -1796,7 +1808,7 @@ fn hasSupportedHandshakeSignatureScheme(schemes: []const u8) bool {
     var i: usize = 0;
     while (i < schemes.len) : (i += 2) {
         const wire_scheme = memx.readInt(u16, schemes[i..][0..2]);
-        const scheme: SignatureScheme = @enumFromInt(wire_scheme);
+        const scheme: SignatureScheme = compat.enumFromInt(SignatureScheme, wire_scheme);
         if (backend.supportsCertificateVerifyScheme(scheme)) return true;
     }
     return false;
@@ -1906,8 +1918,8 @@ test "encodeWithPsk: pre_shared_key is last, binder prefix and offset are correc
     while (i + 4 <= r.msg.len) {
         const ext_type = (@as(u16, r.msg[i]) << 8) | r.msg[i + 1];
         const ext_data_len = (@as(u16, r.msg[i + 2]) << 8) | r.msg[i + 3];
-        if (ext_type == @intFromEnum(ExtensionType.psk_key_exchange_modes)) seen_kem = true;
-        if (ext_type == @intFromEnum(ExtensionType.pre_shared_key)) {
+        if (ext_type == compat.enumToInt(ExtensionType.psk_key_exchange_modes)) seen_kem = true;
+        if (ext_type == compat.enumToInt(ExtensionType.pre_shared_key)) {
             // Must be the last extension: no bytes after its ext_data.
             try testing.expectEqual(i + 4 + ext_data_len, r.msg.len);
             seen_psk_last = true;
@@ -2009,7 +2021,7 @@ test "encode: cipher suites match backend capabilities" {
     );
     inline for (supported_cipher_suites, 0..) |suite, i| {
         try testing.expectEqual(
-            @intFromEnum(suite),
+            compat.enumToInt(suite),
             memx.readInt(u16, encoded[cs_offset + 2 + i * 2 ..][0..2]),
         );
     }
@@ -2029,7 +2041,7 @@ test "encode: supported_groups contains X25519" {
     const encoded = try encode(&buf, .zero, .zero, null, &.{});
     const ext = try findExtension(encoded, .supported_groups);
     try testing.expectEqual(@as(u16, 2), memx.readInt(u16, ext[0..2]));
-    try testing.expectEqual(@intFromEnum(NamedGroup.x25519), memx.readInt(u16, ext[2..][0..2]));
+    try testing.expectEqual(compat.enumToInt(NamedGroup.x25519), memx.readInt(u16, ext[2..][0..2]));
 }
 
 // RFC 8446 §4.2.8 — the current client surface sends one X25519 KeyShareEntry.
@@ -2256,21 +2268,24 @@ test "encode: rejects invalid ALPN protocols" {
     try testing.expectError(error.EmptyAlpnProtocol, encode(&buf, .zero, .zero, null, &.{""}));
     try testing.expectError(
         error.AlpnProtocolTooLong,
-        encode(&buf, .zero, .zero, null, &.{"a" ** 256}),
+        encode(&buf, .zero, .zero, null, &.{&compat.repeatString("a", 256)}),
     );
 }
 
 fn expectSignatureSchemeList(ext: []const u8, schemes: []const SignatureScheme) !void {
     try testing.expectEqual(@as(u16, @intCast(schemes.len * 2)), memx.readInt(u16, ext[0..2]));
     for (schemes, 0..) |scheme, i| {
-        try testing.expectEqual(@intFromEnum(scheme), memx.readInt(u16, ext[2 + i * 2 ..][0..2]));
+        try testing.expectEqual(
+            compat.enumToInt(scheme),
+            memx.readInt(u16, ext[2 + i * 2 ..][0..2]),
+        );
     }
 }
 
 fn rewriteClientHelloForP256(buf: []u8, encoded_len: usize, public_key: p256.PublicKey) !usize {
     const groups = try findExtension(buf[0..encoded_len], .supported_groups);
     groups[2] = 0x00;
-    groups[3] = @intFromEnum(NamedGroup.secp256r1);
+    groups[3] = @intCast(compat.enumToInt(NamedGroup.secp256r1));
 
     const key_share_offset = try findExtensionOffset(buf[0..encoded_len], .key_share);
     const key_share_old_len = memx.readInt(u16, buf[key_share_offset + 2 ..][0..2]);
@@ -2285,7 +2300,7 @@ fn rewriteClientHelloForP256(buf: []u8, encoded_len: usize, public_key: p256.Pub
         0x00, 0x33,
         0x00, @intCast(key_share_new_len),
         0x00, @intCast(2 + 2 + p256.public_length),
-        0x00, @intFromEnum(NamedGroup.secp256r1),
+        0x00, @intCast(compat.enumToInt(NamedGroup.secp256r1)),
         0x00, @intCast(p256.public_length),
     };
     @memcpy(buf[key_share_offset + 10 ..][0..p256.public_length], &public_key.data);
@@ -2426,7 +2441,7 @@ test "parse: rejects key share outside supported_groups" {
     var i: usize = 2;
     while (i < groups.len) : (i += 2) {
         groups[i] = 0x00;
-        groups[i + 1] = @intFromEnum(NamedGroup.x25519);
+        groups[i + 1] = @intCast(compat.enumToInt(NamedGroup.x25519));
     }
 
     try testing.expectError(error.IllegalParameter, parse(buf[0..p256_len]));
@@ -2478,7 +2493,7 @@ test "parse: rejects missing supported_versions" {
     var buf: [512]u8 = undefined;
     const encoded = try encode(&buf, .zero, .zero, null, &.{});
     const offset = try findExtensionOffset(encoded, .supported_versions);
-    buf[offset + 1] = @intFromEnum(ExtensionType.padding);
+    buf[offset + 1] = @intCast(compat.enumToInt(ExtensionType.padding));
     try testing.expectError(error.UnsupportedTlsVersion, parse(buf[0..encoded.len]));
 }
 
@@ -2497,7 +2512,7 @@ test "parse: rejects missing supported_groups" {
     var buf: [512]u8 = undefined;
     const encoded = try encode(&buf, .zero, .zero, null, &.{});
     const offset = try findExtensionOffset(encoded, .supported_groups);
-    buf[offset + 1] = @intFromEnum(ExtensionType.padding);
+    buf[offset + 1] = @intCast(compat.enumToInt(ExtensionType.padding));
     try testing.expectError(error.MissingExtension, parse(buf[0..encoded.len]));
 }
 
@@ -2505,7 +2520,7 @@ test "parse: rejects missing signature_algorithms" {
     var buf: [512]u8 = undefined;
     const encoded = try encode(&buf, .zero, .zero, null, &.{});
     const offset = try findExtensionOffset(encoded, .signature_algorithms);
-    buf[offset + 1] = @intFromEnum(ExtensionType.padding);
+    buf[offset + 1] = @intCast(compat.enumToInt(ExtensionType.padding));
     try testing.expectError(error.MissingExtension, parse(buf[0..encoded.len]));
 }
 
@@ -2602,8 +2617,8 @@ test "parse: no shared supported group is rejected" {
 // RFC 8446 §4.2.8 — ClientHello must not contain duplicate KeyShareEntry groups.
 test "parse: rejects duplicate x25519 key share entries" {
     const key_shares = [_]u8{ 0x00, 0x48 } ++
-        [_]u8{ 0x00, 0x1d, 0x00, 0x20 } ++ [_]u8{0xaa} ** 32 ++
-        [_]u8{ 0x00, 0x1d, 0x00, 0x20 } ++ [_]u8{0xbb} ** 32;
+        [_]u8{ 0x00, 0x1d, 0x00, 0x20 } ++ @as([32]u8, @splat(0xaa)) ++
+        [_]u8{ 0x00, 0x1d, 0x00, 0x20 } ++ @as([32]u8, @splat(0xbb));
     try testing.expectError(error.DuplicateKeyShare, parseKeyShare(&key_shares));
 }
 
@@ -2646,7 +2661,7 @@ test "encode: buffer too short" {
 
 test "encode: server_name too long" {
     var buf: [512]u8 = undefined;
-    const long_name = "a" ** 254;
+    const long_name = &compat.repeatString("a", 254);
     try testing.expectError(error.ServerNameTooLong, encode(&buf, .zero, .zero, long_name, &.{}));
 }
 
@@ -2953,7 +2968,7 @@ test "encodeRetryAfterHrr: preserves PSK key exchange mode" {
     const parsed = try parse(encoded.msg);
     try testing.expectEqualSlices(
         u8,
-        &.{@intFromEnum(PskKeyExchangeMode.psk_ke)},
+        &.{compat.enumToInt(PskKeyExchangeMode.psk_ke)},
         parsed.psk_key_exchange_modes.?,
     );
 }
@@ -3091,7 +3106,7 @@ test "encodeRetryAfterHrr: missing configured hybrid share is a policy error" {
 // RFC 10024 §4.1 — public hybrid encoders report malformed local policy
 // through their explicit options error rather than a peer protocol error.
 test "encodeWithHybridGroups: rejects unknown share group without panic" {
-    const unknown: NamedGroup = @enumFromInt(0x1234);
+    const unknown: NamedGroup = compat.enumFromInt(NamedGroup, 0x1234);
     var buf: [4096]u8 = undefined;
     try testing.expectError(
         error.InvalidHybridPolicy,

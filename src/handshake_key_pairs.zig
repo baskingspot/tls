@@ -36,7 +36,7 @@ pub const KeyPairs = struct {
             .x25519 = x25519_keypair,
             .p256 = try .generate(),
             .p384 = null,
-            .derived = .initFull(),
+            .derived = .full,
         };
     }
 
@@ -48,7 +48,7 @@ pub const KeyPairs = struct {
             .x25519 = x25519_keypair,
             .p256 = p256_keypair,
             .p384 = null,
-            .derived = .initFull(),
+            .derived = .full,
         };
     }
 
@@ -78,7 +78,7 @@ pub const KeyPairs = struct {
             .x25519 = .{ .secret_key = x25519_secret, .public_key = .init(@splat(0)) },
             .p256 = .{ .secret_key = p256_secret, .public_key = .init(@splat(0)) },
             .p384 = null,
-            .derived = .initEmpty(),
+            .derived = .empty,
         };
     }
 
@@ -134,7 +134,7 @@ pub const KeyPairs = struct {
             .x25519 = x25519_keypair,
             .p256 = p256_keypair,
             .p384 = p384_keypair,
-            .derived = .initFull(),
+            .derived = .full,
         };
     }
 
@@ -186,8 +186,8 @@ test "deriveFor derives the selected group's key and no other" {
         .{ .group = .x25519_mlkem768, .derived = .init(.{ .x25519 = true }) },
         .{ .group = .secp256r1, .derived = .init(.{ .p256 = true }) },
         .{ .group = .secp256r1_mlkem768, .derived = .init(.{ .p256 = true }) },
-        .{ .group = .secp384r1, .derived = .initEmpty() },
-        .{ .group = .secp384r1_mlkem1024, .derived = .initEmpty() },
+        .{ .group = .secp384r1, .derived = .empty },
+        .{ .group = .secp384r1_mlkem1024, .derived = .empty },
     };
     const x25519_seed = stdx.fmt.comptimeHex("77076d0a7318a57d3c16c17251b26645" ++
         "df4c2f87ebc0992ab177fba51db92c2a");
@@ -199,7 +199,7 @@ test "deriveFor derives the selected group's key and no other" {
     for (cases) |case| {
         var kp: KeyPairs = .initDeferred(.init(x25519_seed), p256_seed);
         defer kp.secureZero();
-        try testing.expect(kp.derived.eql(.initEmpty()));
+        try testing.expect(kp.derived.eql(.empty));
         try kp.deriveFor(case.group);
         try testing.expect(kp.derived.eql(case.derived));
         const x25519_want = if (case.derived.contains(.x25519)) &x25519_public else zero[0..32];
@@ -222,6 +222,6 @@ test "secureZero zeroes all secret material" {
         // Every byte zero must also leave the optional readable as null, not
         // as a present-but-zeroed keypair.
         try testing.expect(kp.p384 == null);
-        try testing.expect(kp.derived.eql(.initEmpty()));
+        try testing.expect(kp.derived.eql(.empty));
     }
 }

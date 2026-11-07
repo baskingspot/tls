@@ -103,7 +103,7 @@ pub fn benchmarkWireReaderU24(b: *testingx.B) !void {
 pub fn benchmarkWireReaderSafeSequence(b: *testingx.B) !void {
     var input = [_]u8{
         0x02, 0x00, 0x00, 0x26, 0x03, 0x03,
-    } ++ [_]u8{0xaa} ** 32 ++ [_]u8{
+    } ++ @as([32]u8, @splat(0xaa)) ++ [_]u8{
         0x00, 0x13, 0x01, 0x00, 0x04, 0x00, 0xff, 0xff,
     };
     while (try b.loop()) {
@@ -125,7 +125,7 @@ pub fn benchmarkWireReaderSafeSequence(b: *testingx.B) !void {
 pub fn benchmarkWireReaderAssumeSequence(b: *testingx.B) !void {
     var input = [_]u8{
         0x02, 0x00, 0x00, 0x26, 0x03, 0x03,
-    } ++ [_]u8{0xaa} ** 32 ++ [_]u8{
+    } ++ @as([32]u8, @splat(0xaa)) ++ [_]u8{
         0x00, 0x13, 0x01, 0x00, 0x04, 0x00, 0xff, 0xff,
     };
     while (try b.loop()) {

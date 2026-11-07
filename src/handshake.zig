@@ -6,6 +6,7 @@
 //! ratchet discipline, the encrypted alert path, and the connected event
 //! shapes. RFC 8446 §4, §4.6.3, §5.1, §6.
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 
 const assert = std.debug.assert;
@@ -88,7 +89,7 @@ pub const AlertError = RecordLayer.EncryptError || error{ BufferTooShort, Pendin
 fn requireEngineField(comptime T: type, comptime field: []const u8) bool {
     const Ptr = switch (@typeInfo(T)) {
         .pointer => |ptr| blk: {
-            if (ptr.size != .one or ptr.is_const)
+            if (ptr.size != .one or compat.pointerIsConst(ptr))
                 @compileError("engine helpers expect a mutable engine pointer");
             break :blk ptr;
         },
@@ -229,7 +230,7 @@ pub fn ratchetKtlsTx(
 fn reassembleServerKeyUpdate(self: anytype, content: []u8) ReceiveError!?KeyUpdateRequest {
     comptime requireEstablishedShape(@TypeOf(self));
     for (content, 0..) |byte, i| {
-        if (self.ku_frag.len == 0 and byte != @intFromEnum(Type.key_update)) {
+        if (self.ku_frag.len == 0 and byte != compat.enumToInt(Type.key_update)) {
             self.ku_frag.clear();
             return error.UnexpectedMessage;
         }
@@ -451,8 +452,8 @@ pub fn parseKeyUpdate(msg: []const u8) error{ UnexpectedEof, IllegalParameter }!
 // RFC 8446 §4 — handshake messages use a 1-byte type and 24-bit length.
 test "Reader iterates coalesced messages" {
     const buf = [_]u8{
-        @intFromEnum(Type.encrypted_extensions), 0, 0, 1, 0xaa,
-        @intFromEnum(Type.finished),             0, 0, 1, 0xbb,
+        compat.enumToInt(Type.encrypted_extensions), 0, 0, 1, 0xaa,
+        compat.enumToInt(Type.finished),             0, 0, 1, 0xbb,
     };
     var r: Reader = .init(&buf);
     try testing.expectEqual(Type.encrypted_extensions, (try r.next()).?.type);
@@ -462,6 +463,6 @@ test "Reader iterates coalesced messages" {
 
 // RFC 8446 §4.6.3 — KeyUpdate request byte is the only body byte.
 test "parseKeyUpdate" {
-    const msg = [_]u8{ @intFromEnum(Type.key_update), 0, 0, 1, 1 };
+    const msg = [_]u8{ compat.enumToInt(Type.key_update), 0, 0, 1, 1 };
     try testing.expectEqual(KeyUpdateRequest.update_requested, try parseKeyUpdate(&msg));
 }

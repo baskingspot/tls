@@ -3,6 +3,7 @@
 //! RFC 8446 §4.2 and related extension RFCs.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 
 const memx = @import("memx.zig");
@@ -157,7 +158,7 @@ pub const ExtensionType = enum(u16) {
     _,
 
     pub fn isGrease(self: ExtensionType) bool {
-        const value = @intFromEnum(self);
+        const value = compat.enumToInt(self);
         return (value & 0x0f0f) == 0x0a0a and (value >> 8) == (value & 0xff);
     }
 };
@@ -200,10 +201,10 @@ test "rejectDuplicateExtensions: accepts distinct extension types" {
 // RFC 8446 §4.2 — extension blocks are vectors of type/length/value entries.
 // RFC 8701 §2 — GREASE values reserve code points of the form 0x?a?a.
 test "ExtensionType.isGrease: detects reserved GREASE extension code points" {
-    const grease_0a: ExtensionType = @enumFromInt(0x0a0a);
-    const grease_1a: ExtensionType = @enumFromInt(0x1a1a);
-    const grease_fa: ExtensionType = @enumFromInt(0xfafa);
-    const unknown: ExtensionType = @enumFromInt(0x5a5b);
+    const grease_0a: ExtensionType = compat.enumFromInt(ExtensionType, 0x0a0a);
+    const grease_1a: ExtensionType = compat.enumFromInt(ExtensionType, 0x1a1a);
+    const grease_fa: ExtensionType = compat.enumFromInt(ExtensionType, 0xfafa);
+    const unknown: ExtensionType = compat.enumFromInt(ExtensionType, 0x5a5b);
     try testing.expect(grease_0a.isGrease());
     try testing.expect(grease_1a.isGrease());
     try testing.expect(grease_fa.isGrease());

@@ -25,7 +25,7 @@ fn resetTranscriptForHrr(suite: *suite_state.Suite, ch1_hash: []const u8, hrr: [
             const hlen = Hash.digest_length;
             arm.transcript = Hash.init(.{});
             var prefix: [4 + 48]u8 = undefined;
-            prefix[0] = @intFromEnum(handshake.Type.message_hash);
+            prefix[0] = @intCast(compat.enumToInt(handshake.Type.message_hash));
             prefix[1] = 0;
             prefix[2] = 0;
             prefix[3] = @intCast(hlen);
@@ -98,6 +98,7 @@ pub const HandshakeSecrets = struct {
 };
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
@@ -266,7 +267,7 @@ pub const Client = struct {
             .policy = policy,
             .credentials = null,
             .received_certificate_request = false,
-            .offered = .initEmpty(),
+            .offered = .empty,
             .leaf_pub_key = undefined,
             .leaf_pub_key_len = 0,
             .last_alert = null,
@@ -359,7 +360,7 @@ pub const Client = struct {
         msg: []const u8,
     ) Error!void {
         if (msg.len < 4) return error.UnexpectedEof;
-        const msg_type: handshake.Type = @enumFromInt(msg[0]);
+        const msg_type: handshake.Type = compat.enumFromInt(handshake.Type, msg[0]);
         try level.check(msg_type, provided);
 
         switch (self.state) {
@@ -750,11 +751,11 @@ pub const Client = struct {
         out: []u8,
     ) Error![]const u8 {
         if (self.state != .connected) return error.UnexpectedMessage;
-        out[0] = @intFromEnum(handshake.Type.key_update);
+        out[0] = @intCast(compat.enumToInt(handshake.Type.key_update));
         out[1] = 0;
         out[2] = 0;
         out[3] = 1;
-        out[4] = @intFromEnum(request);
+        out[4] = @intCast(compat.enumToInt(request));
         const msg = out[0..5];
         try self.queue.push(.{ .message = .{ .level = .application, .bytes = msg } });
         // The ratchet is the point; the layer it hands back is the adapter's
@@ -779,7 +780,7 @@ pub const Client = struct {
     ) Error!void {
         if (self.state != .connected) return error.UnexpectedMessage;
         if (msg.len < 4) return error.UnexpectedEof;
-        const msg_type: handshake.Type = @enumFromInt(msg[0]);
+        const msg_type: handshake.Type = compat.enumFromInt(handshake.Type, msg[0]);
         try level.check(msg_type, provided);
 
         switch (msg_type) {
@@ -795,11 +796,11 @@ pub const Client = struct {
                 try self.queue.push(.{ .read_level = .application });
                 if (request == .update_requested) {
                     self.ku_response = .{
-                        @intFromEnum(handshake.Type.key_update),
+                        compat.enumToInt(handshake.Type.key_update),
                         0,
                         0,
                         1,
-                        @intFromEnum(handshake.KeyUpdateRequest.update_not_requested),
+                        compat.enumToInt(handshake.KeyUpdateRequest.update_not_requested),
                     };
                     try self.queue.push(.{ .message = .{
                         .level = .application,
@@ -1176,7 +1177,7 @@ pub const Server = struct {
         msg: []const u8,
     ) Error!void {
         if (msg.len < 4) return error.UnexpectedEof;
-        const msg_type: handshake.Type = @enumFromInt(msg[0]);
+        const msg_type: handshake.Type = compat.enumFromInt(handshake.Type, msg[0]);
         try level.check(msg_type, provided);
 
         switch (self.state) {
@@ -1604,7 +1605,7 @@ test "core: client and server complete a handshake with each other" {
         &key_share,
     );
 
-    const dhe = [_]u8{0x5a} ** 32;
+    const dhe = @as([32]u8, @splat(0x5a));
 
     var server_slots: [16]level.Output = undefined;
     var server: Server = .init(&server_slots);
@@ -1652,7 +1653,7 @@ test "core: client and server complete a handshake with each other" {
 
     var fin_buf: [128]u8 = undefined;
     const fin = try client.sendClientFinished(&fin_buf);
-    try testing.expectEqual(@as(u8, @intFromEnum(handshake.Type.finished)), fin[0]);
+    try testing.expectEqual(@as(u8, compat.enumToInt(handshake.Type.finished)), fin[0]);
 }
 
 // Mutual authentication, core to core: the server asks for a certificate, the
@@ -1675,7 +1676,7 @@ test "core: client authentication completes both ways" {
         .aes_128_gcm_sha256,
         &key_share,
     );
-    const dhe = [_]u8{0x6b} ** 32;
+    const dhe = @as([32]u8, @splat(0x6b));
 
     var server_policy: certificate.Policy = .init;
     server_policy.now_sec = 0;
@@ -2053,8 +2054,8 @@ test "key update: the ratchet is queued before the next message is accepted" {
     defer client.deinit();
 
     const update = [_]u8{
-        @intFromEnum(handshake.Type.key_update),                       0, 0, 1,
-        @intFromEnum(handshake.KeyUpdateRequest.update_not_requested),
+        compat.enumToInt(handshake.Type.key_update),                       0, 0, 1,
+        compat.enumToInt(handshake.KeyUpdateRequest.update_not_requested),
     };
     try client.provideApplication(.application, &update);
 
@@ -2073,17 +2074,20 @@ test "key update: a requested response is queued, and the flood cap holds" {
     defer client.deinit();
 
     const request = [_]u8{
-        @intFromEnum(handshake.Type.key_update),                   0, 0, 1,
-        @intFromEnum(handshake.KeyUpdateRequest.update_requested),
+        compat.enumToInt(handshake.Type.key_update),                   0, 0, 1,
+        compat.enumToInt(handshake.KeyUpdateRequest.update_requested),
     };
     try client.provideApplication(.application, &request);
     _ = client.next().?; // key_available
     _ = client.next().?; // read_level
     const response = client.next().?.message;
     try testing.expectEqual(level.Level.application, response.level);
-    try testing.expectEqual(@as(u8, @intFromEnum(handshake.Type.key_update)), response.bytes[0]);
     try testing.expectEqual(
-        @as(u8, @intFromEnum(handshake.KeyUpdateRequest.update_not_requested)),
+        @as(u8, compat.enumToInt(handshake.Type.key_update)),
+        response.bytes[0],
+    );
+    try testing.expectEqual(
+        @as(u8, compat.enumToInt(handshake.KeyUpdateRequest.update_not_requested)),
         response.bytes[4],
     );
 
@@ -2106,7 +2110,7 @@ test "alerts: the core reports level and description, never bytes" {
 
     try client.provideAlert(.application, &.{
         2,
-        @intFromEnum(alert.Description.unexpected_message),
+        compat.enumToInt(alert.Description.unexpected_message),
     });
     const out = client.next().?;
     try testing.expectEqual(alert.Level.fatal, out.alert.level);
@@ -2212,7 +2216,7 @@ test "tickets: server issues one and both sides derive the same PSK" {
         .aes_128_gcm_sha256,
         &key_share,
     );
-    const dhe = [_]u8{0x7c} ** 32;
+    const dhe = @as([32]u8, @splat(0x7c));
 
     var server_slots: [16]level.Output = undefined;
     var server: Server = .init(&server_slots);

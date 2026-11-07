@@ -29,6 +29,7 @@
 //!   - include/uapi/linux/tls.h
 //!   - RFC 8446 §5.3 (per-record nonce / IV split), §7.1 (traffic key derivation)
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 const assert = std.debug.assert;
 const linux = std.os.linux;
@@ -139,7 +140,7 @@ pub const PackError = error{CipherMismatch};
 pub fn packAesGcm128(info: KtlsInfo) PackError!Tls12CryptoInfoAesGcm128 {
     if (info.cipher_type != .aes_gcm_128) return error.CipherMismatch;
     return .{
-        .info = .{ .version = info.version, .cipher_type = @intFromEnum(info.cipher_type) },
+        .info = .{ .version = info.version, .cipher_type = compat.enumToInt(info.cipher_type) },
         .iv = info.iv[0..8].*,
         .key = info.key[0..16].*,
         .salt = info.salt[0..4].*,
@@ -151,7 +152,7 @@ pub fn packAesGcm128(info: KtlsInfo) PackError!Tls12CryptoInfoAesGcm128 {
 pub fn packAesGcm256(info: KtlsInfo) PackError!Tls12CryptoInfoAesGcm256 {
     if (info.cipher_type != .aes_gcm_256) return error.CipherMismatch;
     return .{
-        .info = .{ .version = info.version, .cipher_type = @intFromEnum(info.cipher_type) },
+        .info = .{ .version = info.version, .cipher_type = compat.enumToInt(info.cipher_type) },
         .iv = info.iv[0..8].*,
         .key = info.key[0..32].*,
         .salt = info.salt[0..4].*,
@@ -164,7 +165,7 @@ pub fn packAesGcm256(info: KtlsInfo) PackError!Tls12CryptoInfoAesGcm256 {
 pub fn packChaCha20Poly1305(info: KtlsInfo) PackError!Tls12CryptoInfoChaCha20Poly1305 {
     if (info.cipher_type != .chacha20_poly1305) return error.CipherMismatch;
     return .{
-        .info = .{ .version = info.version, .cipher_type = @intFromEnum(info.cipher_type) },
+        .info = .{ .version = info.version, .cipher_type = compat.enumToInt(info.cipher_type) },
         .iv = info.iv[0..12].*,
         .key = info.key[0..32].*,
         .rec_seq = info.rec_seq,
@@ -253,7 +254,7 @@ pub fn installCryptoInfo(
 fn syscallErrno(rc: usize) linux.E {
     const signed: isize = @bitCast(rc);
     const int = if (signed > -4096 and signed < 0) -signed else 0;
-    return @enumFromInt(int);
+    return compat.enumFromInt(linux.E, int);
 }
 
 /// Compress a kTLS setsockopt errno onto the install outcome. Total by
@@ -357,7 +358,7 @@ pub fn parseRecordType(control: []const u8, flags: u32) ParseError!?RecordType {
     // Bit-cast instead of @ptrCast: the cmsg is only promised to live inside
     // `control`, and an unaligned caller buffer must not become an
     // @alignCast panic in safe builds.
-    const header: cmsghdr = @bitCast(control[0..@sizeOf(cmsghdr)].*);
+    const header: cmsghdr = mem.bytesToValue(cmsghdr, control[0..@sizeOf(cmsghdr)]);
     if (header.len < cmsg_len or
         header.len > control.len or
         header.level != SOL_TLS or
@@ -371,14 +372,14 @@ pub fn parseRecordType(control: []const u8, flags: u32) ParseError!?RecordType {
 // include/uapi/linux/tls.h — kernel UAPI cipher_type values match the tls
 // KtlsCipherType enum integers.
 test "kernel cipher_type values match KtlsCipherType" {
-    try testing.expectEqual(@as(u16, 51), @intFromEnum(KtlsCipherType.aes_gcm_128));
-    try testing.expectEqual(@as(u16, 52), @intFromEnum(KtlsCipherType.aes_gcm_256));
-    try testing.expectEqual(@as(u16, 54), @intFromEnum(KtlsCipherType.chacha20_poly1305));
-    try testing.expectEqual(TLS_CIPHER_AES_GCM_128, @intFromEnum(KtlsCipherType.aes_gcm_128));
-    try testing.expectEqual(TLS_CIPHER_AES_GCM_256, @intFromEnum(KtlsCipherType.aes_gcm_256));
+    try testing.expectEqual(@as(u16, 51), compat.enumToInt(KtlsCipherType.aes_gcm_128));
+    try testing.expectEqual(@as(u16, 52), compat.enumToInt(KtlsCipherType.aes_gcm_256));
+    try testing.expectEqual(@as(u16, 54), compat.enumToInt(KtlsCipherType.chacha20_poly1305));
+    try testing.expectEqual(TLS_CIPHER_AES_GCM_128, compat.enumToInt(KtlsCipherType.aes_gcm_128));
+    try testing.expectEqual(TLS_CIPHER_AES_GCM_256, compat.enumToInt(KtlsCipherType.aes_gcm_256));
     try testing.expectEqual(
         TLS_CIPHER_CHACHA20_POLY1305,
-        @intFromEnum(KtlsCipherType.chacha20_poly1305),
+        compat.enumToInt(KtlsCipherType.chacha20_poly1305),
     );
 }
 
@@ -411,7 +412,7 @@ test "packed kTLS info secureZero methods erase every byte" {
 test "packAesGcm128 splits the 12-byte IV and copies key/seq" {
     var info: KtlsInfo = .init(.aes_gcm_128, 16, 4, 8, .{ 0, 0, 0, 0, 0, 0, 0, 5 });
     defer info.secureZero();
-    info.key[0..16].* = [_]u8{0xaa} ** 16;
+    info.key[0..16].* = @as([16]u8, @splat(0xaa));
     info.salt = .{ 0x01, 0x02, 0x03, 0x04 };
     info.iv[0..8].* = .{ 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c };
 
@@ -425,16 +426,16 @@ test "packAesGcm128 splits the 12-byte IV and copies key/seq" {
         &.{ 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c },
         &out.iv,
     );
-    try testing.expectEqualSlices(u8, &([_]u8{0xaa} ** 16), &out.key);
+    try testing.expectEqualSlices(u8, &(@as([16]u8, @splat(0xaa))), &out.key);
     try testing.expectEqualSlices(u8, &info.rec_seq, &out.rec_seq);
 }
 
 test "packAesGcm128 rejects a non-AES-GCM-128 info" {
-    var info: KtlsInfo = .init(.aes_gcm_256, 32, 4, 8, .{0} ** 8);
+    var info: KtlsInfo = .init(.aes_gcm_256, 32, 4, 8, @splat(0));
     defer info.secureZero();
-    info.key[0..32].* = [_]u8{0xbb} ** 32;
+    info.key[0..32].* = @as([32]u8, @splat(0xbb));
     info.salt = .{ 0, 0, 0, 0 };
-    info.iv[0..8].* = .{0} ** 8;
+    info.iv[0..8].* = @splat(0);
     try testing.expectError(error.CipherMismatch, packAesGcm128(info));
 }
 
@@ -442,28 +443,28 @@ test "packAesGcm128 rejects a non-AES-GCM-128 info" {
 test "packChaCha20Poly1305 uses the full 12-byte IV" {
     var info: KtlsInfo = .init(.chacha20_poly1305, 32, 0, 12, .{ 0, 0, 0, 0, 0, 0, 0, 9 });
     defer info.secureZero();
-    info.key[0..32].* = [_]u8{0xcc} ** 32;
+    info.key[0..32].* = @as([32]u8, @splat(0xcc));
     info.iv = .{ 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b };
 
     var out = try packChaCha20Poly1305(info);
     defer out.secureZero();
     try testing.expectEqual(TLS_CIPHER_CHACHA20_POLY1305, out.info.cipher_type);
     try testing.expectEqualSlices(u8, &info.iv, &out.iv);
-    try testing.expectEqualSlices(u8, &([_]u8{0xcc} ** 32), &out.key);
+    try testing.expectEqualSlices(u8, &(@as([32]u8, @splat(0xcc))), &out.key);
     try testing.expectEqualSlices(u8, &info.rec_seq, &out.rec_seq);
 }
 
 test "packAesGcm256 copies the 32-byte key and splits the IV" {
     var info: KtlsInfo = .init(.aes_gcm_256, 32, 4, 8, @splat(0));
     defer info.secureZero();
-    info.key[0..32].* = [_]u8{0xdd} ** 32;
+    info.key[0..32].* = @as([32]u8, @splat(0xdd));
     info.salt = .{ 0xa, 0xb, 0xc, 0xd };
     info.iv[0..8].* = .{ 0xe, 0xf, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15 };
 
     var out = try packAesGcm256(info);
     defer out.secureZero();
     try testing.expectEqual(TLS_CIPHER_AES_GCM_256, out.info.cipher_type);
-    try testing.expectEqualSlices(u8, &([_]u8{0xdd} ** 32), &out.key);
+    try testing.expectEqualSlices(u8, &(@as([32]u8, @splat(0xdd))), &out.key);
     try testing.expectEqualSlices(u8, &info.salt, &out.salt);
     try testing.expectEqualSlices(u8, &info.iv[0..8].*, &out.iv);
 }
@@ -495,7 +496,7 @@ test "ControlBuffer.init writes one cmsg and zeroes the padding" {
     const bytes = control.encoded();
     try testing.expectEqual(control_space, bytes.len);
 
-    const header: cmsghdr = @bitCast(bytes[0..@sizeOf(cmsghdr)].*);
+    const header: cmsghdr = mem.bytesToValue(cmsghdr, bytes[0..@sizeOf(cmsghdr)]);
     try testing.expectEqual(cmsg_len, header.len);
     try testing.expectEqual(@as(i32, SOL_TLS), header.level);
     try testing.expectEqual(@as(i32, TLS_SET_RECORD_TYPE), header.type);
@@ -756,7 +757,10 @@ test "record-type cmsg round-trips through a live kTLS pair" {
     // The kernel's own report: CMSG_SPACE controllen, MSG_EOR, GET-type cmsg.
     try testing.expectEqual(control_space, recv_msg.controllen);
     try testing.expect(recv_msg.flags & linux.MSG.EOR != 0);
-    const recv_header: cmsghdr = @bitCast(recv_control.bytes[0..@sizeOf(cmsghdr)].*);
+    const recv_header: cmsghdr = mem.bytesToValue(
+        cmsghdr,
+        recv_control.bytes[0..@sizeOf(cmsghdr)],
+    );
     try testing.expectEqual(cmsg_len, recv_header.len);
     try testing.expectEqual(@as(i32, SOL_TLS), recv_header.level);
     try testing.expectEqual(@as(i32, TLS_GET_RECORD_TYPE), recv_header.type);

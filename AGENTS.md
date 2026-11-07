@@ -73,11 +73,26 @@ When already inside the devshell, run commands directly. Don't wrap normal
 checks in `nix develop --command` unless there is evidence the current shell is
 missing the updated environment.
 
+The tree builds on Zig 0.16 and 0.17. `nix develop` is 0.17 (the current
+stable); `nix develop .#zig-old` is 0.16 (the previous one, and the minimum in
+`build.zig.zon`). `just check` runs the Debug, ReleaseSafe, and ReleaseFast
+suites on whichever shell you are in; CI runs `ci` on 0.17 and `check` on 0.16.
+`just lint` uses `ziglint-0-16`, so a 0.17-only deprecation does not fail a tree
+that must build on 0.16.
+
+The fmt trap: 0.17's `zig fmt` rewrites `@intFromEnum`/`@enumFromInt` to
+`@backingInt`/`@fromBackingInt`, and 0.16 cannot parse those. Both builtins live
+in `src/compat.zig` inside a `// zig fmt: off` region, and every call site uses
+`compat.enumToInt`/`compat.enumFromInt`. Every other 0.17 difference in this
+tree is a shape probe (`@hasField`, `@hasDecl`) or a shim in the same file.
+
 `just ci` is the gate before a push. `just test` and `just integrations-ci` are
 subsets of it: the conformance subproject has its own call sites, so neither
 compiles anything under `conformance/`. A public signature change can pass both
 and still break the push. `.githooks/pre-push` enforces this: enable it once per
-checkout with `git config core.hooksPath .githooks`.
+checkout with `git config core.hooksPath .githooks`. `integrations-ci` and
+`distribution-ci` run as their own jobs in the `zig-old` shell: libxev only
+builds on 0.16, and the distribution smoke tests the minimum supported Zig.
 
 That hook runs the gate with its output redirected to a temp file, and starts
 with `exec </dev/null`. Both are load-bearing. A child of `just ci` that writes

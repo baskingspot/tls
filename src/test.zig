@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const builtin = @import("builtin");
 const testing = std.testing;
 const assert = std.debug.assert;
@@ -15,20 +16,25 @@ pub fn hex(comptime len: usize, comptime encoded: []const u8) [len]u8 {
     return out;
 }
 
+/// Force analysis of every declaration so an unused one still has to
+/// compile. Zig 0.17 hides private declarations from reflection, so on 0.17
+/// this reaches the public ones only.
 fn refAllDeclsRecursive(comptime T: type) void {
     if (!builtin.is_test) return;
-    inline for (comptime std.meta.declarations(T)) |decl| {
-        if (@TypeOf(@field(T, decl.name)) == type) {
-            switch (@typeInfo(@field(T, decl.name))) {
+    const decl_count = comptime compat.declCount(T);
+    inline for (0..decl_count) |i| {
+        const name = comptime compat.declName(T, i);
+        if (@TypeOf(@field(T, name)) == type) {
+            switch (@typeInfo(@field(T, name))) {
                 .@"struct",
                 .@"enum",
                 .@"union",
                 .@"opaque",
-                => refAllDeclsRecursive(@field(T, decl.name)),
+                => refAllDeclsRecursive(@field(T, name)),
                 else => {},
             }
         }
-        _ = &@field(T, decl.name);
+        _ = &@field(T, name);
     }
 }
 

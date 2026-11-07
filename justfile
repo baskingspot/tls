@@ -15,10 +15,14 @@ default:
 example EXAMPLE *ARGS:
     zig build example-{{ EXAMPLE }} -- {{ ARGS }}
 
-# tls is Zig 0.16-only. This is the single CI lane.
+# The full gate runs on the current stable Zig. The previous version gets
+# `just check`; see .github/ci.yaml. `distribution-ci` and `integrations-ci`
+# run on that older lane too: the distribution smoke tests the minimum
+# supported Zig, and `integrations/tls-xev` pins a libxev commit that only
+# builds on 0.16.
 [doc("Run all CI gates")]
 [group("check")]
-ci: test check-backend-aws-lc check-backends check-fips-builds lint consumer-gate-selftest examples-ci capi-ci distribution-ci integrations-ci
+ci: test check-backend-aws-lc check-backends check-fips-builds lint consumer-gate-selftest examples-ci capi-ci
     if [ "$(uname -s)" = Linux ]; then just check-memory; fi
     just conformance/ci
 

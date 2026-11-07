@@ -1,5 +1,6 @@
 const std = @import("std");
 const Build = std.Build;
+const passthru = @import("args.zig");
 
 pub const Options = struct {
     target: Build.ResolvedTarget,
@@ -40,7 +41,7 @@ fn addRunStep(
     bin_desc: []const u8,
 ) void {
     const run = b.addRunArtifact(exe);
-    if (b.args) |args| run.addArgs(args);
+    passthru.passthruArgs(b, run);
     b.step(step_name, step_desc).dependOn(&run.step);
 
     const install = b.addInstallArtifact(exe, .{});

@@ -25,14 +25,17 @@
       ...
     }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      # imports and inputsFrom below mirror each other, including the
-      # toolchain version: pick that once, in the import.
+      # Both toolchains are imported. The default shells build with the
+      # current stable; `zig-old` is the previous one, for the compatibility
+      # CI lane and local checks. The composition below names its version
+      # once, so the compiler and the cache dirs commonHook sets agree.
       imports = with inputs.baskingspot.flakeModules; [
         base
         docs
         shell
         terraform
         zig."0.16"
+        zig."0.17"
       ];
 
       perSystem =
@@ -59,18 +62,94 @@
             commonHook
             boringsslPc
             backendShell
-            zig
+            zigTools
             openssl
             opensslBackend
             ;
-          # Every tls shell carries the shared tool contract. Qualify each
-          # name: `zig` in this scope is the toolchain helper below.
-          tooling = [
-            config.devShells.base
-            config.devShells.shell
-            config.devShells.terraform
-            config.devShells."zig-0-16"
-          ];
+
+          # Every tls shell carries the shared tool contract. Zig is a
+          # parameter, not a copy: the same five definitions build the 0.17
+          # set and the 0.16 one. `suffix` keeps the shell labels distinct.
+          mkShells =
+            {
+              zig-shell,
+              zig-tools,
+              suffix,
+            }:
+            let
+              tooling = [
+                config.devShells.base
+                config.devShells.shell
+                config.devShells.terraform
+                config.devShells.${zig-shell}
+              ];
+            in
+            rec {
+              # Lint against the oldest supported API surface from any shell,
+              # so a 0.17-only deprecation does not fail a tree that must build
+              # on 0.16.
+              lint = [ config.packages."ziglint-0-16" ];
+
+              # The repo's own toolset. The attr is `tls-base` because the
+              # shared flake module owns `base`.
+              tls-base = pkgs.mkShell {
+                name = "tls-base${suffix}";
+                inputsFrom = tooling;
+                packages = commonPackages ++ lint;
+                shellHook = commonHook zig-tools;
+              };
+
+              openssl = backendShell {
+                name = "tls-openssl${suffix}";
+                inputsFrom = tooling;
+                inherit zig-tools;
+                inherit (opensslBackend) pkgConfigPath;
+                packages = lint ++ opensslBackend.packages;
+              };
+
+              aws-lc = backendShell {
+                name = "tls-aws-lc${suffix}";
+                inputsFrom = tooling;
+                inherit zig-tools;
+                pkgConfigPath = "${pkgs.aws-lc.dev}/lib/pkgconfig";
+                packages = lint ++ [
+                  pkgs.aws-lc.dev
+                  pkgs.aws-lc
+                ];
+              };
+
+              boringssl = backendShell {
+                name = "tls-boringssl${suffix}";
+                inputsFrom = tooling;
+                inherit zig-tools;
+                pkgConfigPath = "${boringsslPc}";
+                packages = lint ++ [
+                  pkgs.boringssl.dev
+                  pkgs.boringssl
+                ];
+              };
+
+              # The default shell plus the org's docs tooling: Zola, the
+              # baskingspot theme, baskingspot-docs, and wrangler.
+              default = pkgs.mkShell {
+                name = "tls${suffix}";
+                inputsFrom = [
+                  openssl
+                  config.devShells.docs
+                ];
+              };
+            };
+
+          current = mkShells {
+            zig-shell = "zig-0-17";
+            zig-tools = zigTools "0.17";
+            suffix = "";
+          };
+          previous = mkShells {
+            zig-shell = "zig-0-16";
+            zig-tools = zigTools "0.16";
+            suffix = "-old";
+          };
         in
         {
           # Diagnostic provider for #121. Production keeps the optimized build.
@@ -79,51 +158,15 @@
             configureFlags = old.configureFlags ++ [ "-fno-tree-vectorize" ];
           });
 
-          devShells = rec {
-            # The repo's own toolset. The attr is `tls-base` because the
-            # shared flake module owns `base`.
-            tls-base = pkgs.mkShell {
-              name = "tls-base";
-              inputsFrom = tooling;
-              packages = commonPackages;
-              shellHook = commonHook zig;
-            };
-
-            openssl = backendShell {
-              name = "tls-openssl";
-              inputsFrom = tooling;
-              inherit (opensslBackend) pkgConfigPath packages;
-            };
-
-            aws-lc = backendShell {
-              name = "tls-aws-lc";
-              inputsFrom = tooling;
-              pkgConfigPath = "${pkgs.aws-lc.dev}/lib/pkgconfig";
-              packages = [
-                pkgs.aws-lc.dev
-                pkgs.aws-lc
-              ];
-            };
-
-            boringssl = backendShell {
-              name = "tls-boringssl";
-              inputsFrom = tooling;
-              pkgConfigPath = "${boringsslPc}";
-              packages = [
-                pkgs.boringssl.dev
-                pkgs.boringssl
-              ];
-            };
-
-            # The default shell plus the org's docs tooling: Zola, the
-            # baskingspot theme, baskingspot-docs, and wrangler.
-            default = pkgs.mkShell {
-              name = "tls";
-              inputsFrom = [
-                openssl
-                config.devShells.docs
-              ];
-            };
+          devShells = {
+            inherit (current) tls-base;
+            inherit (current) openssl;
+            inherit (current) aws-lc;
+            inherit (current) boringssl;
+            inherit (current) default;
+            # The previous Zig. `just check` is the gate here; the full `ci`
+            # runs on the default shell.
+            zig-old = previous.default;
           };
         };
     };

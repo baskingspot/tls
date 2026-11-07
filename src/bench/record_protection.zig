@@ -69,7 +69,7 @@ fn nameBuf(buf: []u8, suite: Suite, size: usize) ![]const u8 {
 }
 
 pub fn benchmarkParseHeader(b: *testingx.B) !void {
-    const record = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x16 } ++ [_]u8{0} ** 22;
+    const record = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x16 } ++ @as([22]u8, @splat(0));
     while (try b.loop()) {
         const header = frame.parseHeader(&record) catch unreachable;
         b.keepAlive(header);

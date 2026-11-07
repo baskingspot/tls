@@ -2,6 +2,7 @@
 //!
 //! RFC 8446 §4.3.1
 const std = @import("std");
+const compat = @import("compat.zig");
 const mem = std.mem;
 const testing = std.testing;
 
@@ -16,7 +17,7 @@ const wire = @import("wire.zig");
 /// responses. Defaults to empty (no tracked extensions offered).
 // ast-grep-ignore: public-struct-field-default -- options bag: call sites override one knob
 pub const Options = struct {
-    offered_extensions: OfferedExtensions = .initEmpty(),
+    offered_extensions: OfferedExtensions = .empty,
     /// Extension types the caller allows and wants the bytes for. A type the
     /// engine does not handle and that is not listed here is
     /// `error.UnsupportedExtension`. Caller-supplied extensions are opaque to
@@ -152,8 +153,8 @@ pub fn encodeWithExtensions(
     for (extras) |extra| {
         if (extra.data.len > std.math.maxInt(u16)) return error.ExtensionTooLong;
         // alpn and early_data are the two the engine writes in this message.
-        if (extra.extension_type == @intFromEnum(ExtensionType.alpn) or
-            extra.extension_type == @intFromEnum(ExtensionType.early_data))
+        if (extra.extension_type == compat.enumToInt(ExtensionType.alpn) or
+            extra.extension_type == compat.enumToInt(ExtensionType.early_data))
             return error.ReservedExtension;
     }
     const base = encodedLen(alpn_protocol, early_data_accepted);
@@ -279,7 +280,7 @@ pub fn parse(msg: []const u8, offered_alpn: []const []const u8, opts: Options) P
             // did not offer; abort with unsupported_extension. A caller that
             // listed the type asked to receive it verbatim instead.
             else => {
-                const value = @intFromEnum(ext_type);
+                const value = compat.enumToInt(ext_type);
                 var allowed = false;
                 for (opts.allowed_extensions) |candidate| {
                     if (candidate.extension_type == value) allowed = true;
@@ -578,7 +579,7 @@ fn fuzzParse(_: void, input: []const u8) !void {
     const Offer = struct { alpn: []const []const u8, options: Options };
     const offers: [2]Offer = .{
         .{ .alpn = &.{}, .options = .{} },
-        .{ .alpn = &.{ "h2", "http/1.1" }, .options = .{ .offered_extensions = .initFull() } },
+        .{ .alpn = &.{ "h2", "http/1.1" }, .options = .{ .offered_extensions = .full } },
     };
     for (offers) |offer| {
         const parsed = parse(input, offer.alpn, offer.options) catch continue;
@@ -603,7 +604,7 @@ const fuzz_seeds: [2][]const u8 = .{
 // RFC 8446 §4.3.1 — arbitrary EncryptedExtensions preserve bounds and offered-only selection.
 test "fuzz: EncryptedExtensions parser with empty and populated offers" {
     _ = try parse(fuzz_seeds[0], &.{}, .{});
-    _ = try parse(fuzz_seeds[1], &.{"h2"}, .{ .offered_extensions = .initFull() });
+    _ = try parse(fuzz_seeds[1], &.{"h2"}, .{ .offered_extensions = .full });
     try fuzz_compat.fuzzBytes(fuzzParse, {}, .{ .corpus = &fuzz_seeds });
 }
 
@@ -687,7 +688,7 @@ test "extras: an unlisted unknown type is still unsupported" {
 test "extras: the encoder refuses a type it writes itself" {
     var buf: [64]u8 = undefined;
     const extras = [_]extension_type.ExtraExtension{
-        .{ .extension_type = @intFromEnum(ExtensionType.alpn), .data = &.{} },
+        .{ .extension_type = compat.enumToInt(ExtensionType.alpn), .data = &.{} },
     };
     try testing.expectError(
         error.ReservedExtension,

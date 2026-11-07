@@ -251,7 +251,7 @@ test "0-RTT: separate borrowed event and input backpressure before client Finish
         fn lookup(_: *anyopaque, id: []const u8) ?tls.ServerHandshake.PskEntry {
             if (!std.mem.eql(u8, id, "early-ticket")) return null;
             return .{
-                .psk = &([_]u8{0x42} ** 32),
+                .psk = &(@as([32]u8, @splat(0x42))),
                 .cipher_suite = .aes_128_gcm_sha256,
                 .max_early_data_size = 1024,
                 .alpn = "h2",
@@ -273,7 +273,7 @@ test "0-RTT: separate borrowed event and input backpressure before client Finish
     });
     var ticket: tls.ClientHandshake.SessionTicket = .init(0, 0, .aes_128_gcm_sha256, 1024);
     ticket.identity.appendSliceAssumeCapacity("early-ticket");
-    ticket.psk.appendSliceAssumeCapacity(&([_]u8{0x42} ** 32));
+    ticket.psk.appendSliceAssumeCapacity(&(@as([32]u8, @splat(0x42))));
     ticket.alpn_protocol.appendSliceAssumeCapacity("h2");
     try pair.clientRecord(try pair.client.startWithPsk(&ticket, &pair.client_out, true));
     try pair.clientRecord(try pair.client.sendEarlyData("early", &pair.client_out));

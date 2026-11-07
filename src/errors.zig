@@ -15,6 +15,7 @@
 //! failed. Integrations project errors through `classify` and alerts through
 //! `alert.alertForError`.
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 
 const alert = @import("alert.zig");
@@ -319,15 +320,16 @@ test "every handshake error has a deliberate peer-visible alert" {
         "TooManyAlpnProtocols",
     };
 
-    const members = @typeInfo(HandshakeError).error_set orelse
+    const member_names = comptime compat.errorNames(HandshakeError);
+    if (member_names.len == 0)
         @compileError("HandshakeError must be a closed error set");
-    inline for (members) |member| {
-        const err = @field(HandshakeError, member.name);
+    inline for (member_names) |member| {
+        const err = @field(HandshakeError, member);
         const class = classify(err);
         const description = alert.alertForError(err);
         const listed = comptime blk: {
             for (known_fallthrough) |name| {
-                if (std.mem.eql(u8, name, member.name)) break :blk true;
+                if (std.mem.eql(u8, name, member)) break :blk true;
             }
             break :blk false;
         };

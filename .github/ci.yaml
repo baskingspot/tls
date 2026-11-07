@@ -1,5 +1,9 @@
+# The full gate runs on the default shell, the current stable Zig. The
+# compatibility lane has to compile and pass the suite on the previous one.
 jobs:
   - recipe: ci
+  - recipe: check
+    shell: zig-old
   - recipe: check-backend-boringssl
     # The BoringSSL suite needs the devshell that links BoringSSL.
     shell: boringssl
@@ -9,7 +13,13 @@ jobs:
   # packages and the distribution smoke gate rather than the whole lane:
   # conformance needs a Python/TLS-Anvil stack that has never been exercised
   # on macOS.
+  #
+  # Both recipes run in `zig-old`: the distribution smoke tests the minimum
+  # supported Zig by design, and integrations/tls-xev pins a libxev commit
+  # that only builds on 0.16.
   - recipe: integrations-ci
-    runners: [macos-26]
+    shell: zig-old
+    runners: [ubuntu-26.04, macos-26]
   - recipe: distribution-ci
-    runners: [macos-26]
+    shell: zig-old
+    runners: [ubuntu-26.04, macos-26]

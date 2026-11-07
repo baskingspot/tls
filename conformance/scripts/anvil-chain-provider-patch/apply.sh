@@ -26,7 +26,10 @@
 # Called from build.zig with the installed tools lib directory.
 set -euo pipefail
 
-tools_lib_dir="$1"
+# Absolute: `jar uf` runs from a temp directory, so a relative jar path
+# would not resolve. Zig 0.16 passed an absolute install path; 0.17 passes a
+# relative one.
+tools_lib_dir="$(cd "$1" && pwd)"
 src_dir="$(cd "$(dirname "$0")" && pwd)"
 
 work="$(mktemp -d)"

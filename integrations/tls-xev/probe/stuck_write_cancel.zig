@@ -32,7 +32,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
 
-const payload = [_]u8{0xab} ** 16384;
+const payload = @as([16384]u8, @splat(0xab));
 
 fn Probe(comptime Xev: type) type {
     return struct {
@@ -152,7 +152,7 @@ fn probe(
     }
 
     if (comptime prefill) {
-        var fill: [4096]u8 = [_]u8{0xcd} ** 4096;
+        var fill: [4096]u8 = @as([4096]u8, @splat(0xcd));
         var filled: usize = 0;
         while (true) {
             const n = std.c.send(fds[0], &fill, fill.len, std.posix.MSG.DONTWAIT);

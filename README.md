@@ -62,7 +62,7 @@ The same dependency exposes `tls_std`, `tls_nonblocking` (caller-driven server),
 `tls_xev` (opt-in with `.xev = true`), and `tls_ktls` (Linux).
 The [guide](https://baskingspot.dev/tls/#install) has the full setup.
 
-The library builds with Zig 0.16 only.
+The library builds on Zig 0.16 and 0.17. The integration modules build on 0.16.
 
 ## Documentation
 

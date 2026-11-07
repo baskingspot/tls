@@ -2,6 +2,7 @@
 //!
 //! RFC 8446 §4.2.7, §4.2.8 and RFC 10024 §4, §7.
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 
 const mlkem_parameters = @import("crypto/mlkem_parameters.zig");
@@ -112,12 +113,12 @@ pub const NamedGroup = enum(u16) {
 // RFC 8446 §4.2.7 and RFC 10024 §7 — group identifiers match their assigned
 // TLS Supported Groups registry values.
 test "NamedGroup wire identifiers" {
-    try testing.expectEqual(@as(u16, 0x001d), @intFromEnum(NamedGroup.x25519));
-    try testing.expectEqual(@as(u16, 0x0017), @intFromEnum(NamedGroup.secp256r1));
-    try testing.expectEqual(@as(u16, 0x0018), @intFromEnum(NamedGroup.secp384r1));
-    try testing.expectEqual(@as(u16, 0x11ec), @intFromEnum(NamedGroup.x25519_mlkem768));
-    try testing.expectEqual(@as(u16, 0x11eb), @intFromEnum(NamedGroup.secp256r1_mlkem768));
-    try testing.expectEqual(@as(u16, 0x11ed), @intFromEnum(NamedGroup.secp384r1_mlkem1024));
+    try testing.expectEqual(@as(u16, 0x001d), compat.enumToInt(NamedGroup.x25519));
+    try testing.expectEqual(@as(u16, 0x0017), compat.enumToInt(NamedGroup.secp256r1));
+    try testing.expectEqual(@as(u16, 0x0018), compat.enumToInt(NamedGroup.secp384r1));
+    try testing.expectEqual(@as(u16, 0x11ec), compat.enumToInt(NamedGroup.x25519_mlkem768));
+    try testing.expectEqual(@as(u16, 0x11eb), compat.enumToInt(NamedGroup.secp256r1_mlkem768));
+    try testing.expectEqual(@as(u16, 0x11ed), compat.enumToInt(NamedGroup.secp384r1_mlkem1024));
 }
 
 // RFC 10024 §4.1-§4.3 — each hybrid has distinct role-specific key_share

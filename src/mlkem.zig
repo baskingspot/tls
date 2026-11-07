@@ -245,7 +245,7 @@ test "ML-KEM rejects a wrong-length ciphertext" {
     var secret: [max_shared_secret_len]u8 = undefined;
     try testing.expectError(error.MalformedKeyShare, decapsulate(
         &key,
-        &[_]u8{0} ** (ParameterSet.mlkem768.ciphertextLen() - 1),
+        &@as([(ParameterSet.mlkem768.ciphertextLen() - 1)]u8, @splat(0)),
         &secret,
     ));
 }

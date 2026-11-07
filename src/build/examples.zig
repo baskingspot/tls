@@ -1,5 +1,6 @@
 const std = @import("std");
 const Build = std.Build;
+const passthru = @import("args.zig");
 
 pub fn addSteps(b: *Build, opts: struct {
     target: Build.ResolvedTarget,
@@ -29,7 +30,7 @@ pub fn addSteps(b: *Build, opts: struct {
         exe_mod.addImport("fixtures", opts.fixtures_mod);
         const exe = b.addExecutable(.{ .name = name, .root_module = exe_mod });
         const run = b.addRunArtifact(exe);
-        if (b.args) |args| run.addArgs(args);
+        passthru.passthruArgs(b, run);
         const step = b.step(b.fmt("example-{s}", .{name}), b.fmt("Run {s} example", .{name}));
         step.dependOn(&run.step);
     }
@@ -50,7 +51,7 @@ pub fn addSteps(b: *Build, opts: struct {
             exe_mod.addImport("fixtures", opts.fixtures_mod);
             const exe = b.addExecutable(.{ .name = name, .root_module = exe_mod });
             const run = b.addRunArtifact(exe);
-            if (b.args) |args| run.addArgs(args);
+            passthru.passthruArgs(b, run);
             const step = b.step(
                 b.fmt("example-{s}", .{name}),
                 b.fmt("Run Linux {s} example", .{name}),

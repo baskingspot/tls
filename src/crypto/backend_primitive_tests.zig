@@ -16,6 +16,7 @@ const testing = std.testing;
 const assert = std.debug.assert;
 
 const backend = @import("backend.zig");
+const root_compat = @import("../compat.zig");
 const Certificate = @import("../certificate_parser.zig");
 const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
@@ -1021,7 +1022,10 @@ test "backend.sign: RSA public key with even modulus is rejected" {
 test "backend.sign: RSA public key with undersized modulus is rejected" {
     // 512-bit odd modulus (2^511 + 1): parses fine, but below the 1024-bit
     // loader floor. Every repo fixture and interop key is >= 2048 bits.
-    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex("80" ++ "00" ** 62 ++ "01", "020103"));
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(
+        "80" ++ root_compat.repeatString("00", 62) ++ "01",
+        "020103",
+    ));
     try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
 }
 

@@ -8,6 +8,7 @@ const testing = std.testing;
 const mem = std.mem;
 const fixtures = @import("fixtures");
 const fuzz_compat = @import("fuzz_compat.zig");
+const compat = @import("compat.zig");
 
 const stdx = @import("stdx");
 const buffer = stdx.buffer;
@@ -534,8 +535,10 @@ fn publicKeyFromCertificateBits(
     };
 }
 
-pub const server_certificate_verify_context = " " ** 64 ++ "TLS 1.3, server CertificateVerify\x00";
-pub const client_certificate_verify_context = " " ** 64 ++ "TLS 1.3, client CertificateVerify\x00";
+pub const server_certificate_verify_context =
+    compat.repeatString(" ", 64) ++ "TLS 1.3, server CertificateVerify\x00";
+pub const client_certificate_verify_context =
+    compat.repeatString(" ", 64) ++ "TLS 1.3, client CertificateVerify\x00";
 
 pub fn certificateVerifyEncodedLen(signature: []const u8) usize {
     return 4 + 2 + 2 + signature.len;
@@ -1064,8 +1067,8 @@ test "parse: rejects non-empty server certificate request context" {
 // RFC 8446 §4.4.2.4 — server Certificate certificate_list must be non-empty.
 test "parse: rejects empty certificate list" {
     const msg = [_]u8{
-        @intFromEnum(handshake.Type.certificate), 0x00, 0x00, 0x04,
-        0x00,                                     0x00, 0x00, 0x00,
+        compat.enumToInt(handshake.Type.certificate), 0x00, 0x00, 0x04,
+        0x00,                                         0x00, 0x00, 0x00,
     };
     try testing.expectError(error.EmptyCertificateList, parse(&msg, .init));
 }
@@ -2394,7 +2397,7 @@ test "verifySignature: client CV rejects scheme absent from offered list" {
 test "verifySignature: rejects RSA leaf key with exponent 1" {
     // RSAPublicKey (PKCS#1, RFC 8017 §A.1.1): n = 2^1023 + 1, e = 1.
     const e1_pub_key = stdx.fmt.comptimeHex(
-        "308187" ++ "02818100" ++ "80" ++ "00" ** 126 ++ "01" ++ "020101",
+        "308187" ++ "02818100" ++ "80" ++ compat.repeatString("00", 126) ++ "01" ++ "020101",
     );
     const sig: [128]u8 = @splat(0x42);
     var cv_buf: [512]u8 = undefined;

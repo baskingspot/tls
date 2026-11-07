@@ -1,7 +1,21 @@
-[doc("Run all tests")]
+[doc("Unit tests (Debug)")]
 [group("check")]
 test:
     zig build test --summary all
+
+[doc("Unit tests (ReleaseSafe): the option matrix, because lazy analysis hides code that only instantiates in release modes")]
+[group("check")]
+test-release-safe:
+    zig build test -Doptimize=ReleaseSafe --summary all
+
+[doc("Unit tests (ReleaseFast)")]
+[group("check")]
+test-release-fast:
+    zig build test -Doptimize=ReleaseFast --summary all
+
+[doc("The per-version gate: the Debug and release-mode test suites")]
+[group("check")]
+check: test test-release-safe test-release-fast
 
 [doc("Check unit and handshake-replay ownership with Linux Memcheck")]
 [group("check")]
@@ -346,11 +360,11 @@ fmt-zig:
 fmt-rust:
     cargo fmt --manifest-path bench/rustls/Cargo.toml
 
-[doc("Lint Zig sources: fmt --check, ziglint, ast-grep (baskingspot-lint and the repo's own rules)")]
+[doc("Lint Zig sources: fmt --check, ziglint-0-16 (the minimum supported API surface), ast-grep (baskingspot-lint and the repo's own rules)")]
 [group("check")]
 lint-zig:
     zig fmt --check src/ examples/ bench/ tests/distribution-consumer/ build.zig
-    ziglint build.zig examples bench tests/distribution-consumer $(fd --extension zig --exclude certificate_parser.zig . src)
+    ziglint-0-16 build.zig examples bench tests/distribution-consumer $(fd --extension zig --exclude certificate_parser.zig . src)
     baskingspot-lint src
     ast-grep scan --rule rules/no-tls-owned-allocations.yml src --globs '*.zig' --globs '!src/test/**' --globs '!src/bench/**' --globs '!src/interop.zig' --report-style short
     ast-grep scan --rule rules/no-c-pointer-types.yml src --globs '*.zig' --report-style short

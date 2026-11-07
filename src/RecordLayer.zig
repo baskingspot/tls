@@ -3,6 +3,7 @@
 //! Composes record framing, nonce construction, and AEAD to implement
 //! TLSCiphertext encrypt/decrypt. RFC 8446 §5.2
 const std = @import("std");
+const compat = @import("compat.zig");
 const stdx = @import("stdx");
 const mem = std.mem;
 const testing = std.testing;
@@ -254,7 +255,7 @@ pub fn decrypt(self: *RecordLayer, buf: []u8) DecryptError!DecryptedRecord {
     // RFC 8446 §5.2: last non-zero byte is the real ContentType.
     const i = stdx.mem.lastIndexOfNonZero(inner) orelse return error.InvalidInnerPlaintext;
     return .{
-        .content_type = @enumFromInt(inner[i]),
+        .content_type = compat.enumFromInt(ContentType, inner[i]),
         .content = inner[0..i],
     };
 }
@@ -310,7 +311,7 @@ pub fn encryptPrepared(
     const header: Header = .init(.application_data, @intCast(inner_len + tag_len));
     const hdr = out[0..frame.header_len];
     hdr.* = mem.toBytes(header);
-    inner[content_len] = @intFromEnum(content_type);
+    inner[content_len] = compat.enumToInt(content_type);
 
     const npub = construct(&self.iv, self.seq);
     try self.aead.encrypt(&self.ctx, inner, &tag, inner, hdr, &npub);
@@ -361,7 +362,7 @@ test "deinit: clears caller-visible traffic key material" {
     const iv: Iv = .init(@splat(0xcd));
     var rl: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = key }, iv);
     rl.deinit();
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** @sizeOf(Aead)), mem.asBytes(&rl.aead));
+    try testing.expectEqualSlices(u8, &(@as([@sizeOf(Aead)]u8, @splat(0))), mem.asBytes(&rl.aead));
     try testing.expectEqualSlices(u8, &Iv.zero.data, &rl.iv.data);
     try testing.expectEqual(@as(u64, 0), rl.seq);
     try testing.expectEqual(@as(u64, 0), rl.key_limit);
@@ -415,9 +416,9 @@ test "ktlsInfo: cipher type uses Linux UAPI values" {
     var chacha_info = chacha.ktlsInfo();
     defer chacha_info.secureZero();
     try testing.expectEqual(KtlsCipherType.aes_gcm_256, aes_info.cipher_type);
-    try testing.expectEqual(@as(u16, 52), @intFromEnum(aes_info.cipher_type));
+    try testing.expectEqual(@as(u16, 52), compat.enumToInt(aes_info.cipher_type));
     try testing.expectEqual(KtlsCipherType.chacha20_poly1305, chacha_info.cipher_type);
-    try testing.expectEqual(@as(u16, 54), @intFromEnum(chacha_info.cipher_type));
+    try testing.expectEqual(@as(u16, 54), compat.enumToInt(chacha_info.cipher_type));
     try testing.expectEqual(@as(u8, 0), chacha_info.salt_len);
     try testing.expectEqual(@as(u8, 12), chacha_info.iv_len);
 }
@@ -545,7 +546,7 @@ test "decrypt: failed auth exposes backend failure buffer behavior" {
             // caller buffer before the tag check fails.
             try testing.expectEqualSlices(u8, plaintext, inner[0..plaintext.len]);
             try testing.expectEqual(
-                @as(u8, @intFromEnum(ContentType.application_data)),
+                @as(u8, compat.enumToInt(ContentType.application_data)),
                 inner[plaintext.len],
             );
         },
@@ -663,7 +664,7 @@ test "decrypt: rejects inner plaintext above 2^14 + 1" {
     const header: Header = .init(.application_data, inner_len + tag_len);
     buf[0..frame.header_len].* = mem.toBytes(header);
     @memset(buf[frame.header_len..][0 .. inner_len - 1], 0xaa);
-    buf[frame.header_len + inner_len - 1] = @intFromEnum(ContentType.application_data);
+    buf[frame.header_len + inner_len - 1] = compat.enumToInt(ContentType.application_data);
 
     var tag: Tag = undefined;
     const npub = construct(&tx.iv, tx.seq);
@@ -685,7 +686,7 @@ test "decrypt: rejects inner plaintext above 2^14 + 1" {
 test "decrypt: wrong content type" {
     var rl: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = .zero }, .zero);
     defer rl.deinit();
-    var buf = [_]u8{ 22, 0x03, 0x03, 0x00, 0x10 } ++ [_]u8{0} ** 16;
+    var buf = [_]u8{ 22, 0x03, 0x03, 0x00, 0x10 } ++ @as([16]u8, @splat(0));
     try testing.expectError(error.UnexpectedContentType, rl.decrypt(&buf));
 }
 
@@ -693,7 +694,7 @@ test "decrypt: wrong content type" {
 test "decrypt: payload shorter than tag" {
     var rl: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = .zero }, .zero);
     defer rl.deinit();
-    var buf = [_]u8{ 23, 0x03, 0x03, 0x00, 0x04 } ++ [_]u8{0} ** 4;
+    var buf = [_]u8{ 23, 0x03, 0x03, 0x00, 0x04 } ++ @as([4]u8, @splat(0));
     try testing.expectError(error.RecordTooShort, rl.decrypt(&buf));
 }
 
@@ -701,7 +702,7 @@ test "decrypt: payload shorter than tag" {
 test "decrypt: truncated ciphertext record" {
     var rl: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = .zero }, .zero);
     defer rl.deinit();
-    var buf = [_]u8{ 23, 0x03, 0x03, 0x00, 0x20 } ++ [_]u8{0} ** 8;
+    var buf = [_]u8{ 23, 0x03, 0x03, 0x00, 0x20 } ++ @as([8]u8, @splat(0));
     try testing.expectError(error.BufferTooShort, rl.decrypt(&buf));
 }
 
@@ -710,7 +711,7 @@ test "decrypt: sequence number overflow" {
     var rl: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = .zero }, .zero);
     defer rl.deinit();
     rl.seq = math.maxInt(u64);
-    var buf = [_]u8{ 23, 0x03, 0x03, 0x00, 0x14 } ++ [_]u8{0} ** 20;
+    var buf = [_]u8{ 23, 0x03, 0x03, 0x00, 0x14 } ++ @as([20]u8, @splat(0));
     try testing.expectError(error.SequenceNumberOverflow, rl.decrypt(&buf));
 }
 

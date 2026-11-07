@@ -2,6 +2,7 @@
 //!
 //! RFC 8446 §6
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 const fuzz_compat = @import("fuzz_compat.zig");
 
@@ -66,15 +67,15 @@ pub fn parse(msg: []const u8) ParseError!Alert {
     if (msg.len < 2) return error.UnexpectedEof;
     if (msg.len != 2) return error.InvalidAlertLength;
     return .{
-        .level = @enumFromInt(msg[0]),
-        .description = @enumFromInt(msg[1]),
+        .level = compat.enumFromInt(Level, msg[0]),
+        .description = compat.enumFromInt(Description, msg[1]),
     };
 }
 
 pub fn encode(out: []u8, level: Level, description: Description) error{BufferTooShort}![]u8 {
     if (out.len < 2) return error.BufferTooShort;
-    out[0] = @intFromEnum(level);
-    out[1] = @intFromEnum(description);
+    out[0] = compat.enumToInt(level);
+    out[1] = compat.enumToInt(description);
     return out[0..2];
 }
 
@@ -210,7 +211,7 @@ test "parse: warning-level error alert is fatal" {
 // RFC 8446 §6.2 — unknown alert descriptions are error alerts in TLS 1.3.
 test "parse: unknown alert description is fatal" {
     const a = try parse(&.{ 1, 222 });
-    try testing.expectEqual(@as(u8, 222), @intFromEnum(a.description));
+    try testing.expectEqual(@as(u8, 222), compat.enumToInt(a.description));
     try testing.expect(a.isFatal());
 }
 

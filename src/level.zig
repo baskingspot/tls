@@ -6,6 +6,7 @@
 //! accepts (RFC 8446 §5, RFC 9001 §4.1.3).
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 const alert = @import("alert.zig");
 const handshake = @import("handshake.zig");
@@ -97,7 +98,7 @@ test "of: every message type maps to its RFC 8446 section 4 level" {
     try testing.expectEqual(Level.application, of(.key_update).?);
     try testing.expectEqual(@as(?Level, null), of(.message_hash));
     // An unknown code point is not ours to classify.
-    try testing.expectEqual(@as(?Level, null), of(@enumFromInt(0x6a)));
+    try testing.expectEqual(@as(?Level, null), of(compat.enumFromInt(handshake.Type, 0x6a)));
 }
 
 test "check: a message at the wrong level is refused" {

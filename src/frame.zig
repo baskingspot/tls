@@ -14,6 +14,7 @@
 //! always application_data (23), and the real type is smuggled inside the AEAD
 //! plaintext as TLSInnerPlaintext.
 const std = @import("std");
+const compat = @import("compat.zig");
 const mem = std.mem;
 const testing = std.testing;
 const fuzz_compat = @import("fuzz_compat.zig");
@@ -84,7 +85,7 @@ pub const Header = extern struct {
     pub fn init(content_type: ContentType, len: u16) Header {
         var h: Header = .{
             .content_type = content_type,
-            .legacy_version_be = memx.toBytes(u16, @intFromEnum(legacy_record_version)),
+            .legacy_version_be = memx.toBytes(u16, compat.enumToInt(legacy_record_version)),
             .length_be = undefined,
         };
         memx.writeInt(u16, &h.length_be, len);
@@ -113,7 +114,7 @@ pub fn parseHeader(buf: []const u8) ParseError!Header {
         @branchHint(.cold);
         return error.RecordTooLarge;
     }
-    return .init(@enumFromInt(buf[0]), length);
+    return .init(compat.enumFromInt(ContentType, buf[0]), length);
 }
 
 // RFC 8446 §5.1 — record header format

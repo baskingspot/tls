@@ -49,7 +49,15 @@ pub fn build(b: *std.Build) void {
             "bash",
         });
         patch_chain_provider.addFileArg(b.path("scripts/anvil-chain-provider-patch/apply.sh"));
-        patch_chain_provider.addArg(b.getInstallPath(.{ .custom = "tools" }, "lib"));
+        // Zig 0.17 removed Build.getInstallPath: the install prefix is a
+        // lazy path resolved in the make phase, which is when this step runs.
+        if (comptime @hasDecl(std.Build, "getInstallPath")) {
+            patch_chain_provider.addArg(b.getInstallPath(.{ .custom = "tools" }, "lib"));
+        } else {
+            patch_chain_provider.addFileArg(.{
+                .relative = .{ .base = .install_prefix, .sub_path = "tools/lib" },
+            });
+        }
         patch_chain_provider.step.dependOn(&install_jar.step);
         patch_chain_provider.step.dependOn(&install_lib.step);
         b.getInstallStep().dependOn(&patch_chain_provider.step);

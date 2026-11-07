@@ -309,7 +309,7 @@ test "validityProbePlaintext handles zero padding and short records" {
     try std.testing.expectEqualSlices(u8, &.{}, validityProbePlaintext(&oversized));
 
     // Degenerate records (header + tag only) yield nothing, not garbage.
-    const short = [_]u8{0} ** 21;
+    const short = @as([21]u8, @splat(0));
     try std.testing.expectEqualSlices(u8, &.{}, validityProbePlaintext(&short));
 }
 

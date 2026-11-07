@@ -6,25 +6,30 @@
 //! never names std.Io — this module is a leaf that consumers opt into, and
 //! Zig's lazy compilation keeps it out of builds that don't.
 //!
-//! Reads go through io.vtable.netRead, not Io.Reader: readSliceShort loops
-//! until the destination is full, and peek/take hand out slices of the
+//! Reads go straight to the socket, not through Io.Reader: readSliceShort
+//! loops until the destination is full, and peek/take hand out slices of the
 //! Reader's internal buffer, which forces a copy into the caller-owned
-//! RecordBuffer. One netRead lands bytes directly in `rb.writable()` — zero
+//! RecordBuffer. One read lands bytes directly in `rb.writable()` — zero
 //! copies, one syscall. Writes loop on short writev counts directly for the
 //! same reason: Io.Writer exists to batch small writes, and a TLS record
-//! should reach the socket immediately. If std.Io.net.Stream regains direct
-//! read/write methods, this module collapses to one-liners and can die.
+//! should reach the socket immediately.
 const std = @import("std");
 const Io = std.Io;
 const testing = std.testing;
 
 const RecordBuffer = @import("RecordBuffer.zig");
 
+/// True when the std routes socket reads and writes through `Io.operate`.
+/// Zig 0.17 removed `VTable.netRead` and `VTable.netWrite`; 0.16 has no
+/// `Stream.read`, so either probe separates the two. Probe the API, not the
+/// version.
+const direct_stream_io = @hasDecl(Io.net.Stream, "read");
+
 /// Read once into the buffer's writable region and report the bytes to it.
 /// Returns the byte count; 0 means the peer closed the transport.
 pub fn fill(io: Io, stream: Io.net.Stream, rb: *RecordBuffer) !usize {
     var data: [1][]u8 = .{rb.writable()};
-    const n = try io.vtable.netRead(io.userdata, stream.socket.handle, &data);
+    const n = try readOnce(io, stream, &data);
     rb.advance(n);
     return n;
 }
@@ -32,10 +37,34 @@ pub fn fill(io: Io, stream: Io.net.Stream, rb: *RecordBuffer) !usize {
 /// Write all bytes, looping on short writes.
 pub fn writeAll(io: Io, stream: Io.net.Stream, bytes: []const u8) !void {
     var rest = bytes;
-    while (rest.len != 0) {
-        const data: [1][]const u8 = .{rest};
-        const n = try io.vtable.netWrite(io.userdata, stream.socket.handle, "", &data, 1);
-        rest = rest[n..];
+    while (rest.len != 0) rest = rest[try writeOnce(io, stream, rest)..];
+}
+
+fn readOnce(io: Io, stream: Io.net.Stream, data: [][]u8) !usize {
+    if (comptime direct_stream_io) {
+        const result = try io.operate(.{ .net_read = .{
+            .socket_handle = stream.socket.handle,
+            .data = data,
+        } });
+        const read = try result.net_read;
+        return read.data_len;
+    } else {
+        return io.vtable.netRead(io.userdata, stream.socket.handle, data);
+    }
+}
+
+fn writeOnce(io: Io, stream: Io.net.Stream, bytes: []const u8) !usize {
+    if (comptime direct_stream_io) {
+        const result = try io.operate(.{ .net_write = .{
+            .socket_handle = stream.socket.handle,
+            .header = "",
+            .data = &.{bytes},
+            .splat = 1,
+        } });
+        return result.net_write;
+    } else {
+        const data: [1][]const u8 = .{bytes};
+        return io.vtable.netWrite(io.userdata, stream.socket.handle, "", &data, 1);
     }
 }
 

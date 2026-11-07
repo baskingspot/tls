@@ -2,6 +2,7 @@
 //!
 //! RFC 8446 §4.1.3
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 const fuzz_compat = @import("fuzz_compat.zig");
 const mem = std.mem;
@@ -163,7 +164,7 @@ pub fn parseHelloRetryRequestWithSessionIdEcho(
     // selects TLS 1.3. Reject SSLv3-or-lower unconditionally (Appendix D.5); any
     // value above 0x0300 is otherwise accepted.
     const legacy_version = r.assumeRead(ProtocolVersion);
-    if (@intFromEnum(legacy_version) <= 0x0300) return error.UnsupportedTlsVersion;
+    if (compat.enumToInt(legacy_version) <= 0x0300) return error.UnsupportedTlsVersion;
     const random = r.assumeReadSlice(32);
     if (!mem.eql(u8, random, &hello_retry_request_random)) return error.NotHelloRetryRequest;
 
@@ -465,7 +466,7 @@ pub fn parseWithSessionIdEcho(
     // when supported_versions selects TLS 1.3; the version field is validated
     // after extensions are parsed.
     const legacy_version = r.assumeRead(ProtocolVersion);
-    if (@intFromEnum(legacy_version) <= 0x0300) return error.UnsupportedTlsVersion;
+    if (compat.enumToInt(legacy_version) <= 0x0300) return error.UnsupportedTlsVersion;
     const random = r.assumeReadSlice(32);
     if (mem.eql(u8, random, &hello_retry_request_random)) return error.HelloRetryRequest;
 

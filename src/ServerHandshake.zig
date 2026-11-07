@@ -5,6 +5,7 @@
 //! verifies the client Finished, and handles application data and post-handshake
 //! KeyUpdate. No allocations, no I/O.
 const std = @import("std");
+const compat = @import("compat.zig");
 const assert = std.debug.assert;
 const Sha256 = backend.sha2.Sha256;
 const Sha384 = backend.sha2.Sha384;
@@ -1319,7 +1320,7 @@ fn processClientHelloMessage(
         mem.findScalar(
             u8,
             modes,
-            @intFromEnum(client_hello.PskKeyExchangeMode.psk_dhe_ke),
+            compat.enumToInt(client_hello.PskKeyExchangeMode.psk_dhe_ke),
         ) != null
     else
         false;
@@ -1636,11 +1637,10 @@ fn retryClientHelloDigest(ch: *const client_hello.Parsed) RetryClientHelloDigest
     retryClientHelloDigestUpdate(&hash, ch.signature_schemes);
     retryClientHelloDigestUpdateOptional(&hash, ch.psk_key_exchange_modes);
 
-    const group_fields = std.meta.fields(NamedGroup);
-    var groups: [group_fields.len]u8 = undefined;
-    inline for (group_fields, 0..) |field, index| {
-        const group: NamedGroup = @enumFromInt(field.value);
-        groups[index] = @intFromBool(ch.groups.contains(group));
+    const group_count = comptime compat.enumFieldCount(NamedGroup);
+    var groups: [group_count]u8 = undefined;
+    inline for (0..group_count) |index| {
+        groups[index] = @intFromBool(ch.groups.contains(compat.enumField(NamedGroup, index)));
     }
     retryClientHelloDigestUpdate(&hash, &groups);
     retryClientHelloDigestUpdate(&hash, ch.legacy_session_id);
@@ -2512,7 +2512,7 @@ fn handleClientHelloRecord(
             if (self.ch_buf.len < handshake_header_len) return .none;
 
             // Header is now complete: validate type and compute expected total.
-            if (self.ch_buf.constSlice()[0] != @intFromEnum(HandshakeType.client_hello))
+            if (self.ch_buf.constSlice()[0] != compat.enumToInt(HandshakeType.client_hello))
                 return error.UnexpectedMessage;
             const body_len_assembled = (@as(u24, self.ch_buf.constSlice()[1]) << 16) |
                 (@as(u24, self.ch_buf.constSlice()[2]) << 8) |
@@ -2558,7 +2558,7 @@ fn handleClientHelloRecord(
         self.ch_expected = 0; // sentinel: handshake header not yet complete
         return .none;
     }
-    if (body[0] != @intFromEnum(HandshakeType.client_hello)) return error.UnexpectedMessage;
+    if (body[0] != compat.enumToInt(HandshakeType.client_hello)) return error.UnexpectedMessage;
 
     const body_len = (@as(u24, body[1]) << 16) | (@as(u24, body[2]) << 8) | body[3];
     const total = @as(usize, handshake_header_len) + @as(usize, body_len);
@@ -2627,7 +2627,7 @@ fn handleWaitClientFinished(self: *ServerHandshake, record: []u8) HandleError!Ev
                 // accepted 0-RTT. Servers MUST NOT send this message.
                 .handshake => {
                     if (early_dec.content.len != 4) return error.UnexpectedMessage;
-                    if (early_dec.content[0] != @intFromEnum(HandshakeType.end_of_early_data))
+                    if (early_dec.content[0] != compat.enumToInt(HandshakeType.end_of_early_data))
                         return error.UnexpectedMessage;
                     // Body is empty: the 3-byte length field MUST be zero.
                     if (early_dec.content[1] != 0 or
@@ -3031,7 +3031,7 @@ fn clientHelloWithP256KeyShare(
     while (i + 4 < client_hello_msg.len) : (i += 1) {
         if (out[i] == 0x00 and out[i + 1] == 0x0a and out[i + 2] == 0x00 and out[i + 3] == 0x04) {
             out[i + 6] = 0x00;
-            out[i + 7] = @intFromEnum(NamedGroup.secp256r1);
+            out[i + 7] = @intCast(compat.enumToInt(NamedGroup.secp256r1));
             break;
         }
     } else unreachable;
@@ -3055,7 +3055,7 @@ fn clientHelloWithP256KeyShare(
         0x00, 0x33,
         0x00, @intCast(new_ext_len),
         0x00, @intCast(2 + 2 + p256.public_length),
-        0x00, @intFromEnum(NamedGroup.secp256r1),
+        0x00, @intCast(compat.enumToInt(NamedGroup.secp256r1)),
         0x00, @intCast(p256.public_length),
     };
     @memcpy(out[i + 10 ..][0..p256.public_length], &public_key.data);
@@ -3081,7 +3081,7 @@ fn clientHelloWithP384KeyShare(
     while (i + 4 < client_hello_msg.len) : (i += 1) {
         if (out[i] == 0x00 and out[i + 1] == 0x0a and out[i + 2] == 0x00 and out[i + 3] == 0x04) {
             out[i + 6] = 0x00;
-            out[i + 7] = @intFromEnum(NamedGroup.secp384r1);
+            out[i + 7] = @intCast(compat.enumToInt(NamedGroup.secp384r1));
             break;
         }
     } else unreachable;
@@ -3105,7 +3105,7 @@ fn clientHelloWithP384KeyShare(
         0x00, 0x33,
         0x00, @intCast(new_ext_len),
         0x00, @intCast(2 + 2 + p384.public_length),
-        0x00, @intFromEnum(NamedGroup.secp384r1),
+        0x00, @intCast(compat.enumToInt(NamedGroup.secp384r1)),
         0x00, @intCast(p384.public_length),
     };
     @memcpy(out[i + 10 ..][0..p384.public_length], &public_key.data);
@@ -3144,8 +3144,8 @@ fn clientHelloWithBothKeyShares(
         0x00, 0x0a,
         0x00, 0x06,
         0x00, 0x04,
-        0x00, @intFromEnum(NamedGroup.x25519),
-        0x00, @intFromEnum(NamedGroup.secp256r1),
+        0x00, @intCast(compat.enumToInt(NamedGroup.x25519)),
+        0x00, @intCast(compat.enumToInt(NamedGroup.secp256r1)),
     };
     len += groups_delta;
 
@@ -3168,13 +3168,13 @@ fn clientHelloWithBothKeyShares(
         0x00, 0x33,
         0x00, @intCast(new_ext_len),
         0x00, @intCast(new_ext_len - 2),
-        0x00, @intFromEnum(NamedGroup.x25519),
+        0x00, @intCast(compat.enumToInt(NamedGroup.x25519)),
         0x00, @intCast(x25519.public_length),
     };
     @memcpy(out[i + 10 ..][0..x25519.public_length], &x25519_public_key);
     const p256_offset = i + 10 + x25519.public_length;
     out[p256_offset..][0..4].* = .{
-        0x00, @intFromEnum(NamedGroup.secp256r1),
+        0x00, @intCast(compat.enumToInt(NamedGroup.secp256r1)),
         0x00, @intCast(p256.public_length),
     };
     @memcpy(out[p256_offset + 4 ..][0..p256.public_length], &p256_public_key.data);
@@ -3350,7 +3350,7 @@ test "handleRecord: zero-length plaintext handshake is rejected" {
 test "handleRecord: rejects application_data before connected" {
     var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
-    var rec = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x05 } ++ [_]u8{0} ** 5;
+    var rec = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x05 } ++ @as([5]u8, @splat(0));
     var out: [64]u8 = undefined;
     try testing.expectError(error.UnexpectedRecord, hs.handleRecord(&rec, &out));
 }
@@ -4286,7 +4286,7 @@ test "acceptClientHello: bounded PSK identity admission before HelloRetryRequest
         client_keypair,
         &identities,
         0,
-        @intFromEnum(NamedGroup.x25519),
+        compat.enumToInt(NamedGroup.x25519),
     );
     _ = try server2.acceptClientHello(ch1_usable, &harness.out);
     try testing.expectEqual(.wait_client_finished, server2.state);
@@ -4409,7 +4409,7 @@ test "acceptClientHello: PSK selection rejects a slack-byte identities vector" {
         client_keypair,
         &.{.{ .identity = "a" }},
         1,
-        @intFromEnum(NamedGroup.x25519),
+        compat.enumToInt(NamedGroup.x25519),
     );
     try testing.expectError(
         error.UnexpectedEof,
@@ -4761,7 +4761,7 @@ test "sendPreparedServerFlight: encryption failure preserves handshake write epo
     try testing.expectEqual(Suite.sha256, std.meta.activeTag(server.suite_state));
     try testing.expectEqualSlices(
         u8,
-        &([_]u8{0} ** hkdf.HkdfSha256.prk_len),
+        &(@as([hkdf.HkdfSha256.prk_len]u8, @splat(0))),
         &server.suite_state.sha256.server_app_secret.data,
     );
 
@@ -6118,7 +6118,7 @@ test "processClientFinished: required client auth rejects forged CertificateVeri
     // Present the client fixture cert (clientAuth EKU) but sign with a DISTINCT
     // private key (all-zeros scalar is invalid for P-256; use a deterministic
     // non-fixture scalar).
-    const wrong_scalar = [_]u8{0x42} ** 32;
+    const wrong_scalar = @as([32]u8, @splat(0x42));
     var client_signer = try signature.PrivateKey.fromP256Scalar(&wrong_scalar);
     defer client_signer.deinit();
     client.setCredentials(&.{clientEcdsaCertDer()}, client_signer.signer());
@@ -6299,7 +6299,7 @@ test "public Finished paths reject trailing and non-Finished handshake messages"
                 .replacement => 0,
             };
             // A complete KeyUpdate is illegal in either position.
-            const update = [_]u8{ @intFromEnum(HandshakeType.key_update), 0, 0, 1, 0 };
+            const update = [_]u8{ compat.enumToInt(HandshakeType.key_update), 0, 0, 1, 0 };
             @memcpy(plain[offset..][0..update.len], &update);
             var client_tx = try server.rx.clone();
             defer client_tx.deinit();
@@ -6542,7 +6542,7 @@ test "handleRecord: rejects protected ClientHello after connected" {
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
 
-    const client_hello_type = @intFromEnum(HandshakeType.client_hello);
+    const client_hello_type = compat.enumToInt(HandshakeType.client_hello);
     const renegotiate = [_]u8{ client_hello_type, 0x00, 0x00, 0x00 };
     var wire_buf: [64]u8 = undefined;
     const wire_rec = try client_tx.encrypt(.handshake, &renegotiate, &wire_buf);
@@ -6585,8 +6585,8 @@ test "handleRecord: rejects client KeyUpdate before Finished" {
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
     const ku = [_]u8{
-        @intFromEnum(HandshakeType.key_update),              0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_not_requested),
+        compat.enumToInt(HandshakeType.key_update),              0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_not_requested),
     };
     var wire_buf: [64]u8 = undefined;
     const wire_rec = try client_tx.encrypt(.handshake, &ku, &wire_buf);
@@ -6621,8 +6621,8 @@ test "receiveRecord: RX progresses while a server TX record is pending" {
     try testing.expectEqualSlices(u8, "ping", app_event.application_data);
 
     const ku = [_]u8{
-        @intFromEnum(HandshakeType.key_update),          0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_requested),
+        compat.enumToInt(HandshakeType.key_update),          0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_requested),
     };
     const update = try client_tx.encrypt(.handshake, &ku, &peer_out);
     var update_record: [64]u8 = undefined;
@@ -6651,8 +6651,8 @@ test "receiveKtlsRecord: server processes kernel-decrypted records" {
     try testing.expectEqual(rx_before, server.rxKtlsInfo());
 
     var update = [_]u8{
-        @intFromEnum(HandshakeType.key_update),          0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_requested),
+        compat.enumToInt(HandshakeType.key_update),          0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_requested),
     };
     const update_event = try server.receiveKtlsRecord(.handshake, &update);
     try testing.expectEqual(KeyUpdateRequest.update_requested, update_event.key_update);
@@ -6663,7 +6663,7 @@ test "receiveKtlsRecord: server processes kernel-decrypted records" {
         rx_before.key[0..rx_before.key_len],
         rx_after.key[0..rx_after.key_len],
     ));
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** 8), &rx_after.rec_seq);
+    try testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0))), &rx_after.rec_seq);
     try testing.expect(server.hasPendingKeyUpdateResponse());
     var blocked_out: [max_out_len]u8 = undefined;
     try testing.expectError(
@@ -6689,7 +6689,7 @@ test "ratchetKtlsTx: server advances only an idle TX epoch" {
         tx_before.key[0..tx_before.key_len],
         tx_after.key[0..tx_after.key_len],
     ));
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** 8), &tx_after.rec_seq);
+    try testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0))), &tx_after.rec_seq);
     try testing.expectEqual(rx_before, server.rxKtlsInfo());
 
     try testing.expect(!server.hasPendingWrite());
@@ -6716,8 +6716,8 @@ test "handleRecord: client KeyUpdate(update_requested) ratchets rx and responds"
     defer server_tx_old.deinit();
 
     const ku = [_]u8{
-        @intFromEnum(HandshakeType.key_update),          0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_requested),
+        compat.enumToInt(HandshakeType.key_update),          0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_requested),
     };
     var ku_buf: [64]u8 = undefined;
     const ku_wire = try client_tx.encrypt(.handshake, &ku, &ku_buf);
@@ -6735,8 +6735,8 @@ test "handleRecord: client KeyUpdate(update_requested) ratchets rx and responds"
     const dec = try server_tx_old.decrypt(resp_buf[0..resp.len]);
     try testing.expectEqual(.handshake, dec.content_type);
     try testing.expectEqualSlices(u8, &.{
-        @intFromEnum(HandshakeType.key_update),              0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_not_requested),
+        compat.enumToInt(HandshakeType.key_update),              0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_not_requested),
     }, dec.content);
     server.completeWrite();
     const rx_ktls_1 = server.rxKtlsInfo();
@@ -6751,8 +6751,8 @@ test "handleRecord: client KeyUpdate(update_requested) ratchets rx and responds"
         tx_ktls_0.key[0..tx_ktls_0.key_len],
         tx_ktls_1.key[0..tx_ktls_1.key_len],
     ));
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** 8), &rx_ktls_1.rec_seq);
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** 8), &tx_ktls_1.rec_seq);
+    try testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0))), &rx_ktls_1.rec_seq);
+    try testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0))), &tx_ktls_1.rec_seq);
 
     var client_tx_1 = try server.rx.clone();
     defer client_tx_1.deinit();
@@ -6775,8 +6775,8 @@ test "handleRecord: client KeyUpdate(update_not_requested) ratchets rx only" {
     defer client_tx.deinit();
 
     const ku = [_]u8{
-        @intFromEnum(HandshakeType.key_update),              0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_not_requested),
+        compat.enumToInt(HandshakeType.key_update),              0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_not_requested),
     };
     var ku_buf: [64]u8 = undefined;
     const ku_wire = try client_tx.encrypt(.handshake, &ku, &ku_buf);
@@ -6803,7 +6803,7 @@ test "handleRecord: client KeyUpdate(update_not_requested) ratchets rx only" {
         tx_ktls_0.key[0..tx_ktls_0.key_len],
         tx_ktls_1.key[0..tx_ktls_1.key_len],
     ));
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** 8), &rx_ktls_1.rec_seq);
+    try testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0))), &rx_ktls_1.rec_seq);
 
     var client_tx_1 = try server.rx.clone();
     defer client_tx_1.deinit();
@@ -6829,8 +6829,8 @@ test "sendKeyUpdate: server-initiated KeyUpdate encrypts under old key then ratc
     const dec = try peer_rx_old.decrypt(rec_buf[0..rec.len]);
     try testing.expectEqual(.handshake, dec.content_type);
     try testing.expectEqualSlices(u8, &.{
-        @intFromEnum(HandshakeType.key_update),          0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_requested),
+        compat.enumToInt(HandshakeType.key_update),          0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_requested),
     }, dec.content);
     const tx_ktls_1 = server.txKtlsInfo();
     try testing.expect(!mem.eql(
@@ -6838,7 +6838,7 @@ test "sendKeyUpdate: server-initiated KeyUpdate encrypts under old key then ratc
         tx_ktls_0.key[0..tx_ktls_0.key_len],
         tx_ktls_1.key[0..tx_ktls_1.key_len],
     ));
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** 8), &tx_ktls_1.rec_seq);
+    try testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0))), &tx_ktls_1.rec_seq);
     try testing.expectError(error.PendingWrite, server.sendKeyUpdate(&out, .update_requested));
     server.completeWrite();
 }
@@ -6868,8 +6868,8 @@ test "handleRecord: self-initiated sendKeyUpdate response surfaces rx only" {
     var peer_tx = try server.rx.clone();
     defer peer_tx.deinit();
     const ku_nr = [_]u8{
-        @intFromEnum(HandshakeType.key_update),              0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_not_requested),
+        compat.enumToInt(HandshakeType.key_update),              0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_not_requested),
     };
     var ku_buf: [64]u8 = undefined;
     const ku_wire = try peer_tx.encrypt(.handshake, &ku_nr, &ku_buf);
@@ -6884,7 +6884,7 @@ test "handleRecord: self-initiated sendKeyUpdate response surfaces rx only" {
 
     // RX material changed again (second ratchet).
     const rx_ktls_1 = server.rxKtlsInfo();
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** 8), &rx_ktls_1.rec_seq);
+    try testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0))), &rx_ktls_1.rec_seq);
 }
 
 // RFC 8446 §5.1 — a KeyUpdate must align with a record boundary.
@@ -6893,8 +6893,8 @@ test "handleRecord: KeyUpdate not at record boundary is rejected" {
     defer server.deinit();
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
-    const ku_t = @intFromEnum(HandshakeType.key_update);
-    const ku_nr = @intFromEnum(KeyUpdateRequest.update_not_requested);
+    const ku_t = compat.enumToInt(HandshakeType.key_update);
+    const ku_nr = compat.enumToInt(KeyUpdateRequest.update_not_requested);
     const two = [_]u8{
         ku_t, 0x00, 0x00, 0x01, ku_nr,
         ku_t, 0x00, 0x00, 0x01, ku_nr,
@@ -6917,7 +6917,7 @@ test "handleRecord: invalid client KeyUpdate request is rejected" {
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
 
-    const invalid_ku = [_]u8{ @intFromEnum(HandshakeType.key_update), 0x00, 0x00, 0x01, 0x02 };
+    const invalid_ku = [_]u8{ compat.enumToInt(HandshakeType.key_update), 0x00, 0x00, 0x01, 0x02 };
     var wire_buf: [64]u8 = undefined;
     const wire_rec = try client_tx.encrypt(.handshake, &invalid_ku, &wire_buf);
     var rx_buf: [64]u8 = undefined;
@@ -7035,8 +7035,8 @@ test "handleRecord: KeyUpdate flood is rejected" {
         var client_tx = try H.makeRecordLayer(.aes_128_gcm_sha256, client_secret);
         defer client_tx.deinit();
         const ku = [_]u8{
-            @intFromEnum(HandshakeType.key_update),              0x00, 0x00, 0x01,
-            @intFromEnum(KeyUpdateRequest.update_not_requested),
+            compat.enumToInt(HandshakeType.key_update),              0x00, 0x00, 0x01,
+            compat.enumToInt(KeyUpdateRequest.update_not_requested),
         };
         var ku_buf: [64]u8 = undefined;
         const ku_wire = try client_tx.encrypt(.handshake, &ku, &ku_buf);
@@ -7061,8 +7061,8 @@ test "handleRecord: KeyUpdate flood cap fires despite empty app-data interleavin
     var i: usize = 0;
     const result = while (i < max_post_handshake_messages + 1) : (i += 1) {
         const ku = [_]u8{
-            @intFromEnum(HandshakeType.key_update),              0x00, 0x00, 0x01,
-            @intFromEnum(KeyUpdateRequest.update_not_requested),
+            compat.enumToInt(HandshakeType.key_update),              0x00, 0x00, 0x01,
+            compat.enumToInt(KeyUpdateRequest.update_not_requested),
         };
         var ku_buf: [64]u8 = undefined;
         const ku_wire = try peer_tx.encrypt(.handshake, &ku, &ku_buf);
@@ -7172,8 +7172,8 @@ test "extractEstablished: connected events match the handshake engine" {
     // An update_requested KeyUpdate ratchets RX and elicits the same response
     // record under the same old TX key and sequence (§4.6.3).
     const ku = [_]u8{
-        @intFromEnum(HandshakeType.key_update),          0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_requested),
+        compat.enumToInt(HandshakeType.key_update),          0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_requested),
     };
     const ku_wire = try client_tx.encrypt(.handshake, &ku, &wire_buf);
     @memcpy(rx_buf[0..ku_wire.len], ku_wire);
@@ -7278,8 +7278,8 @@ test "extractEstablished: deferred KeyUpdate obligation blocks application write
     // The client's update_requested KeyUpdate is received by the handshake
     // engine before extraction, deferring the response (§4.6.3)…
     const ku = [_]u8{
-        @intFromEnum(HandshakeType.key_update),          0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_requested),
+        compat.enumToInt(HandshakeType.key_update),          0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_requested),
     };
     var wire_buf: [64]u8 = undefined;
     const ku_wire = try client_tx.encrypt(.handshake, &ku, &wire_buf);
@@ -7320,8 +7320,8 @@ test "extractEstablished: KeyUpdate flood cap survives extraction and resets on 
     var wire_buf: [64]u8 = undefined;
     var rx_buf: [64]u8 = undefined;
     const ku = [_]u8{
-        @intFromEnum(HandshakeType.key_update),              0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_not_requested),
+        compat.enumToInt(HandshakeType.key_update),              0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_not_requested),
     };
 
     var i: usize = 0;
@@ -7360,8 +7360,8 @@ test "extractEstablished: KeyUpdate fragment carries across extraction" {
     var rx_buf: [64]u8 = undefined;
 
     const ku = [_]u8{
-        @intFromEnum(HandshakeType.key_update),          0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_requested),
+        compat.enumToInt(HandshakeType.key_update),          0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_requested),
     };
     const part1 = try client_tx.encrypt(.handshake, ku[0..2], &wire_buf);
     @memcpy(rx_buf[0..part1.len], part1);
@@ -7392,8 +7392,8 @@ test "extractEstablished: KeyUpdate record-boundary and fragment rules hold" {
 
     var wire_buf: [64]u8 = undefined;
     var rx_buf: [64]u8 = undefined;
-    const ku_type = @intFromEnum(HandshakeType.key_update);
-    const ku_requested = @intFromEnum(KeyUpdateRequest.update_requested);
+    const ku_type = compat.enumToInt(HandshakeType.key_update);
+    const ku_requested = compat.enumToInt(KeyUpdateRequest.update_requested);
 
     // A trailing byte after a complete KeyUpdate in the same record.
     const trailing = [_]u8{ ku_type, 0x00, 0x00, 0x01, ku_requested, 0xff };
@@ -7503,8 +7503,8 @@ test "extractEstablished: SHA-384 suite ratchets and exchanges app data" {
     try testing.expect(session.suite == .sha384);
 
     const ku = [_]u8{
-        @intFromEnum(HandshakeType.key_update),          0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_requested),
+        compat.enumToInt(HandshakeType.key_update),          0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_requested),
     };
     var wire_buf: [64]u8 = undefined;
     var rx_buf: [64]u8 = undefined;
@@ -7699,8 +7699,8 @@ test "fuzz: connected ServerHandshake.handleRecord rejects arbitrary input" {
     defer ku_tx.deinit();
     var ku_buf: [64]u8 = undefined;
     const ku_msg = [_]u8{
-        @intFromEnum(HandshakeType.key_update),          0x00, 0x00, 0x01,
-        @intFromEnum(KeyUpdateRequest.update_requested),
+        compat.enumToInt(HandshakeType.key_update),          0x00, 0x00, 0x01,
+        compat.enumToInt(KeyUpdateRequest.update_requested),
     };
     const ku = try ku_tx.encrypt(.handshake, &ku_msg, &ku_buf);
 
@@ -7961,7 +7961,7 @@ test "selectPsk: verifies the binder for a matching PSK identity" {
 
 test "selectPsk: returns null when the PSK binder does not verify" {
     const identity = [_]u8{ 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59 };
-    const wrong_psk = [_]u8{0x42} ** 32;
+    const wrong_psk = @as([32]u8, @splat(0x42));
 
     var client: ClientHandshake = .init(.{
         .keypairs = try .init(.generate()),
@@ -8125,7 +8125,7 @@ test "PSK offer with only psk_ke disables resumption and ticket issuance" {
         record,
         &.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x01 },
     ) orelse return error.TestUnexpectedResult;
-    client_out[mode_extension + 5] = @intFromEnum(client_hello.PskKeyExchangeMode.psk_ke);
+    client_out[mode_extension + 5] = compat.enumToInt(client_hello.PskKeyExchangeMode.psk_ke);
     const ch_msg = record[frame.header_len..];
     const parsed = try client_hello.parse(ch_msg);
     const early = hkdf.HkdfSha256.pskEarlySecret(&psk);
@@ -8765,7 +8765,7 @@ test "0-RTT: accepted early data distinguishes authentication and handshake erro
         fn lookup(_: *anyopaque, identity: []const u8) ?PskEntry {
             if (!mem.eql(u8, identity, "early-ticket")) return null;
             return .{
-                .psk = &([_]u8{0x42} ** 32),
+                .psk = &(@as([32]u8, @splat(0x42))),
                 .cipher_suite = .aes_128_gcm_sha256,
                 .max_early_data_size = 1024,
                 .alpn = null,
@@ -8784,7 +8784,7 @@ test "0-RTT: accepted early data distinguishes authentication and handshake erro
         client.policy.insecure_no_chain_anchor = true;
         var ticket: ClientHandshake.SessionTicket = .init(0, 0, .aes_128_gcm_sha256, 1024);
         ticket.identity.appendSliceAssumeCapacity("early-ticket");
-        ticket.psk.appendSliceAssumeCapacity(&([_]u8{0x42} ** 32));
+        ticket.psk.appendSliceAssumeCapacity(&(@as([32]u8, @splat(0x42))));
         var client_out: [4096]u8 = undefined;
         const ch = try client.startWithPsk(&ticket, &client_out, true);
         client.completeWrite();
@@ -8809,7 +8809,7 @@ test "0-RTT: accepted early data distinguishes authentication and handshake erro
             .corrupt_tag => try client.sendEarlyData("early payload", &wire_buf),
             .malformed_handshake => try client.early_tx.?.encrypt(
                 .handshake,
-                &.{ @intFromEnum(HandshakeType.end_of_early_data), 0, 0, 1 },
+                &.{ compat.enumToInt(HandshakeType.end_of_early_data), 0, 0, 1 },
                 &wire_buf,
             ),
         };
@@ -9932,11 +9932,11 @@ test "0-RTT: corrupted record after the skip window aborts" {
     // header declaring 100 body bytes plus the first 10). It deprotects, ends
     // skip mode, and parks in the fragment reassembly buffer.
     const partial = [_]u8{
-        @intFromEnum(HandshakeType.certificate),
+        compat.enumToInt(HandshakeType.certificate),
         0,
         0,
         100,
-    } ++ [_]u8{0xaa} ** 10;
+    } ++ @as([10]u8, @splat(0xaa));
     var frag_buf: [256]u8 = undefined;
     const frag_record = try client_hs_tx.encrypt(.handshake, &partial, &frag_buf);
     var frag_rx_buf: [256]u8 = undefined;
@@ -9955,7 +9955,7 @@ test "0-RTT: corrupted record after the skip window aborts" {
     var rest_buf: [256]u8 = undefined;
     const rest_record = try client_hs_tx.encrypt(
         .handshake,
-        &([_]u8{0xbb} ** 90),
+        &(@as([90]u8, @splat(0xbb))),
         &rest_buf,
     );
     rest_buf[frame.header_len] ^= 0xff;
@@ -10342,7 +10342,7 @@ test "0-RTT: HRR decline skip rejects malformed application_data records" {
 
     // Zero-length application_data: five header bytes, no payload.
     var zero_len = [_]u8{
-        @intFromEnum(frame.ContentType.application_data),
+        compat.enumToInt(frame.ContentType.application_data),
         0x03,
         0x03,
         0x00,
@@ -10354,7 +10354,7 @@ test "0-RTT: HRR decline skip rejects malformed application_data records" {
     // content-type byte a valid encrypted record needs.
     const tag_zeros: [aead.tag_len]u8 = @splat(0);
     var tag_only = [_]u8{
-        @intFromEnum(frame.ContentType.application_data),
+        compat.enumToInt(frame.ContentType.application_data),
         0x03,
         0x03,
         0x00,
@@ -10569,7 +10569,7 @@ test "0-RTT: client rejects server-sent EndOfEarlyData" {
 
     var flight_buf: [512]u8 = undefined;
     @memcpy(flight_buf[0..ee_msg.len], ee_msg);
-    flight_buf[ee_msg.len] = @intFromEnum(HandshakeType.end_of_early_data);
+    flight_buf[ee_msg.len] = compat.enumToInt(HandshakeType.end_of_early_data);
     flight_buf[ee_msg.len + 1] = 0;
     flight_buf[ee_msg.len + 2] = 0;
     flight_buf[ee_msg.len + 3] = 0;
@@ -10726,7 +10726,7 @@ const HybridDerivation = struct { group: NamedGroup, derived: std.EnumSet(KeyPai
 const hybrid_derivations = [_]HybridDerivation{
     .{ .group = .x25519_mlkem768, .derived = .init(.{ .x25519 = true }) },
     .{ .group = .secp256r1_mlkem768, .derived = .init(.{ .p256 = true }) },
-    .{ .group = .secp384r1_mlkem1024, .derived = .initEmpty() },
+    .{ .group = .secp384r1_mlkem1024, .derived = .empty },
 };
 
 /// RFC 8446 §2 — drive a handshake from the ServerHello the server just
@@ -10911,7 +10911,7 @@ test "RFC 10024 hybrid group matrix negotiates through HRR" {
             hrr_record[frame.header_len..][0..hrr_header.length()],
         );
         try testing.expectEqual(group, hrr.selected_group.?);
-        try testing.expect(server.keypairs.derived.eql(.initEmpty()));
+        try testing.expect(server.keypairs.derived.eql(.empty));
 
         var hrr_rx: [4096]u8 = undefined;
         @memcpy(hrr_rx[0..hrr_record.len], hrr_record);
@@ -11054,7 +11054,7 @@ test "in-memory HRR round trip reaches app data" {
     );
     try testing.expectEqual(NamedGroup.x25519, hrr.selected_group.?);
     try testing.expectEqual(.wait_ch, server.state);
-    try testing.expect(server.keypairs.derived.eql(.initEmpty()));
+    try testing.expect(server.keypairs.derived.eql(.empty));
 
     // Client consumes the HRR and emits ClientHello2 as a framed .write event.
     var client_out: [1024]u8 = undefined;
@@ -11406,8 +11406,8 @@ test "handleRecord: unknown alert codes are preserved" {
     try testing.expectError(error.PeerAlert, hs.handleRecord(&unknown, &out));
     try testing.expect(hs.lastPeerAlert() != null);
     const got = hs.lastPeerAlert().?;
-    try testing.expectEqual(@as(u8, 5), @intFromEnum(got.level));
-    try testing.expectEqual(@as(u8, 0xee), @intFromEnum(got.description));
+    try testing.expectEqual(@as(u8, 5), compat.enumToInt(got.level));
+    try testing.expectEqual(@as(u8, 0xee), compat.enumToInt(got.description));
 }
 
 // RFC 8446 §6 — a later non-close_notify alert replaces an earlier one;
@@ -11532,7 +11532,7 @@ test "handleRecord: rejects trailing bytes after fragmented ClientHello" {
     _ = try hs.handleRecord(rec1[0 .. frame.header_len + split_at], &out);
 
     const remaining = ch_msg.len - split_at;
-    const trailing = [_]u8{ @intFromEnum(HandshakeType.finished), 0, 0, 0 };
+    const trailing = [_]u8{ compat.enumToInt(HandshakeType.finished), 0, 0, 0 };
     var rec2: [1024]u8 = undefined;
     const hdr2: frame.Header = .init(.handshake, @intCast(remaining + trailing.len));
     hdr2.write(rec2[0..frame.header_len]);
@@ -11909,8 +11909,8 @@ test "handleRecord: server reassembles 1-byte fragmented KeyUpdate(update_reques
     var server_tx_old = try server.tx.clone();
     defer server_tx_old.deinit();
 
-    const ku_type = @intFromEnum(HandshakeType.key_update);
-    const ku_req = @intFromEnum(KeyUpdateRequest.update_requested);
+    const ku_type = compat.enumToInt(HandshakeType.key_update);
+    const ku_req = compat.enumToInt(KeyUpdateRequest.update_requested);
     const ku_parts = [_][]const u8{
         &[_]u8{ku_type},
         &[_]u8{0x00},
@@ -11948,8 +11948,8 @@ test "handleRecord: server reassembles 1-byte fragmented KeyUpdate(update_reques
         const dec = try server_tx_old.decrypt(resp_buf[0..resp.len]);
         try testing.expectEqual(.handshake, dec.content_type);
         try testing.expectEqualSlices(u8, &.{
-            @intFromEnum(HandshakeType.key_update),              0x00, 0x00, 0x01,
-            @intFromEnum(KeyUpdateRequest.update_not_requested),
+            compat.enumToInt(HandshakeType.key_update),              0x00, 0x00, 0x01,
+            compat.enumToInt(KeyUpdateRequest.update_not_requested),
         }, dec.content);
         server.completeWrite();
     }
@@ -11973,8 +11973,8 @@ test "handleRecord: fragmented KeyUpdate(update_not_requested) works" {
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
 
-    const ku_type = @intFromEnum(HandshakeType.key_update);
-    const ku_nr = @intFromEnum(KeyUpdateRequest.update_not_requested);
+    const ku_type = compat.enumToInt(HandshakeType.key_update);
+    const ku_nr = compat.enumToInt(KeyUpdateRequest.update_not_requested);
     const ku_parts = [_][]const u8{
         &[_]u8{ku_type},
         &[_]u8{0x00},
@@ -12021,7 +12021,7 @@ test "handleRecord: non-KeyUpdate fragment starts are rejected" {
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
 
-    const bad_type: u8 = @intFromEnum(HandshakeType.finished);
+    const bad_type: u8 = compat.enumToInt(HandshakeType.finished);
     var wire_buf: [64]u8 = undefined;
     const wire = try client_tx.encrypt(.handshake, &[_]u8{bad_type}, &wire_buf);
 
@@ -12039,8 +12039,8 @@ test "handleRecord: KeyUpdate with trailing record bytes is rejected before ratc
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
 
-    const ku_type = @intFromEnum(HandshakeType.key_update);
-    const ku_nr = @intFromEnum(KeyUpdateRequest.update_not_requested);
+    const ku_type = compat.enumToInt(HandshakeType.key_update);
+    const ku_nr = compat.enumToInt(KeyUpdateRequest.update_not_requested);
     const bad = [_]u8{ ku_type, 0x00, 0x00, 0x01, ku_nr, 0xff };
 
     var wire_buf: [128]u8 = undefined;
@@ -12068,7 +12068,7 @@ test "handleRecord: app-data interleaving during KeyUpdate reassembly is rejecte
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
 
-    const ku_type = @intFromEnum(HandshakeType.key_update);
+    const ku_type = compat.enumToInt(HandshakeType.key_update);
     var wire_buf: [64]u8 = undefined;
     const wire = try client_tx.encrypt(.handshake, &[_]u8{ku_type}, &wire_buf);
     var out: [256]u8 = undefined;
@@ -12094,7 +12094,7 @@ test "receiveApplicationData: app-data interleaving during KeyUpdate reassembly 
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
 
-    const ku_type = @intFromEnum(HandshakeType.key_update);
+    const ku_type = compat.enumToInt(HandshakeType.key_update);
     var wire_buf: [64]u8 = undefined;
     const wire = try client_tx.encrypt(.handshake, &[_]u8{ku_type}, &wire_buf);
     var out: [256]u8 = undefined;
@@ -12114,7 +12114,7 @@ test "handleRecord: alert interleaving during KeyUpdate reassembly is rejected" 
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
 
-    const ku_type = @intFromEnum(HandshakeType.key_update);
+    const ku_type = compat.enumToInt(HandshakeType.key_update);
     var wire_buf: [64]u8 = undefined;
     const wire = try client_tx.encrypt(.handshake, &[_]u8{ku_type}, &wire_buf);
     var out: [256]u8 = undefined;
@@ -12174,7 +12174,7 @@ test "handleRecord: zero-length handshake during KeyUpdate reassembly is rejecte
     var client_tx = try server.rx.clone();
     defer client_tx.deinit();
 
-    const ku_type = @intFromEnum(HandshakeType.key_update);
+    const ku_type = compat.enumToInt(HandshakeType.key_update);
     var wire_buf: [64]u8 = undefined;
     const wire = try client_tx.encrypt(.handshake, &[_]u8{ku_type}, &wire_buf);
     var out: [256]u8 = undefined;

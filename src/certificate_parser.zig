@@ -12,6 +12,7 @@
 //! - DNS-fallback-to-CN for hostname and name-constraint checking (RFC 5280 §4.2.1.10).
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const crypto = std.crypto;
 const mem = std.mem;
 const testing = std.testing;
@@ -362,7 +363,7 @@ pub const Parsed = struct {
             const field = try der.Element.parse(extension, field_i);
             field_i = field.slice.end;
             if (field.identifier.class != .context_specific) return error.CertificateFieldHasWrongDataType;
-            switch (@intFromEnum(field.identifier.tag)) {
+            switch (compat.enumToInt(field.identifier.tag)) {
                 0, 1 => {},
                 else => return error.CertificateFieldHasWrongDataType,
             }
@@ -396,7 +397,7 @@ pub const Parsed = struct {
             field_i = field.slice.end;
             if (field.identifier.class != .context_specific) return error.CertificateFieldHasWrongDataType;
 
-            switch (@intFromEnum(field.identifier.tag)) {
+            switch (compat.enumToInt(field.identifier.tag)) {
                 0 => try ca.checkNameConstraintSubtrees(extension, field, name, .permitted, &state),
                 1 => try ca.checkNameConstraintSubtrees(extension, field, name, .excluded, &state),
                 else => return error.CertificateFieldHasWrongDataType,
@@ -460,7 +461,7 @@ pub const Parsed = struct {
             option_i = option.slice.end;
             if (option.identifier.class != .context_specific)
                 return error.CertificateFieldHasWrongDataType;
-            switch (@intFromEnum(option.identifier.tag)) {
+            switch (compat.enumToInt(option.identifier.tag)) {
                 0 => if (!baseDistanceIsZero(extension[option.slice.start..option.slice.end]))
                     return error.CertificateNameConstraintUnsupported,
                 1 => return error.CertificateNameConstraintUnsupported,
@@ -472,7 +473,7 @@ pub const Parsed = struct {
 
     fn supportedGeneralName(bytes: []const u8, elem: der.Element) NameConstraintError!?NameConstraintName {
         if (elem.identifier.class != .context_specific) return error.CertificateFieldHasWrongDataType;
-        const tag: GeneralNameTag = @enumFromInt(@intFromEnum(elem.identifier.tag));
+        const tag: GeneralNameTag = compat.enumFromInt(GeneralNameTag, compat.enumToInt(elem.identifier.tag));
         return switch (tag) {
             .rfc822Name,
             .dNSName,
@@ -749,7 +750,7 @@ pub const Parsed = struct {
             const general_name = try der.Element.parse(subject_alt_name, name_i);
             name_i = general_name.slice.end;
             if (general_name.identifier.class == .context_specific) {
-                switch (@as(GeneralNameTag, @enumFromInt(@intFromEnum(general_name.identifier.tag)))) {
+                switch (compat.enumFromInt(GeneralNameTag, compat.enumToInt(general_name.identifier.tag))) {
                     .dNSName => {
                         const dns_name = subject_alt_name[general_name.slice.start..general_name.slice.end];
                         if (checkHostName(host_name, dns_name)) return;
@@ -1741,7 +1742,7 @@ pub fn parse(cert: Certificate) ParseError!Parsed {
         // Only processed extensions can overwrite parsed policy state. Recognition
         // is semantic for these five: obsolete X.509v1 and modern PKIX OID forms
         // map to the same ID and intentionally count as duplicates.
-        var seen_extensions: std.EnumSet(ExtensionId) = .initEmpty();
+        var seen_extensions: std.EnumSet(ExtensionId) = .empty;
         var ext_i = extensions.slice.start;
         while (ext_i < extensions.slice.end) {
             const extension = try der.Element.parse(cert_bytes, ext_i);
@@ -2109,7 +2110,7 @@ const Date = struct {
             while (month < date.month) : (month += 1) {
                 const days: u64 = std.time.epoch.getDaysInMonth(
                     date.year,
-                    @enumFromInt(month),
+                    compat.enumFromInt(std.time.epoch.Month, month),
                 );
                 sec += days * std.time.epoch.secs_per_day;
             }
@@ -2536,7 +2537,7 @@ pub const rsa = struct {
             }
             var m_p_buf: [8 + Hash.digest_length + Hash.digest_length]u8 = undefined;
             var m_p = m_p_buf[0 .. 8 + Hash.digest_length + sLen];
-            std.mem.copyForwards(u8, m_p, &([_]u8{0} ** 8));
+            std.mem.copyForwards(u8, m_p, &(@as([8]u8, @splat(0))));
             std.mem.copyForwards(u8, m_p[8..], &mHash);
             std.mem.copyForwards(u8, m_p[(8 + Hash.digest_length)..], salt);
 

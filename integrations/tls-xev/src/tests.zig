@@ -1060,7 +1060,7 @@ test "close: orderly close with a read in flight still sends close_notify" {
 /// 16384 bytes of plaintext, so this encrypts to a single ~16.4KB wire record
 /// — larger than any socket send buffer once `SO_SNDBUF` is clamped, which is
 /// what keeps the write armed.
-const stuck_payload = [_]u8{0xab} ** 16384;
+const stuck_payload = @as([16384]u8, @splat(0xab));
 
 /// A server that closes while a WRITE is still armed — the mirror of
 /// `CloseWhileReading`, and #83's remaining path: a caller flushing a large

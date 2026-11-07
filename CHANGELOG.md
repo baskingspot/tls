@@ -7,6 +7,11 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- The tree builds and tests on Zig 0.16 and 0.17 from one source. `nix develop`
+  is 0.17; `nix develop .#zig-old` is 0.16. `just check` runs the Debug and
+  release-mode suites on whichever compiler the shell carries, and CI runs the
+  full gate on 0.17 plus `just check` on 0.16 (#174). The minimum supported Zig
+  is still 0.16.
 - `alert.alertForError` returns `?Description` and maps `error.PeerAlert` to null. The peer already sent its own alert, so answering it with another alert — previously `internal_error` — blamed the wrong side (RFC 8446 §6.2). Integrations drop their `PeerAlert` special case.
 
 ### Added

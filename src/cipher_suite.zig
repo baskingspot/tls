@@ -1,5 +1,6 @@
 //! TLS 1.3 cipher suite identifiers.
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 
 pub const Hash = enum {
@@ -26,7 +27,10 @@ pub const CipherSuite = enum(u16) {
 
 // RFC 8446 Appendix B.4 — TLS 1.3 cipher suite code points.
 test "CipherSuite wire values" {
-    try testing.expectEqual(@as(u16, 0x1301), @intFromEnum(CipherSuite.aes_128_gcm_sha256));
-    try testing.expectEqual(@as(u16, 0x1302), @intFromEnum(CipherSuite.aes_256_gcm_sha384));
-    try testing.expectEqual(@as(u16, 0x1303), @intFromEnum(CipherSuite.chacha20_poly1305_sha256));
+    try testing.expectEqual(@as(u16, 0x1301), compat.enumToInt(CipherSuite.aes_128_gcm_sha256));
+    try testing.expectEqual(@as(u16, 0x1302), compat.enumToInt(CipherSuite.aes_256_gcm_sha384));
+    try testing.expectEqual(
+        @as(u16, 0x1303),
+        compat.enumToInt(CipherSuite.chacha20_poly1305_sha256),
+    );
 }

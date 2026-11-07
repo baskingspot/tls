@@ -1210,7 +1210,7 @@ test "reader: a line longer than read_buffer reports StreamTooLong" {
     var sctx: ServerCtx = .{
         .fd = fds[1],
         // No newline anywhere in the first read_buffer bytes.
-        .steps = &.{ .{ .send = &[_]u8{'x'} ** line_len }, .drain },
+        .steps = &.{ .{ .send = &@as([line_len]u8, @splat('x')) }, .drain },
     };
     const server = try spawnServer(&sctx);
 
@@ -1391,7 +1391,7 @@ test "writer: rejects writes after closeWrite" {
     conn.closeWrite();
     const w = conn.writer();
     // Enough to overflow the staging buffer so drain runs during writeAll.
-    const big = [_]u8{'x'} ** (frame.max_plaintext_len + 1);
+    const big = @as([(frame.max_plaintext_len + 1)]u8, @splat('x'));
     try testing.expectError(error.WriteFailed, w.writeAll(&big));
     try testing.expectEqual(tls.WriteError.TlsClosed, conn.writeError().?);
 

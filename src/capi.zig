@@ -143,7 +143,9 @@ fn mapError(err: anyerror) BaskingspotTlsResult {
 }
 
 // Client lifecycle
-fn clientInitInsecureImpl(
+// Public only so the name-convention test below can see it: Zig 0.17 hides
+// private declarations from @hasDecl.
+pub fn clientInitInsecureImpl(
     client: ?*anyopaque,
     x25519_pub: ?[*]const u8,
     x25519_sec: ?[*]const u8,

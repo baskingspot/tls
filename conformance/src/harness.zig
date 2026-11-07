@@ -38,11 +38,24 @@ pub fn hex(comptime len: usize, comptime encoded: []const u8) [len]u8 {
     return out;
 }
 
+/// Zig 0.17 moved the direct read onto Io.operate and dropped VTable.netRead.
+fn readOnce(io: Io, stream: Stream, data: [][]u8) !usize {
+    if (comptime @hasDecl(Stream, "read")) {
+        const result = try io.operate(.{ .net_read = .{
+            .socket_handle = stream.socket.handle,
+            .data = data,
+        } });
+        return (try result.net_read).data_len;
+    } else {
+        return io.vtable.netRead(io.userdata, stream.socket.handle, data);
+    }
+}
+
 fn readAtLeast(io: Io, stream: Stream, buf: []u8, len: usize) !usize {
     var total: usize = 0;
     while (total < len) {
         var data: [1][]u8 = .{buf[total..]};
-        const n = try io.vtable.netRead(io.userdata, stream.socket.handle, &data);
+        const n = try readOnce(io, stream, &data);
         if (n == 0) break;
         total += n;
     }
