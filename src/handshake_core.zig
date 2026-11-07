@@ -150,6 +150,20 @@ pub const Error = error{
     signature.SignError || aead.Error ||
     server_hello.HrrParseError || client_hello.RetryEncodeError ||
     alert.ParseError || NewSessionTicket.ParseError ||
+    error{
+        AlpnProtocolTooLong,
+        InvalidServerName,
+        ServerNameTooLong,
+        TooManyAlpnBytes,
+        EmptyAlpnProtocol,
+        ExtensionTooLong,
+        ReservedExtension,
+        DuplicateExtension,
+        IdentityTooLong,
+        InvalidBinderLength,
+        InvalidHybridPolicy,
+        HybridGroupUnavailable,
+    } ||
     error{ TooManyKeyUpdates, InvalidHandshakeType };
 
 pub const Client = struct {
@@ -180,6 +194,9 @@ pub const Client = struct {
     ticket: ?NewSessionTicket,
     /// Storage for the KeyUpdate response message the queue may hand out.
     ku_response: [5]u8,
+    /// The cipher suite a PSK resumption offer uses. Set by the caller from the
+    /// ticket; null means TLS_AES_128_GCM_SHA256.
+    psk_suite: ?CipherSuite,
     /// Consecutive post-handshake key updates, capped per RFC 8446 §4.6.3.
     post_handshake_count: u16,
     /// Set once ServerHello selects the suite, so later messages can be checked
@@ -213,6 +230,7 @@ pub const Client = struct {
             .last_alert = null,
             .ticket = null,
             .ku_response = undefined,
+            .psk_suite = null,
             .post_handshake_count = 0,
             .selected = null,
             .state = .start,
@@ -349,6 +367,94 @@ pub const Client = struct {
                 self.state = .server_finished_verified;
             },
         }
+    }
+
+    /// Encode a ClientHello and begin the handshake in one call. The encoding
+    /// itself is `client_hello`'s; the core owns the sequencing and the
+    /// transcript, so there is one builder in the tree, not two.
+    pub fn startEncoded(
+        self: *Client,
+        out: []u8,
+        random: Random,
+        keypairs: KeyPairs,
+        host: ?[]const u8,
+        alpn: []const []const u8,
+        extras: []const extension_type.ExtraExtension,
+    ) Error![]const u8 {
+        const ch = try client_hello.encodeWithHybridGroupsAndExtensions(
+            out,
+            random,
+            keypairs.x25519.public_key,
+            keypairs.p256.public_key,
+            if (keypairs.p384) |k| k.public_key else null,
+            host,
+            alpn,
+            &.{},
+            null,
+            extras,
+        );
+        try self.start(ch);
+        return ch;
+    }
+
+    /// Encode a resumption ClientHello: pre_shared_key last, binder computed
+    /// over the truncated prefix and patched in place (RFC 8446 §4.2.11.2).
+    /// `out` must hold the whole message.
+    pub fn startEncodedWithPsk(
+        self: *Client,
+        out: []u8,
+        random: Random,
+        keypairs: KeyPairs,
+        host: ?[]const u8,
+        alpn: []const []const u8,
+        psk: []const u8,
+        identity: []const u8,
+        obfuscated_ticket_age: u32,
+    ) Error![]const u8 {
+        const suite = self.psk_suite orelse .aes_128_gcm_sha256;
+        const result = try client_hello.encodeWithPskAndHybridGroups(
+            out,
+            random,
+            keypairs.x25519.public_key,
+            keypairs.p256.public_key,
+            if (keypairs.p384) |k| k.public_key else null,
+            host,
+            alpn,
+            &.{},
+            null,
+            .psk_dhe_ke,
+            identity,
+            obfuscated_ticket_age,
+            switch (suite) {
+                .aes_256_gcm_sha384 => 48,
+                else => 32,
+            },
+            false,
+            &.{},
+        );
+        const msg = result.msg;
+
+        // The binder covers the message truncated before the binders vector,
+        // computed with the PSK's own suite hash.
+        switch (suite) {
+            .aes_256_gcm_sha384 => {
+                const key = pskBinderKey(hkdf.HkdfSha384, psk);
+                var th: hkdf.HkdfSha384.TranscriptHash = undefined;
+                backend.sha2.Sha384.hash(msg[0..result.prefix_len], &th.data, .{});
+                const binder = binderFor(hkdf.HkdfSha384, key, &th.data);
+                @memcpy(msg[result.binder_offset..][0..48], &binder);
+            },
+            else => {
+                const key = pskBinderKey(hkdf.HkdfSha256, psk);
+                var th: hkdf.HkdfSha256.TranscriptHash = undefined;
+                backend.sha2.Sha256.hash(msg[0..result.prefix_len], &th.data, .{});
+                const binder = binderFor(hkdf.HkdfSha256, key, &th.data);
+                @memcpy(msg[result.binder_offset..][0..32], &binder);
+            },
+        }
+
+        try self.start(msg);
+        return msg;
     }
 
     /// Accept a HelloRetryRequest at `.plaintext` and reset the transcript per
@@ -1911,4 +2017,75 @@ test "alerts: the core reports level and description, never bytes" {
     try testing.expectEqual(alert.Level.fatal, out.alert.level);
     try testing.expectEqual(alert.Description.unexpected_message, out.alert.description);
     try testing.expectEqual(alert.Description.unexpected_message, client.lastAlert().?.description);
+}
+
+const binder_psk = [_]u8{
+    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+    0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+};
+
+fn binderLookup(ctx: *anyopaque, identity: []const u8) ?[]const u8 {
+    _ = ctx;
+    if (identity.len != 4) return null;
+    return binder_psk[0..];
+}
+
+// The core encodes the offer, and the core's own verifier accepts it. That is
+// the seam B was pulled for: one builder in the tree, and the binder patched by
+// the same code that checks it.
+test "psk offer: encoded by the core, accepted by the core's verifier" {
+    var keypairs: KeyPairs = try .init(try .generateDeterministic(.init(@splat(0x91))));
+    keypairs.p256 = try .generateDeterministic(.init(@splat(0x92)));
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var slots: [16]level.Output = undefined;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    client.psk_suite = .aes_128_gcm_sha256;
+
+    var buf: [1024]u8 = undefined;
+    const ch = try client.startEncodedWithPsk(
+        &buf,
+        .zero,
+        keypairs,
+        null,
+        &.{},
+        &binder_psk,
+        "tkt1",
+        0,
+    );
+    // The offered message parses, and its binder verifies against the PSK.
+    const selected = try selectPsk(
+        hkdf.HkdfSha256,
+        backend.sha2.Sha256,
+        ch,
+        .{ .context = undefined, .lookup = binderLookup },
+    );
+    try testing.expect(selected != null);
+    try testing.expectEqual(@as(u16, 0), selected.?.index);
+    try testing.expectEqualSlices(u8, &binder_psk, selected.?.psk);
+}
+
+test "startEncoded: the core encodes what it then absorbs" {
+    var keypairs: KeyPairs = try .init(try .generateDeterministic(.init(@splat(0x93))));
+    keypairs.p256 = try .generateDeterministic(.init(@splat(0x94)));
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var slots: [16]level.Output = undefined;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+
+    var buf: [1024]u8 = undefined;
+    const ch = try client.startEncoded(&buf, .zero, keypairs, null, &.{}, &.{});
+    // The ClientHello is the queued output, and it parses as a ClientHello.
+    const out = client.next().?;
+    try testing.expectEqual(level.Level.plaintext, out.message.level);
+    try testing.expectEqualSlices(u8, ch, out.message.bytes);
+    _ = try client_hello.parse(ch);
 }
