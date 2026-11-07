@@ -14,8 +14,15 @@ if ! command -v just >/dev/null 2>&1; then
     exit 1
 fi
 
+# The gate writes to a file, not to git's pipes: a child that inherits one of
+# them and writes after git closes it dies of SIGPIPE, and the push fails with
+# exit 141 even though the gate passed.
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
 echo "pre-push: running just ci (the full gate)" >&2
-if ! just ci; then
-    echo "pre-push: just ci failed; push refused" >&2
+if ! just ci >"$log" 2>&1; then
+    echo "pre-push: just ci failed; push refused. Last lines:" >&2
+    tail -40 "$log" >&2
     exit 1
 fi
+echo "pre-push: just ci passed" >&2
