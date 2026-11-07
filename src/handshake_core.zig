@@ -150,6 +150,7 @@ pub const Error = error{
     signature.SignError || aead.Error ||
     server_hello.HrrParseError || client_hello.RetryEncodeError ||
     alert.ParseError || NewSessionTicket.ParseError ||
+    NewSessionTicket.EncodeError ||
     error{
         AlpnProtocolTooLong,
         InvalidServerName,
@@ -688,7 +689,10 @@ pub const Client = struct {
                 // length-prefixed hash, so expand it directly.
                 var key: H.Keyed = .init(&arm.resumption_master.data);
                 defer key.secureZero();
-                H.expandLabelKeyed(out, "resumption", nonce, &key);
+                // Exactly Hash.length: the length field is part of the label
+                // encoding, so expanding into a longer buffer derives a
+                // different key rather than a longer one.
+                H.expandLabelKeyed(out[0..H.prk_len], "resumption", nonce, &key);
             },
         }
     }
@@ -1191,6 +1195,7 @@ pub const Server = struct {
                     },
                 }
                 self.suite.update(msg);
+                self.deriveResumptionMaster();
                 self.state = .connected;
             },
             .wait_client_hello,
@@ -1291,6 +1296,53 @@ pub const Server = struct {
         wait_client_finished,
         connected,
     };
+
+    /// RFC 8446 §7.5 - the resumption master secret over the transcript through
+    /// the client Finished, computed once the server has verified it.
+    fn deriveResumptionMaster(self: *Server) void {
+        switch (self.suite) {
+            .buffering => {},
+            inline .sha256, .sha384 => |*arm| {
+                const H = @TypeOf(arm.*).Hkdf;
+                const res_th: H.TranscriptHash = .init(arm.transcript.peek());
+                var master = H.masterSecret(arm.handshake_secret);
+                defer master.secureZero();
+                var master_key: H.Keyed = .init(&master.data);
+                defer master_key.secureZero();
+                arm.resumption_master = H.deriveSecretKeyed(&master_key, "res master", &res_th);
+                arm.resumption_master_valid = true;
+            },
+        }
+    }
+
+    /// Issue a NewSessionTicket at `.application` and return the PSK it
+    /// authorizes. The ticket bytes are the caller's; tls never interprets them.
+    /// RFC 8446 §4.6.1.
+    pub fn sendNewSessionTicket(
+        self: *Server,
+        ticket: NewSessionTicket,
+        out: []u8,
+    ) Error![]const u8 {
+        if (self.state != .connected) return error.UnexpectedMessage;
+        const msg = try NewSessionTicket.encode(out, ticket);
+        try self.queue.push(.{ .message = .{ .level = .application, .bytes = msg } });
+        return self.resumptionPsk(ticket.ticket_nonce, out[msg.len..]);
+    }
+
+    /// RFC 8446 §4.6.1 - the PSK for a ticket nonce, from the resumption master.
+    pub fn resumptionPsk(self: *const Server, nonce: []const u8, out: []u8) Error![]const u8 {
+        switch (self.suite) {
+            .buffering => return error.UnexpectedMessage,
+            inline .sha256, .sha384 => |*arm| {
+                if (!arm.resumption_master_valid) return error.UnexpectedMessage;
+                const H = @TypeOf(arm.*).Hkdf;
+                var key: H.Keyed = .init(&arm.resumption_master.data);
+                defer key.secureZero();
+                H.expandLabelKeyed(out[0..H.prk_len], "resumption", nonce, &key);
+                return out[0..H.prk_len];
+            },
+        }
+    }
 
     pub const TranscriptHash = Client.TranscriptHash;
 
@@ -2096,4 +2148,82 @@ test "startEncoded: the core encodes what it then absorbs" {
     try testing.expectEqual(level.Level.plaintext, out.message.level);
     try testing.expectEqualSlices(u8, ch, out.message.bytes);
     _ = try client_hello.parse(ch);
+}
+
+// Tickets, core to core: the server issues one after the handshake, the client
+// parses it, and both derive the same PSK from the same nonce. The ticket bytes
+// are opaque to tls; only the nonce and the resumption master matter.
+test "tickets: server issues one and both sides derive the same PSK" {
+    const server_hello_mod = server_hello;
+
+    var server_key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer server_key.deinit();
+
+    const share: x25519.KeyPair = try .generateDeterministic(.init(@splat(0xa1)));
+    const key_share: server_hello_mod.KeyShare = .{ .x25519 = share.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello_mod.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0xa2),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    const dhe = [_]u8{0x7c} ** 32;
+
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    try server.provide(.plaintext, &rfc8448_client_hello, .aes_128_gcm_sha256, sh, &dhe);
+    while (server.next()) |_| {}
+    var flight_buf: [2048]u8 = undefined;
+    try server.sendFlight(
+        .{ .chain = .{ .single = &fixtures.server_ecdsa_cert_der }, .signer = server_key.signer() },
+        null,
+        &flight_buf,
+    );
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+    try client.start(&rfc8448_client_hello);
+    _ = client.next().?;
+    try client.provide(.plaintext, sh, &dhe);
+    while (server.next()) |out| switch (out) {
+        .message => |m| try client.provideHandshake(.handshake, m.bytes),
+        else => {},
+    };
+
+    var fin_buf: [1024]u8 = undefined;
+    _ = try client.sendClientFinished(&fin_buf);
+    while (client.next()) |out| switch (out) {
+        .message => |m| try server.provideClientFlight(.handshake, m.bytes),
+        else => {},
+    };
+    try testing.expectEqual(Server.State.connected, server.state);
+    while (server.next()) |_| {}
+    while (client.next()) |_| {}
+
+    const nonce = [_]u8{ 0x00, 0x01 };
+    const ticket_bytes = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
+    var ticket_out: [256]u8 = undefined;
+    const server_psk = try server.sendNewSessionTicket(.{
+        .ticket_lifetime = 60,
+        .ticket_age_add = 7,
+        .ticket_nonce = &nonce,
+        .ticket = &ticket_bytes,
+    }, &ticket_out);
+
+    // The client receives the ticket message and derives the same PSK.
+    const nst = server.next().?.message;
+    try testing.expectEqual(level.Level.application, nst.level);
+    try client.provideApplication(.application, nst.bytes);
+    try testing.expect(client.lastTicket() != null);
+
+    var client_psk_buf: [48]u8 = undefined;
+    try client.resumptionPsk(&nonce, &client_psk_buf);
+    try testing.expectEqualSlices(u8, server_psk[0..32], client_psk_buf[0..32]);
 }
