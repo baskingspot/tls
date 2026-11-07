@@ -4,9 +4,10 @@
 # no subset of anything else.
 set -euo pipefail
 
-# git writes the ref list to this hook's stdin. Reading it fully keeps git from
-# taking SIGPIPE on a large push, which looks like the hook failing.
-cat >/dev/null
+# Detach stdin from git's pipe. The hook does not read the ref list, and a
+# downstream child that inherits a descriptor git has closed takes SIGPIPE - the
+# exit 141 that looks like the gate failing when the gate passed.
+exec </dev/null
 
 if ! command -v just >/dev/null 2>&1; then
     echo "pre-push: just is not on PATH; run inside the devshell" >&2
