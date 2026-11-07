@@ -86,21 +86,17 @@ in `src/compat.zig` inside a `// zig fmt: off` region, and every call site uses
 `compat.enumToInt`/`compat.enumFromInt`. Every other 0.17 difference in this
 tree is a shape probe (`@hasField`, `@hasDecl`) or a shim in the same file.
 
-`just ci` is the gate before a push. `just test` and `just integrations-ci` are
-subsets of it: the conformance subproject has its own call sites, so neither
-compiles anything under `conformance/`. A public signature change can pass both
-and still break the push. `.githooks/pre-push` enforces this: enable it once per
-checkout with `git config core.hooksPath .githooks`. `integrations-ci` and
+`just ci` is the gate before a push, run by CI and by hand. `just test` and
+`just integrations-ci` are subsets of it: the conformance subproject has its
+own call sites, so neither compiles anything under `conformance/`. A public
+signature change can pass both and still break the push. `integrations-ci` and
 `distribution-ci` run as their own jobs in the `zig-old` shell: libxev only
 builds on 0.16, and the distribution smoke tests the minimum supported Zig.
 
-That hook runs the gate with its output redirected to a temp file, and starts
-with `exec </dev/null`. Both are load-bearing. A child of `just ci` that writes
-to a descriptor git closed takes SIGPIPE and the push fails with 141 even though
-the gate passed; the temp file removes those descriptors from the picture. The
-tell is that adding `set -x` makes the failure disappear, which means descriptor
-lifetime, not the gate. If the hook breaks, unset `core.hooksPath` so it is
-visibly off; never push with `--no-verify`.
+There is no pre-push hook, deliberately. A local hook that runs the full gate
+duplicates CI, blocks the push for as long as the gate takes, and in practice
+leaves the SSH session to GitHub idle long enough that GitHub hangs up before
+the pack is sent. Do not add one.
 
 Derivations: the length in a TLS HKDF label is part of the encoding, not a
 buffer size. Expanding into a differently sized buffer derives a *different
