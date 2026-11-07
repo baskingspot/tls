@@ -79,6 +79,14 @@ compiles anything under `conformance/`. A public signature change can pass both
 and still break the push. `.githooks/pre-push` enforces this: enable it once per
 checkout with `git config core.hooksPath .githooks`.
 
+That hook runs the gate with its output redirected to a temp file, and starts
+with `exec </dev/null`. Both are load-bearing. A child of `just ci` that writes
+to a descriptor git closed takes SIGPIPE and the push fails with 141 even though
+the gate passed; the temp file removes those descriptors from the picture. The
+tell is that adding `set -x` makes the failure disappear, which means descriptor
+lifetime, not the gate. If the hook breaks, unset `core.hooksPath` so it is
+visibly off; never push with `--no-verify`.
+
 ---
 
 ## Project State and Continuity
