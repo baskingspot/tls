@@ -284,6 +284,26 @@ interop suite. Nobody has to move in lockstep, because nobody's API changes.
 The alternative in §6 is what this replaces: six to eight weeks with the
 consumer migration inside the critical path.
 
+### 5.5 The client adapter, scoped
+
+`ClientHandshake.zig` is about 5,800 lines and exposes 40 public declarations.
+Making it an adapter over the core means replacing its state machine and key
+schedule with the core's while every signature, error set, and observable
+behaviour stays put, and re-proving the record output against the wire goldens at
+`65681ba`. That is days of work, not one commit, and it is the part of the
+extraction with the least margin for error.
+
+Order: the three calls the goldens pin byte for byte come first - `start`,
+`startWithPsk`, `clientFinished` - each as its own commit with the goldens green.
+
+The staging constraint found while starting it: those three cannot be delegated
+one at a time while the engine keeps its own transcript. `start` absorbs the
+ClientHello, `startWithPsk` absorbs a different one, and `clientFinished` absorbs
+the client Finished; a core call that absorbs while the engine also absorbs gives
+two transcripts, which is the duplication the extraction exists to delete. The
+adapter therefore swaps transcript and key-schedule ownership first, as one
+commit per role, and the method-level delegations follow inside that.
+
 ## 6. The lockstep alternative
 
 Kept only so the difference is on the record. Here the new type is built by
