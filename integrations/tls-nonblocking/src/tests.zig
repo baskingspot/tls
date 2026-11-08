@@ -982,3 +982,89 @@ test "server transport: close_notify is not closed" {
     try testing.expectEqual(Server.Event.closed, try w.serverEvent());
     try testing.expectEqual(@as(usize, 4), try w.server.write("pong"));
 }
+
+// std's Bundle.parseCert walks a certificate with unchecked reads, so a short
+// or truncated DER panics in Debug and reads out of bounds in ReleaseFast.
+// Caller-supplied PEM reaches it, so the outer TLV is rejected first. Each case
+// below panicked through the loader before the guard existed.
+test "anchors: structurally invalid DER is an error, not a crash" {
+    const short_sequence = [_]u8{ 0x30, 0x03, 0x02, 0x01, 0x01 };
+    const one_byte = [_]u8{0x30};
+    const no_body: [0]u8 = .{};
+    const length_past_end = [_]u8{ 0x30, 0x84, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00 };
+    const not_a_sequence = [_]u8{ 0x02, 0x01, 0x00 };
+    const cases = [_][]const u8{
+        &short_sequence,
+        &one_byte,
+        &no_body,
+        &length_past_end,
+        &not_a_sequence,
+    };
+    for (cases) |der| {
+        var pem_buf: [128]u8 = undefined;
+        const pem = try encodePem(&pem_buf, der);
+        var bundle: Certificate.Bundle = .empty;
+        defer bundle.deinit(testing.allocator);
+        try testing.expectError(error.InvalidCertificateDer, anchors.addCertsFromPemBytes(
+            &bundle,
+            testing.allocator,
+            pem,
+            anchor_time,
+        ));
+        try testing.expectEqual(@as(usize, 0), bundle.bytes.items.len);
+    }
+}
+
+test "anchors: trailing bytes after the certificate are rejected" {
+    var pem_buf: [32768]u8 = undefined;
+    var der_buf: [8192]u8 = undefined;
+    const der_len = fixtures.key_capacity_root_der.len;
+    @memcpy(der_buf[0..der_len], &fixtures.key_capacity_root_der);
+    der_buf[der_len] = 0x00;
+    const pem = try encodePem(&pem_buf, der_buf[0 .. der_len + 1]);
+
+    var bundle: Certificate.Bundle = .empty;
+    defer bundle.deinit(testing.allocator);
+    try testing.expectError(error.InvalidCertificateDer, anchors.addCertsFromPemBytes(
+        &bundle,
+        testing.allocator,
+        pem,
+        anchor_time,
+    ));
+}
+
+// The guard is the only thing between caller bytes and std's unchecked parser,
+// so pin it with random input rather than three crafted cases. Before the guard
+// this panicked on the first short block; with it removed, it panics here.
+test "anchors: random DER never panics" {
+    var prng: std.Random.DefaultPrng = .init(0x5eed);
+    const random = prng.random();
+    var der_buf: [96]u8 = undefined;
+    var pem_buf: [256]u8 = undefined;
+
+    for (0..4_000) |_| {
+        const len = random.uintLessThan(usize, der_buf.len + 1);
+        random.bytes(der_buf[0..len]);
+        // Bias toward the shape that reaches std's parser: a SEQUENCE prefix.
+        if (len >= 2 and random.boolean()) {
+            der_buf[0] = 0x30;
+            der_buf[1] = @intCast(len - 2);
+        }
+        const pem = try encodePem(&pem_buf, der_buf[0..len]);
+
+        var bundle: Certificate.Bundle = .empty;
+        defer bundle.deinit(testing.allocator);
+        _ = anchors.addCertsFromPemBytes(
+            &bundle,
+            testing.allocator,
+            pem,
+            anchor_time,
+        ) catch |err| {
+            try testing.expect(err == error.InvalidCertificateDer);
+            try testing.expectEqual(@as(usize, 0), bundle.bytes.items.len);
+            continue;
+        };
+        // A structurally valid certificate would have to parse, not panic.
+        try testing.expectEqual(@as(usize, 0), bundle.bytes.items.len);
+    }
+}

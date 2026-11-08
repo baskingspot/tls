@@ -17,7 +17,93 @@ pub const Error = Certificate.Bundle.ParseCertError || error{
     MissingEndCertificateMarker,
     /// A certificate body that is not valid base64.
     InvalidPemBase64,
+    /// The decoded bytes are not one DER SEQUENCE that fills the block.
+    InvalidCertificateDer,
 };
+
+/// A DER certificate is a single SEQUENCE that fills the whole buffer.
+///
+/// `std.crypto.Certificate.Bundle.parseCert` walks the certificate with
+/// unchecked reads: `der.Element.parse` indexes `bytes[i]` and `bytes[i + 1]`
+/// past the end of a short or truncated block. In Debug that is a panic; in
+/// ReleaseFast it is an out-of-bounds read. The whole buffer is checked here,
+/// before std sees it, so caller-supplied PEM cannot reach that path.
+fn validCertificateDer(der: []const u8) bool {
+    const outer = derElement(der, 0) orelse return false;
+    if (outer.tag != 0x30 or outer.end != der.len) return false;
+
+    // Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm,
+    // signatureValue }. Requiring all three rejects a bare nested SEQUENCE.
+    var seen: u8 = 0;
+    var tbs_children: u8 = 0;
+    var i = outer.body;
+    while (i < outer.end) {
+        const child = derElement(der, i) orelse return false;
+        if (child.end > outer.end) return false;
+        if (seen == 0) {
+            if (child.tag != 0x30) return false;
+            tbs_children = countChildren(der, child);
+            // version, serialNumber, signature, issuer, validity, subject,
+            // subjectPublicKeyInfo are the first seven std reads.
+            if (tbs_children < 6) return false;
+        }
+        seen += 1;
+        i = child.end;
+    }
+    return seen == 3;
+}
+
+const DerElement = struct { tag: u8, body: usize, end: usize };
+
+/// Parse one TLV at `index`, rejecting anything that does not fit. Children of
+/// a constructed element are checked too, up to a fixed depth.
+fn derElement(bytes: []const u8, index: usize) ?DerElement {
+    return derElementDepth(bytes, index, 8);
+}
+
+fn derElementDepth(bytes: []const u8, index: usize, depth: u8) ?DerElement {
+    if (depth == 0) return null;
+    if (index + 2 > bytes.len) return null;
+    const tag = bytes[index];
+    const first = bytes[index + 1];
+    var body = index + 2;
+    var length: usize = 0;
+    if (first < 0x80) {
+        length = first;
+    } else {
+        const count: usize = first & 0x7f;
+        // Indefinite length, or a length field wider than any real certificate.
+        if (count == 0 or count > 4) return null;
+        if (body + count > bytes.len) return null;
+        for (bytes[body..][0..count]) |byte| length = (length << 8) | byte;
+        // Non-minimal long form is malformed DER.
+        if (length < 0x80) return null;
+        body += count;
+    }
+    const end = std.math.add(usize, body, length) catch return null;
+    if (end > bytes.len) return null;
+    if (tag & 0x20 != 0) {
+        var i = body;
+        while (i < end) {
+            const child = derElementDepth(bytes, i, depth - 1) orelse return null;
+            if (child.end > end) return null;
+            i = child.end;
+        }
+    }
+    return .{ .tag = tag, .body = body, .end = end };
+}
+
+fn countChildren(bytes: []const u8, parent: DerElement) u8 {
+    var count: u8 = 0;
+    var i = parent.body;
+    while (i < parent.end) {
+        const child = derElement(bytes, i) orelse return 0;
+        if (child.end > parent.end) return 0;
+        count +|= 1;
+        i = child.end;
+    }
+    return count;
+}
 
 /// Add every PEM CERTIFICATE block in `pem` to `bundle` and return how many
 /// anchors the bundle gained. Nothing touches the filesystem.
@@ -67,6 +153,10 @@ pub fn addCertsFromPemBytes(
             // every decode failure means the body was not valid base64.
             return error.InvalidPemBase64;
         bundle.bytes.items.len += written;
+        if (!validCertificateDer(bundle.bytes.items[start..][0..written])) {
+            bundle.bytes.items.len = start;
+            return error.InvalidCertificateDer;
+        }
         bundle.parseCert(gpa, start, now_sec) catch |err| {
             bundle.bytes.items.len = start;
             return err;
