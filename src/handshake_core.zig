@@ -144,6 +144,8 @@ pub const Error = error{
     CertificateKeyTooLarge,
     /// The server asked for a client certificate and the client sent none.
     ClientCertificateRequired,
+    /// A server configured with ALPN found no overlap with the client.
+    NoApplicationProtocol,
 } || server_hello.ParseError || certificate.VerifyError ||
     certificate.ParseError || certificate.EncodeError ||
     finished.VerifyError || encrypted_extensions.ParseError ||
@@ -176,6 +178,10 @@ pub const Client = struct {
     /// transcript requires it. Required at construction: there is no default,
     /// so no caller can compile a handshake that verifies nothing by omission.
     policy: certificate.Policy,
+    /// ALPN protocols offered, in preference order. Borrowed from the caller.
+    alpn: []const []const u8,
+    /// The protocol the server selected, borrowed from the EE message.
+    selected_alpn: ?[]const u8,
     /// The extensions this client offered, which the EncryptedExtensions
     /// parser uses to reject anything the peer was not entitled to send.
     /// RFC 8446 §4.2.
@@ -274,6 +280,8 @@ pub const Client = struct {
             .ticket = null,
             .ku_response = undefined,
             .psk_suite = null,
+            .alpn = &.{},
+            .selected_alpn = null,
             .early_secret = undefined,
             .early_len = 0,
             .post_handshake_count = 0,
@@ -367,9 +375,10 @@ pub const Client = struct {
             .start, .wait_server_hello, .wait_client_hello2 => return error.UnexpectedMessage,
             .server_hello_done, .wait_encrypted_extensions => {
                 if (msg_type != .encrypted_extensions) return error.UnexpectedMessage;
-                _ = try encrypted_extensions.parse(msg, &.{}, .{
+                const ee = try encrypted_extensions.parse(msg, self.alpn, .{
                     .offered_extensions = self.offered,
                 });
+                self.selected_alpn = ee.alpn_protocol;
                 self.suite.update(msg);
                 self.state = .wait_certificate;
             },
@@ -500,6 +509,18 @@ pub const Client = struct {
 
         try self.start(msg);
         return msg;
+    }
+
+    /// Record the ALPN protocols this client will offer. Call before encoding
+    /// the ClientHello; the encoder reads the same list.
+    pub fn offerAlpn(self: *Client, protocols: []const []const u8) void {
+        self.alpn = protocols;
+    }
+
+    /// The protocol the server selected, or null when ALPN was not offered or
+    /// not negotiated. RFC 7301 §3.2.
+    pub fn selectedAlpn(self: *const Client) ?[]const u8 {
+        return self.selected_alpn;
     }
 
     /// Accept a HelloRetryRequest at `.plaintext` and reset the transcript per
@@ -1056,6 +1077,10 @@ pub const Server = struct {
     /// Policy for a client certificate. Null means the server never asks for
     /// one, so a client Certificate is unexpected.
     client_policy: ?certificate.Policy,
+    /// ALPN protocols this server supports, in server preference order.
+    alpn: []const []const u8,
+    /// The protocol selected for this connection.
+    selected_alpn: ?[]const u8,
     /// The client early traffic secret, when 0-RTT was admitted.
     early_secret: [48]u8,
     early_len: u8,
@@ -1075,6 +1100,8 @@ pub const Server = struct {
         return .{
             .suite = .init(),
             .queue = .init(slots),
+            .alpn = &.{},
+            .selected_alpn = null,
             .state = .wait_client_hello,
             .client_policy = null,
             .client_pub_key = undefined,
@@ -1134,7 +1161,20 @@ pub const Server = struct {
         };
         self.suite.update(client_hello_msg);
         self.ch1_hash = self.transcriptHash();
+        try self.selectAlpn(client_hello_msg);
         self.state = .ch_absorbed;
+    }
+
+    /// Record the ALPN protocols this server supports, in its own preference
+    /// order. Call before `provideClientHello`.
+    pub fn supportAlpn(self: *Server, protocols: []const []const u8) void {
+        self.alpn = protocols;
+    }
+
+    /// The protocol selected for this connection, or null when the client
+    /// offered nothing this server supports. RFC 7301 §3.2.
+    pub fn selectedAlpn(self: *const Server) ?[]const u8 {
+        return self.selected_alpn;
     }
 
     /// RFC 8446 §4.2.10 - admit 0-RTT for a PSK the caller already verified with
@@ -1163,6 +1203,35 @@ pub const Server = struct {
     pub fn earlySecret(self: *const Server) ?[]const u8 {
         if (self.early_len == 0) return null;
         return self.early_secret[0..self.early_len];
+    }
+
+    /// RFC 7301 §3.2 - pick the first server-preference protocol the client
+    /// offered. A server configured with a list that overlaps nothing fails the
+    /// handshake rather than negotiating none.
+    fn selectAlpn(self: *Server, client_hello_msg: []const u8) Error!void {
+        if (self.alpn.len == 0) return;
+        const parsed = client_hello.parse(client_hello_msg) catch return error.UnexpectedMessage;
+        // The parser already strips the outer list length: this is the
+        // ProtocolNameList body, one length-prefixed name per entry.
+        const list = parsed.alpn_protocols;
+        if (list.len == 0) return error.NoApplicationProtocol;
+
+        var best: ?usize = null;
+        var off: usize = 0;
+        while (off < list.len) {
+            const plen = list[off];
+            if (plen == 0 or off + 1 + plen > list.len) return error.NoApplicationProtocol;
+            const proto = list[off + 1 ..][0..plen];
+            for (self.alpn, 0..) |supported, index| {
+                if (std.mem.eql(u8, supported, proto)) {
+                    if (best == null or index < best.?) best = index;
+                }
+            }
+            off += 1 + plen;
+        }
+        const chosen = best orelse return error.NoApplicationProtocol;
+        // Store the server's configured slice; it outlives the handshake.
+        self.selected_alpn = self.alpn[chosen];
     }
 
     /// Emit a HelloRetryRequest at `.plaintext` for `selected_group`, replacing
@@ -1336,7 +1405,11 @@ pub const Server = struct {
         // Each message gets its own bytes in `out`: the queue borrows, so they
         // cannot share a start offset.
         var pos: usize = 0;
-        const ee = try encrypted_extensions.encode(out[pos..], alpn, false);
+        const ee = try encrypted_extensions.encode(
+            out[pos..],
+            alpn orelse self.selected_alpn,
+            false,
+        );
         try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = ee } });
         pos += ee.len;
         self.suite.update(ee);
@@ -2511,5 +2584,92 @@ test "early data: skipping EndOfEarlyData is refused" {
     try testing.expectError(
         error.UnexpectedMessage,
         server.provideClientFlight(.handshake, &bogus_fin),
+    );
+}
+
+// RFC 7301 §3.2 - the server picks by its own preference and the client learns
+// the answer from EncryptedExtensions; a configured server that overlaps
+// nothing fails rather than negotiating none.
+test "alpn: server preference wins and both roles see the selection" {
+    var keypairs: KeyPairs = try .init(try .generateDeterministic(.init(@splat(0xe1))));
+    keypairs.p256 = try .generateDeterministic(.init(@splat(0xe2)));
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+    client.offerAlpn(&.{ "h2", "http/1.1" });
+
+    var ch_buf: [1024]u8 = undefined;
+    const ch = try client.startEncoded(
+        &ch_buf,
+        .zero,
+        keypairs,
+        null,
+        &.{ "h2", "http/1.1" },
+        &.{},
+    );
+    _ = client.next().?;
+
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    // Server preference puts http/1.1 first even though the client prefers h2.
+    server.supportAlpn(&.{ "http/1.1", "h2" });
+    try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+    try testing.expectEqualStrings("http/1.1", server.selectedAlpn().?);
+
+    // The selection reaches the client through EncryptedExtensions.
+    const share: x25519.KeyPair = try .generateDeterministic(.init(@splat(0xe3)));
+    const key_share: server_hello.KeyShare = .{ .x25519 = share.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0xe4),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    const dhe: [32]u8 = @splat(0x7f);
+    try server.provideServerHello(.plaintext, sh, &dhe);
+    while (server.next()) |_| {}
+    var server_key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer server_key.deinit();
+    var flight_buf: [2048]u8 = undefined;
+    try server.sendFlight(
+        .{ .chain = .{ .single = &fixtures.server_ecdsa_cert_der }, .signer = server_key.signer() },
+        null,
+        &flight_buf,
+    );
+
+    try client.provide(.plaintext, sh, &dhe);
+    const ee = server.next().?.message;
+    try client.provideHandshake(.handshake, ee.bytes);
+    try testing.expectEqualStrings("http/1.1", client.selectedAlpn().?);
+}
+
+test "alpn: a server with no overlap refuses the handshake" {
+    var keypairs: KeyPairs = try .init(try .generateDeterministic(.init(@splat(0xe5))));
+    keypairs.p256 = try .generateDeterministic(.init(@splat(0xe6)));
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+    var ch_buf: [1024]u8 = undefined;
+    const ch = try client.startEncoded(&ch_buf, .zero, keypairs, null, &.{"h2"}, &.{});
+    _ = client.next().?;
+
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    server.supportAlpn(&.{"acme"});
+    try testing.expectError(
+        error.NoApplicationProtocol,
+        server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256),
     );
 }
