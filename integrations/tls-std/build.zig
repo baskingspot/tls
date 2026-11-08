@@ -1,5 +1,15 @@
 const std = @import("std");
 
+/// `b.args` (removed in Zig 0.17) and `Run.addPassthruArgs` are the same
+/// feature on either side of the split. Probe the build API, not the version.
+fn passthruArgs(b: *std.Build, run: *std.Build.Step.Run) void {
+    if (comptime @hasDecl(std.Build.Step.Run, "addPassthruArgs")) {
+        run.addPassthruArgs();
+    } else if (b.args) |args| {
+        run.addArgs(args);
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -75,7 +85,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    passthruArgs(b, run_cmd);
 
     // Examples: runnable programs that exercise the higher-order tls-std
     // API (Client.connect / Server.accept / Stream.reader / writer). Each is
@@ -118,7 +128,7 @@ pub fn build(b: *std.Build) void {
             .root_module = exe_mod,
         });
         const run = b.addRunArtifact(example_exe);
-        if (b.args) |args| run.addArgs(args);
+        passthruArgs(b, run);
         const step = b.step(
             b.fmt("example-{s}", .{name}),
             b.fmt("Run {s} example", .{name}),

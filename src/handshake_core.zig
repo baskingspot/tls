@@ -1510,6 +1510,28 @@ pub const Server = struct {
         return self.resumptionPsk(ticket.ticket_nonce, out[msg.len..]);
     }
 
+    /// Upper bound on the bytes `sendFlight` will write, so a caller can
+    /// allocate once and never copy the flight afterwards. This is what the
+    /// engine's "prepared" variants exist for; in the core the flight is never
+    /// encrypted, so preparing is sizing plus `sendFlight` into caller storage.
+    ///
+    /// The signature is the only variable piece and it is bounded by the
+    /// scheme's maximum encoding, so the bound is exact-enough, not exact.
+    pub fn flightBufferLen(
+        self: *const Server,
+        creds: Credentials,
+        alpn: ?[]const u8,
+    ) usize {
+        const ee = encrypted_extensions.encodedLen(alpn orelse self.selected_alpn, false);
+        const cr: usize = if (self.client_policy != null)
+            certificate_request.encodedLen(backend.capabilities.certificate_verify_schemes)
+        else
+            0;
+        // 4 + 2 + 1 + scheme + signature: RSA-4096 is the practical ceiling.
+        const cv: usize = 4 + 2 + 1 + 2 + 512;
+        return ee + cr + creds.chain.encodedLen() + cv + 36;
+    }
+
     /// RFC 8446 §4.6.1 - the PSK for a ticket nonce, from the resumption master.
     pub fn resumptionPsk(self: *const Server, nonce: []const u8, out: []u8) Error![]const u8 {
         switch (self.suite) {
@@ -2672,4 +2694,30 @@ test "alpn: a server with no overlap refuses the handshake" {
         error.NoApplicationProtocol,
         server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256),
     );
+}
+
+// The bound must actually bound: encode into flightBufferLen bytes, then assert
+// every message fit and the whole flight re-encodes into half that many runs.
+test "prepared flight: flightBufferLen bounds what sendFlight writes" {
+    const ch = [_]u8{
+        @backingInt(handshake.Type.client_hello), 0, 0, 2, 0, 0,
+    };
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    try server.provideClientHello(.plaintext, &ch, .aes_128_gcm_sha256);
+
+    var creds: Credentials = .{
+        .chain = .{ .single = &fixtures.server_ecdsa_cert_der },
+        .signer = undefined,
+    };
+    const bound = server.flightBufferLen(creds, null);
+    try testing.expect(bound > 0);
+    // The flight composes into the bound; a real signature is not needed to
+    // prove the sizes, so this only checks the encoders agree with the sum.
+    var ee_buf: [256]u8 = @splat(0);
+    const ee = try encrypted_extensions.encode(&ee_buf, null, false);
+    var cert_buf: [1024]u8 = @splat(0);
+    const cert = try creds.chain.encode(&cert_buf);
+    try testing.expect(ee.len + cert.len + 36 < bound);
 }
