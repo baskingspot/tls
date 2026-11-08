@@ -2700,7 +2700,7 @@ test "alpn: a server with no overlap refuses the handshake" {
 // every message fit and the whole flight re-encodes into half that many runs.
 test "prepared flight: flightBufferLen bounds what sendFlight writes" {
     const ch = [_]u8{
-        @backingInt(handshake.Type.client_hello), 0, 0, 2, 0, 0,
+        compat.enumToInt(handshake.Type.client_hello), 0, 0, 2, 0, 0,
     };
     var server_slots: [16]level.Output = undefined;
     var server: Server = .init(&server_slots);
