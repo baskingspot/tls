@@ -733,3 +733,41 @@ test "anchors: no markers, a truncated block, and bad base64" {
         anchor_time,
     ));
 }
+
+// A failure on a later block must not invalidate the anchors added before it.
+// The error path truncates only the block that failed, and that block never got
+// a map entry. Rolling the whole buffer back instead would leave the map
+// pointing past the end of `bytes`, which the next lookup slices.
+test "anchors: a failed block leaves earlier anchors usable" {
+    var pem_buf: [24576]u8 = undefined;
+    var bad: [128]u8 = undefined;
+    const good = try encodePem(&pem_buf, &fixtures.key_capacity_root_der);
+    // Base64 decodes cleanly; the DER is not a certificate, so the failure lands
+    // in parseCert rather than in the decoder.
+    const garbage_der = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
+    const garbage = try encodePem(&bad, &garbage_der);
+
+    var combined: [32768]u8 = undefined;
+    @memcpy(combined[0..good.len], good);
+    @memcpy(combined[good.len..][0..garbage.len], garbage);
+    const pem = combined[0 .. good.len + garbage.len];
+
+    var bundle: Certificate.Bundle = .empty;
+    defer bundle.deinit(testing.allocator);
+    if (anchors.addCertsFromPemBytes(&bundle, testing.allocator, pem, anchor_time)) |_| {
+        return error.TestUnexpectedResult;
+    } else |_| {}
+    try testing.expectEqual(fixtures.key_capacity_root_der.len, bundle.bytes.items.len);
+
+    var msg_buf: [4096]u8 = undefined;
+    const msg = try tls.certificate.encode(&msg_buf, &.{
+        &fixtures.key_capacity_leaf_der,
+        &fixtures.key_capacity_root_der,
+    });
+    var policy: tls.certificate.Policy = .init;
+    policy.bundle = &bundle;
+    policy.host_name = "capacity.test";
+    policy.now_sec = anchor_time;
+    const public_key = try tls.certificate.parse(msg, policy);
+    try testing.expect(public_key.len > 0);
+}

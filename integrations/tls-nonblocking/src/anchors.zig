@@ -28,6 +28,11 @@ pub const Error = Certificate.Bundle.ParseCertError || error{
 /// configured one anchor and got zero back should say so loudly instead of
 /// debugging the verification failure that follows.
 ///
+/// Not atomic: a failure on a later block leaves the anchors added before it in
+/// `bundle`. Do not undo that by truncating `bundle.bytes`, because `Bundle.map`
+/// stores offsets into those bytes and a lookup then slices past the end. To
+/// discard the set, drop the bundle.
+///
 /// `pem` is caller-owned and may hold more than one block. `bundle.deinit(gpa)`
 /// still owns the bundle's storage.
 ///
