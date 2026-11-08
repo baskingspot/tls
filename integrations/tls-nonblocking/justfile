@@ -24,7 +24,7 @@ fmt:
 [group("check")]
 lint:
     zig fmt --check build.zig build.zig.zon src/ examples/
-    ziglint build.zig src/ examples/
+    ziglint-0-16 build.zig src/ examples/
     rc=0; for rule in ../../rules/std-alias-*.yml; do ast-grep scan --custom-languages allow --rule "$rule" src examples --globs '*.zig' --report-style short || rc=1; done; exit $rc
     ast-grep scan --custom-languages allow --rule ../../rules/no-tls-owned-allocations.yml src/Server.zig --report-style short
     just --fmt --check

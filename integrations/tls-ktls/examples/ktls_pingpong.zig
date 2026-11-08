@@ -1,4 +1,16 @@
 const std = @import("std");
+
+// Zig 0.17's `zig fmt` rewrites the enum builtins into `@backingInt` forms
+// that Zig 0.16 cannot compile. This example has its own copy of the two
+// shims because a separate module for the same file is rejected by the build.
+// zig fmt: off
+fn enumToInt(e: anytype) @typeInfo(@TypeOf(e)).@"enum".tag_type {
+    return @intFromEnum(e);
+}
+fn enumFromInt(comptime E: type, raw: anytype) E {
+    return @enumFromInt(raw);
+}
+// zig fmt: on
 const testing = std.testing;
 const posix = std.posix;
 const Io = std.Io;
@@ -44,7 +56,7 @@ const ServerContext = struct {
     keypair: tls.x25519.KeyPair,
     suite: tls.CipherSuite,
     scenario: Scenario,
-    capability: std.atomic.Value(u8) = .init(@intFromEnum(Capability.unknown)),
+    capability: std.atomic.Value(u8) = .init(enumToInt(Capability.unknown)),
     activation_gate: Io.Semaphore = .{},
     outcome: Outcome = .running,
 };
@@ -292,7 +304,8 @@ fn runServer(context: *ServerContext) !void {
         }
         try sendServerApplication(stream, &handshake, &out, "");
         try sendServerApplication(stream, &handshake, &out, "pong");
-        const client_capability: Capability = @enumFromInt(
+        const client_capability: Capability = enumFromInt(
+            Capability,
             context.capability.load(.acquire),
         );
         if (client_capability == .unsupported) {
@@ -379,7 +392,7 @@ fn runServer(context: *ServerContext) !void {
         .supported => .supported,
         .unsupported => .unsupported,
     };
-    context.capability.store(@intFromEnum(capability), .release);
+    context.capability.store(enumToInt(capability), .release);
     context.activation_gate.post(context.io);
 
     var short_read_buffer: [tls.frame.max_plaintext_len - 1]u8 = undefined;
@@ -512,7 +525,7 @@ fn runClient(
                 .supported => .supported,
                 .unsupported => .unsupported,
             };
-            context.capability.store(@intFromEnum(capability_value), .release);
+            context.capability.store(enumToInt(capability_value), .release);
         }
         var receive_buf: [tls.frame.max_plaintext_len]u8 = undefined;
         try readExact(&connection, receive_buf[0..4]);
@@ -563,7 +576,7 @@ fn runClient(
     if (scenario == .abrupt_client) return;
     if (scenario == .fragmented_key_update) {
         const fragment = [_]u8{
-            @intFromEnum(tls.ClientHandshake.HandshakeType.key_update),
+            enumToInt(tls.ClientHandshake.HandshakeType.key_update),
             0,
         };
         const wire = try handshake.tx.encrypt(.handshake, &fragment, &out.buffer);
@@ -572,7 +585,8 @@ fn runClient(
         return;
     }
 
-    const active_capability: Capability = @enumFromInt(
+    const active_capability: Capability = enumFromInt(
+        Capability,
         context.capability.load(.acquire),
     );
     if (active_capability == .unknown) return error.MissingCapabilitySignal;

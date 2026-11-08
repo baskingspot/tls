@@ -154,8 +154,13 @@ flake-check N="20":
 integrations-ci:
     just integrations/tls-nonblocking/ci
     just integrations/tls-std/ci
-    just integrations/tls-xev/ci
     if [ "$(uname -s)" = Linux ]; then just integrations/tls-ktls/ci; else echo "tls-ktls: Linux-only, skipped"; fi
+
+# The libxev pin builds on 0.16 only, so this integration has its own lane.
+[doc("Run the libxev integration gate (Zig 0.16 only)")]
+[group("check")]
+integrations-xev-ci:
+    just integrations/tls-xev/ci
 
 [doc("Compile core and integration modules as an isolated fetched package")]
 [group("check")]

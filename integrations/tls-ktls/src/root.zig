@@ -7,6 +7,7 @@
 //! calling record-layer methods on the borrowed handshake can desynchronize the
 //! kernel epochs. Every socket read uses `read` so control metadata is preserved.
 const std = @import("std");
+const compat = @import("compat.zig");
 const testing = std.testing;
 const builtin = @import("builtin");
 const posix = std.posix;
@@ -86,7 +87,7 @@ pub fn Connection(comptime Handshake: type) type {
         fd: posix.socket_t,
         handshake: *Handshake,
         rekey_support: RekeySupport,
-        state: std.EnumSet(StateFlag) = .initEmpty(),
+        state: std.EnumSet(StateFlag) = .empty,
 
         /// Atomically crosses the userspace/kernel record-layer boundary.
         /// The socket remains caller-owned. If installation partially succeeds,
@@ -229,7 +230,7 @@ pub fn Connection(comptime Handshake: type) type {
 
                 if (content_type == .handshake and content.len < 5 and
                     content.len != 0 and
-                    content[0] == @intFromEnum(tls.ClientHandshake.HandshakeType.key_update))
+                    content[0] == compat.enumToInt(tls.ClientHandshake.HandshakeType.key_update))
                 {
                     self.sendFailureAlert(.unexpected_message);
                     return self.fail(error.FragmentedKeyUpdate);
@@ -280,8 +281,8 @@ pub fn Connection(comptime Handshake: type) type {
             if (self.state.contains(.failed)) return error.Closed;
             if (self.state.contains(.tx_closed)) return;
             const close_notify = [_]u8{
-                @intFromEnum(tls.alert.Level.warning),
-                @intFromEnum(tls.alert.Description.close_notify),
+                compat.enumToInt(tls.alert.Level.warning),
+                compat.enumToInt(tls.alert.Description.close_notify),
             };
             self.sendControl(.alert, &close_notify) catch |err| {
                 self.poison();
@@ -344,11 +345,11 @@ pub fn Connection(comptime Handshake: type) type {
             request: KeyUpdateRequest,
         ) UpdateError!void {
             const update_msg = [_]u8{
-                @intFromEnum(tls.ClientHandshake.HandshakeType.key_update),
+                compat.enumToInt(tls.ClientHandshake.HandshakeType.key_update),
                 0,
                 0,
                 1,
-                @intFromEnum(request),
+                compat.enumToInt(request),
             };
             self.sendControl(.handshake, &update_msg) catch |err| {
                 if (err == error.WouldBlock or err == error.InterruptedTooOften) return err;
@@ -383,7 +384,7 @@ pub fn Connection(comptime Handshake: type) type {
             while (interruptions < 16) : (interruptions += 1) {
                 return sys.sendControl(
                     self.fd,
-                    @intFromEnum(content_type),
+                    compat.enumToInt(content_type),
                     bytes,
                 ) catch |err| {
                     if (err == error.Interrupted) continue;
@@ -396,8 +397,8 @@ pub fn Connection(comptime Handshake: type) type {
         fn sendFailureAlert(self: *Self, description: tls.alert.Description) void {
             if (self.state.contains(.tx_closed) or self.state.contains(.failed)) return;
             const msg = [_]u8{
-                @intFromEnum(tls.alert.Level.fatal),
-                @intFromEnum(description),
+                compat.enumToInt(tls.alert.Level.fatal),
+                compat.enumToInt(description),
             };
             self.sendControl(.alert, &msg) catch return;
         }
@@ -425,7 +426,7 @@ fn recordContentType(
         if (received.len == 0) return error.Truncated;
         return error.InvalidControlMessage;
     };
-    return @enumFromInt(raw);
+    return compat.enumFromInt(tls.frame.ContentType, raw);
 }
 
 fn installInfo(
@@ -476,7 +477,7 @@ test "received bytes require kTLS record metadata" {
         tls.frame.ContentType.application_data,
         try recordContentType(.{
             .len = 0,
-            .content_type = @intFromEnum(tls.frame.ContentType.application_data),
+            .content_type = compat.enumToInt(tls.frame.ContentType.application_data),
         }),
     );
 }

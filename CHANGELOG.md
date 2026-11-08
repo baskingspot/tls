@@ -12,6 +12,7 @@ All notable changes to tls are recorded here. The format follows
   release-mode suites on whichever compiler the shell carries, and CI runs the
   full gate on 0.17 plus `just check` on 0.16 (#174). The minimum supported Zig
   is still 0.16.
+- `tls_std`, `tls_nonblocking`, and `tls_ktls` build and test on Zig 0.17 as well as 0.16. `tls_xev` stays 0.16 because its pinned libxev commit does not implement the 0.17 `std.Io` vtable.
 - `alert.alertForError` returns `?Description` and maps `error.PeerAlert` to null. The peer already sent its own alert, so answering it with another alert — previously `internal_error` — blamed the wrong side (RFC 8446 §6.2). Integrations drop their `PeerAlert` special case.
 
 ### Added

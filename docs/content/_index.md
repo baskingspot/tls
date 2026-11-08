@@ -45,10 +45,10 @@ choose:
 | Module     | Requirement                                      |
 | ---------- | ------------------------------------------------ |
 | `tls`      | Zig 0.16 and 0.17                                |
-| `tls_std`  | Zig 0.16                                         |
-| `tls_nonblocking` | Zig 0.16, caller-driven server transport |
+| `tls_std`  | Zig 0.16 and 0.17                                |
+| `tls_nonblocking` | Zig 0.16 and 0.17, caller-driven server transport |
 | `tls_xev`  | Zig 0.16 and the dependency option `.xev = true` |
-| `tls_ktls` | Zig 0.16 on Linux                                |
+| `tls_ktls` | Zig 0.16 and 0.17 on Linux                       |
 
 A libxev consumer opts in when resolving the dependency, so a core-only consumer
 does not fetch libxev:
@@ -74,7 +74,7 @@ To start from running code, these examples are built and run in CI:
 - [`examples/tcp_loopback.zig`](https://github.com/baskingspot/tls/blob/main/examples/tcp_loopback.zig): client and server over `std.net.Stream` on loopback.
 - [`examples/epoll_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/examples/epoll_pingpong.zig): non-blocking Linux epoll client/server ping-pong.
 - [`examples/iouring_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/examples/iouring_pingpong.zig): Linux io_uring client/server ping-pong.
-- [`integrations/tls-ktls/examples/ktls_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/examples/ktls_pingpong.zig): Zig 0.16/Linux userspace handshake followed by kernel TX/RX, live KeyUpdate, and explicit close alerts.
+- [`integrations/tls-ktls/examples/ktls_pingpong.zig`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/examples/ktls_pingpong.zig): Linux userspace handshake followed by kernel TX/RX, live KeyUpdate, and explicit close alerts.
 
 Run them from the devshell:
 
@@ -86,7 +86,7 @@ just integrations/tls-ktls/ci
 
 `nix develop .#aws-lc` selects AWS-LC headers and libraries. `nix develop .#boringssl` selects BoringSSL. The compiler infers the backend family from those headers. The default shell selects OpenSSL.
 
-`just examples-ci` builds and runs the core paths. The Zig 0.16 integration gate runs the packaged examples and tests. When this page and the examples disagree, the examples are right.
+`just examples-ci` builds and runs the core paths. The integration gate runs the packaged examples and tests. When this page and the examples disagree, the examples are right.
 
 # Why this exists
 
@@ -728,7 +728,7 @@ The module requires no libxev opt-in.
 
 After the handshake is connected, `txKtlsInfo()` and `rxKtlsInfo()` return copied Linux kTLS key material for the current traffic-key epoch. `tx` is the local write direction; `rx` is the peer write direction. The core still does no socket I/O and does not call `setsockopt`.
 
-The Zig 0.16/Linux [`integrations/tls-ktls`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/README.md) package owns the safe activation and data-plane lifecycle. It requires an empty `RecordBuffer`, no pending engine write, no unanswered KeyUpdate request, and an application-level barrier preventing the peer from racing a new record into the socket during activation; keeps key snapshots internal to immediate `setsockopt` calls; receives control-record metadata with `recvmsg`; processes kernel-decrypted records through `receiveKtlsRecord`; ratchets external TX records through `ratchetKtlsTx`; and sends `close_notify` explicitly. Use that package instead of open-coding the sequence from the raw getters.
+The Linux [`integrations/tls-ktls`](https://github.com/baskingspot/tls/blob/main/integrations/tls-ktls/README.md) package owns the safe activation and data-plane lifecycle. It requires an empty `RecordBuffer`, no pending engine write, no unanswered KeyUpdate request, and an application-level barrier preventing the peer from racing a new record into the socket during activation; keeps key snapshots internal to immediate `setsockopt` calls; receives control-record metadata with `recvmsg`; processes kernel-decrypted records through `receiveKtlsRecord`; ratchets external TX records through `ratchetKtlsTx`; and sends `close_notify` explicitly. Use that package instead of open-coding the sequence from the raw getters.
 
 The raw exports remain available for specialized integrations. They are immediate-use snapshots: retaining one across any record operation, or reinstalling stale sequence/key material, can cause epoch desynchronization or nonce reuse.
 

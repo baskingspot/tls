@@ -89,9 +89,10 @@ tree is a shape probe (`@hasField`, `@hasDecl`) or a shim in the same file.
 `just ci` is the gate before a push, run by CI and by hand. `just test` and
 `just integrations-ci` are subsets of it: the conformance subproject has its
 own call sites, so neither compiles anything under `conformance/`. A public
-signature change can pass both and still break the push. `integrations-ci` and
-`distribution-ci` run as their own jobs in the `zig-old` shell: libxev only
-builds on 0.16, and the distribution smoke tests the minimum supported Zig.
+signature change can pass both and still break the push. `integrations-xev-ci`
+and `distribution-ci` run as their own jobs in the `zig-old` shell: libxev only
+builds on 0.16, and the distribution smoke tests the minimum supported Zig. The
+other three integrations build on both.
 
 There is no pre-push hook, deliberately. A local hook that runs the full gate
 duplicates CI, blocks the push for as long as the gate takes, and in practice

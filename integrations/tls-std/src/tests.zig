@@ -32,6 +32,10 @@ fn testIo() Io {
     return testing.io;
 }
 
+/// Zig 0.17 replaced `VTable.netRead`/`netWrite` with `Io.operate`. The
+/// harness intercepts the same two calls through whichever surface exists.
+const direct_stream_io = @hasField(Io.VTable, "netRead");
+
 /// Wrap a raw fd as a `net.Stream`. The address is unused by the read/write
 /// vtable hooks tls-std drives.
 fn streamFor(fd: posix.fd_t) net.Stream {
@@ -481,7 +485,7 @@ fn blockingNetWrite(
         .acquire,
     ) == null) {
         abort_write_harness.entered.open();
-        abort_write_harness.aborted.wait() catch return error.Unexpected;
+        abort_write_harness.aborted.wait() catch return error.Canceled;
         return error.SocketUnconnected;
     }
     return testIo().vtable.netWrite(userdata, handle, header, data, splat);
@@ -499,6 +503,57 @@ fn blockingNetShutdown(
     }, .release);
     abort_write_harness.aborted.open();
     return testIo().vtable.netShutdown(userdata, handle, how);
+}
+
+/// 0.17 form of `tearingNetWrite`: intercept the net_write operation.
+fn tearingOperate(
+    _: ?*anyopaque,
+    operation: Io.Operation,
+) Io.Cancelable!Io.Operation.Result {
+    switch (operation) {
+        .net_write => |write| {
+            switch (tear_write_state) {
+                .idle => {},
+                .armed => {
+                    assert(write.header.len == 0);
+                    assert(write.data.len == 1);
+                    assert(write.splat == 1);
+                    assert(write.data[0].len > 7);
+                    tear_write_state = .fail;
+                    return .{ .net_write = 7 };
+                },
+                .fail => {
+                    tear_write_state = .idle;
+                    return .{ .net_write = error.SocketUnconnected };
+                },
+            }
+        },
+        else => {},
+    }
+    return testIo().operate(operation);
+}
+
+/// 0.17 form of `blockingNetWrite`: hold the net_write until abort wakes it.
+fn blockingOperate(
+    _: ?*anyopaque,
+    operation: Io.Operation,
+) Io.Cancelable!Io.Operation.Result {
+    switch (operation) {
+        .net_write => {
+            if (abort_write_harness.state.cmpxchgStrong(
+                .armed,
+                .blocked,
+                .acq_rel,
+                .acquire,
+            ) == null) {
+                abort_write_harness.entered.open();
+                abort_write_harness.aborted.wait() catch return error.Canceled;
+                return .{ .net_write = error.SocketUnconnected };
+            }
+        },
+        else => {},
+    }
+    return testIo().operate(operation);
 }
 
 fn waitState(conn: *const tls.Client, mask: u8) !void {
@@ -949,7 +1004,11 @@ test "split halves: KeyUpdate response precedes concurrent close_notify" {
 test "split halves: torn TX poisons later writes" {
     const base_io = testIo();
     var vtable = base_io.vtable.*;
-    vtable.netWrite = tearingNetWrite;
+    if (comptime direct_stream_io) {
+        vtable.netWrite = tearingNetWrite;
+    } else {
+        vtable.operate = tearingOperate;
+    }
     const io: Io = .{ .userdata = base_io.userdata, .vtable = &vtable };
     const fds = try socketPair();
     defer _ = std.c.close(fds[0]);
@@ -1024,8 +1083,15 @@ test "split halves: abort wakes blocked read before teardown" {
 test "split halves: abort wakes blocked write before teardown" {
     const base_io = testIo();
     var vtable = base_io.vtable.*;
-    vtable.netWrite = blockingNetWrite;
-    vtable.netShutdown = blockingNetShutdown;
+    if (comptime direct_stream_io) {
+        vtable.netWrite = blockingNetWrite;
+        vtable.netShutdown = blockingNetShutdown;
+    } else {
+        vtable.operate = blockingOperate;
+        // `netShutdown` is still a vtable hook on 0.17; abort reaches the
+        // transport through it, which is what wakes the blocked write.
+        vtable.netShutdown = blockingNetShutdown;
+    }
     const io: Io = .{ .userdata = base_io.userdata, .vtable = &vtable };
     const fds = try socketPair();
     defer _ = std.c.close(fds[0]);

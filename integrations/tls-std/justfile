@@ -41,11 +41,11 @@ lint: lint-zig lint-just
 fmt-zig:
     zig fmt build.zig src/ examples/
 
-[doc("Lint Zig code (fmt, ziglint, and the workspace std-alias rules)")]
+[doc("Lint Zig code (fmt, ziglint-0-16 against the minimum std, and the workspace std-alias rules)")]
 [group("check")]
 lint-zig:
     zig fmt --check build.zig src/ examples/
-    ziglint build.zig src/ examples/
+    ziglint-0-16 build.zig src/ examples/
     rc=0; for rule in ../../rules/std-alias-*.yml; do ast-grep scan --rule "$rule" src examples --globs '*.zig' --report-style short || rc=1; done; exit $rc
 
 [doc("Format Justfile")]

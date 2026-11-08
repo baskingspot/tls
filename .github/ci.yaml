@@ -14,10 +14,13 @@ jobs:
   # conformance needs a Python/TLS-Anvil stack that has never been exercised
   # on macOS.
   #
-  # Both recipes run in `zig-old`: the distribution smoke tests the minimum
-  # supported Zig by design, and integrations/tls-xev pins a libxev commit
-  # that only builds on 0.16.
+  # The three integrations that build on both Zig versions run on the default
+  # shell. libxev pins a commit that only builds on 0.16, so its integration
+  # and the distribution smoke (which tests the minimum supported Zig by
+  # design) stay in `zig-old`.
   - recipe: integrations-ci
+    runners: [ubuntu-26.04, macos-26]
+  - recipe: integrations-xev-ci
     shell: zig-old
     runners: [ubuntu-26.04, macos-26]
   - recipe: distribution-ci

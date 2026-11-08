@@ -104,8 +104,14 @@ pub fn build(b: *std.Build) void {
         .{ .name = "tls_client" },
         .{ .name = "zio_client", .needs_zio = true, .has_tests = false },
     };
+    // zio v0.19.1 implements the 0.16 `std.Io` vtable and lacks the 0.17
+    // operations (`processReplacePath`, `net_send`), so that one example
+    // builds on 0.16 until zio publishes a 0.17 release. tls_std itself is
+    // version-neutral; only the runtime is not.
+    const zio_supported = @hasDecl(std.Io.VTable, "netRead");
     var example_test_runs: [examples.len]?*std.Build.Step.Run = @splat(null);
     for (examples, &example_test_runs) |example, *test_run| {
+        if (example.needs_zio and !zio_supported) continue;
         const name = example.name;
         const exe_mod = b.createModule(.{
             .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),

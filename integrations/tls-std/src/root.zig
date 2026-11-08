@@ -21,6 +21,7 @@
 //! Call `abort()` to wake blocked halves. Join both tasks before `close()` or
 //! `deinit()` tears down the socket and secret storage.
 const std = @import("std");
+const compat = @import("compat.zig");
 const assert = std.debug.assert;
 const Io = std.Io;
 const net = Io.net;
@@ -268,15 +269,28 @@ pub const Info = struct {
 // Transport helpers
 // ───────────────────────────────
 
-// `Io` has no unbuffered stream read/write on `net.Stream` itself; the vtable
-// hooks below are what `std.Io.net.Stream.Reader`/`Writer` call internally.
-// Going straight to them keeps the record buffer as the only staging layer
-// instead of copying through a second one.
+// `Io` has no unbuffered stream read/write on `net.Stream` itself; the hooks
+// below are what `std.Io.net.Stream.Reader`/`Writer` call internally. Going
+// straight to them keeps the record buffer as the only staging layer instead of
+// copying through a second one.
+//
+// Zig 0.17 removed `VTable.netRead`/`netWrite`; the same two calls are
+// `Io.operate` operations there. Probe the API, not the version.
+const direct_stream_io = @hasField(Io.VTable, "netRead");
 
 /// Read from a net.Stream into buf. Returns 0 on transport EOF.
 fn transportRead(io: Io, handle: net.Socket.Handle, buf: []u8) net.Stream.Reader.Error!usize {
     var data: [1][]u8 = .{buf};
-    return io.vtable.netRead(io.userdata, handle, &data);
+    if (comptime direct_stream_io) {
+        return io.vtable.netRead(io.userdata, handle, &data);
+    } else {
+        const result = try io.operate(.{ .net_read = .{
+            .socket_handle = handle,
+            .data = &data,
+        } });
+        const read = try result.net_read;
+        return read.data_len;
+    }
 }
 
 /// Write all bytes to a net.Stream, looping on partial writes.
@@ -288,7 +302,17 @@ fn transportWriteAll(
     var rest = bytes;
     while (rest.len != 0) {
         const data: [1][]const u8 = .{rest};
-        const n = try io.vtable.netWrite(io.userdata, handle, "", &data, 1);
+        const n = if (comptime direct_stream_io)
+            try io.vtable.netWrite(io.userdata, handle, "", &data, 1)
+        else blk: {
+            const result = try io.operate(.{ .net_write = .{
+                .socket_handle = handle,
+                .header = "",
+                .data = &data,
+                .splat = 1,
+            } });
+            break :blk try result.net_write;
+        };
         rest = rest[n..];
     }
 }
@@ -574,7 +598,7 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
         }
 
         fn flagMask(flag: Flag) u8 {
-            return @as(u8, 1) << @intFromEnum(flag);
+            return @as(u8, 1) << compat.enumToInt(flag);
         }
 
         fn hasFlag(s: *const Self, flag: Flag) bool {
