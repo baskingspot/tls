@@ -1068,3 +1068,29 @@ test "anchors: random DER never panics" {
         try testing.expectEqual(@as(usize, 0), bundle.bytes.items.len);
     }
 }
+
+// A blocking reader has a finite destination, so it takes a prefix and comes
+// back: a partial consume must keep the tail deliverable, with no copy on the
+// caller's side.
+test "server transport: partial consume keeps the tail" {
+    var w: Wire = undefined;
+    try w.init();
+    defer w.deinit();
+    try w.handshake();
+
+    try testing.expectEqual(@as(usize, 8), try w.client.write("abcdefgh"));
+    switch (try w.serverEvent()) {
+        .application_data => |bytes| {
+            try testing.expectEqualStrings("abcdefgh", bytes);
+            w.server.consumeApplication(3);
+        },
+        else => return error.UnexpectedServerEvent,
+    }
+    switch (try w.server.next()) {
+        .application_data => |bytes| {
+            try testing.expectEqualStrings("defgh", bytes);
+            w.server.consumeApplication(bytes.len);
+        },
+        else => return error.UnexpectedServerEvent,
+    }
+}
