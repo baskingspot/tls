@@ -25,7 +25,7 @@ fn resetTranscriptForHrr(suite: *suite_state.Suite, ch1_hash: []const u8, hrr: [
             const hlen = Hash.digest_length;
             arm.transcript = Hash.init(.{});
             var prefix: [4 + 48]u8 = undefined;
-            prefix[0] = @intCast(compat.enumToInt(handshake.Type.message_hash));
+            prefix[0] = compat.enumToInt(handshake.Type.message_hash);
             prefix[1] = 0;
             prefix[2] = 0;
             prefix[3] = @intCast(hlen);
@@ -580,6 +580,18 @@ pub const Client = struct {
         return ch2;
     }
 
+    /// Emit EndOfEarlyData at `.early`. Required before the Finished when the
+    /// server accepted 0-RTT (RFC 8446 §4.5); a server that declined it would
+    /// see this as an unexpected message.
+    pub fn sendEndOfEarlyData(self: *Client, out: []u8) Error![]const u8 {
+        if (self.state != .server_finished_verified) return error.UnexpectedMessage;
+        const msg = [_]u8{ compat.enumToInt(handshake.Type.end_of_early_data), 0, 0, 0 };
+        @memcpy(out[0..4], &msg);
+        self.suite.update(out[0..4]);
+        try self.queue.push(.{ .message = .{ .level = .early, .bytes = out[0..4] } });
+        return out[0..4];
+    }
+
     /// Produce the client Finished as a bare handshake message, derive the
     /// application traffic secrets from the transcript through the server
     /// Finished, and move both directions to `.application`. RFC 8446 §4.4.4,
@@ -751,11 +763,11 @@ pub const Client = struct {
         out: []u8,
     ) Error![]const u8 {
         if (self.state != .connected) return error.UnexpectedMessage;
-        out[0] = @intCast(compat.enumToInt(handshake.Type.key_update));
+        out[0] = compat.enumToInt(handshake.Type.key_update);
         out[1] = 0;
         out[2] = 0;
         out[3] = 1;
-        out[4] = @intCast(compat.enumToInt(request));
+        out[4] = compat.enumToInt(request);
         const msg = out[0..5];
         try self.queue.push(.{ .message = .{ .level = .application, .bytes = msg } });
         // The ratchet is the point; the layer it hands back is the adapter's
@@ -1044,6 +1056,13 @@ pub const Server = struct {
     /// Policy for a client certificate. Null means the server never asks for
     /// one, so a client Certificate is unexpected.
     client_policy: ?certificate.Policy,
+    /// The client early traffic secret, when 0-RTT was admitted.
+    early_secret: [48]u8,
+    early_len: u8,
+    /// True when this connection admitted early data from an offered PSK.
+    early_accepted: bool,
+    /// True once the client's EndOfEarlyData has been absorbed.
+    end_of_early_data_received: bool,
     /// The client leaf public key, retained between its Certificate and
     /// CertificateVerify.
     client_pub_key: [1024]u8,
@@ -1062,6 +1081,10 @@ pub const Server = struct {
             .client_pub_key_len = 0,
             .ch1_hash = .init(),
             .hrr_sent = false,
+            .early_secret = undefined,
+            .early_len = 0,
+            .early_accepted = false,
+            .end_of_early_data_received = false,
         };
     }
 
@@ -1112,6 +1135,34 @@ pub const Server = struct {
         self.suite.update(client_hello_msg);
         self.ch1_hash = self.transcriptHash();
         self.state = .ch_absorbed;
+    }
+
+    /// RFC 8446 §4.2.10 - admit 0-RTT for a PSK the caller already verified with
+    /// `selectPsk`, derive the client early secret over the ClientHello, and
+    /// announce the early keys. The caller decides replay policy; the core only
+    /// derives and enforces the message order.
+    pub fn admitEarlyData(self: *Server, psk: []const u8) Error!void {
+        if (self.state != .ch_absorbed) return error.UnexpectedMessage;
+        switch (self.suite) {
+            .buffering => return error.UnexpectedMessage,
+            inline .sha256, .sha384 => |*arm| {
+                const H = @TypeOf(arm.*).Hkdf;
+                const early = H.pskEarlySecret(psk);
+                const th: H.TranscriptHash = .init(arm.transcript.peek());
+                const secret = H.clientEarlyTrafficSecret(early, &th);
+                const len = H.prk_len;
+                @memcpy(self.early_secret[0..len], secret.data[0..len]);
+                self.early_len = len;
+            },
+        }
+        self.early_accepted = true;
+        try self.queue.push(.{ .key_available = .early });
+    }
+
+    /// The admitted early traffic secret, if 0-RTT was accepted.
+    pub fn earlySecret(self: *const Server) ?[]const u8 {
+        if (self.early_len == 0) return null;
+        return self.early_secret[0..self.early_len];
     }
 
     /// Emit a HelloRetryRequest at `.plaintext` for `selected_group`, replacing
@@ -1182,6 +1233,19 @@ pub const Server = struct {
 
         switch (self.state) {
             .flight_sent => {
+                // RFC 8446 §4.5 - a client that sent 0-RTT MUST send
+                // EndOfEarlyData before its Finished, at the early level.
+                if (self.early_accepted) {
+                    if (msg_type != .end_of_early_data) return error.UnexpectedMessage;
+                    try level.check(.end_of_early_data, provided);
+                    self.suite.update(msg);
+                    self.end_of_early_data_received = true;
+                    self.state = if (self.client_policy != null)
+                        .wait_client_certificate
+                    else
+                        .wait_client_finished;
+                    return;
+                }
                 self.state = if (self.client_policy != null)
                     .wait_client_certificate
                 else
@@ -2315,4 +2379,137 @@ test "early data: the client early secret matches RFC 8448 §4" {
     const out = client.next().?;
     try testing.expectEqual(level.Level.early, out.key_available);
     try testing.expectEqualSlices(u8, &rfc8448_early_secret, client.earlySecret().?);
+}
+
+// Server-side 0-RTT: the same client early secret, derived from the same
+// ClientHello, and the EndOfEarlyData rule enforced on the receive side.
+test "early data: the server derives the same early secret, and demands EndOfEarlyData" {
+    const server_hello_mod = server_hello;
+
+    var keypairs: KeyPairs = try .init(try .generateDeterministic(.init(@splat(0xc1))));
+    keypairs.p256 = try .generateDeterministic(.init(@splat(0xc2)));
+
+    const psk: [32]u8 = @splat(0x42);
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+    client.psk_suite = .aes_128_gcm_sha256;
+
+    var ch_buf: [1024]u8 = undefined;
+    const ch = try client.startEncoded(&ch_buf, .zero, keypairs, null, &.{}, &.{});
+    _ = client.next().?;
+    try client.offerEarlyData(&psk);
+
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+    try server.admitEarlyData(&psk);
+
+    // Both sides derive the same early secret from the same transcript.
+    try testing.expectEqualSlices(u8, client.earlySecret().?, server.earlySecret().?);
+
+    // Build the server flight and have the client verify it.
+    const share: x25519.KeyPair = try .generateDeterministic(.init(@splat(0xc3)));
+    const key_share: server_hello_mod.KeyShare = .{ .x25519 = share.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello_mod.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0xc4),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    const dhe: [32]u8 = @splat(0x7d);
+    try server.provideServerHello(.plaintext, sh, &dhe);
+    while (server.next()) |_| {}
+    var server_key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer server_key.deinit();
+    var flight_buf: [2048]u8 = undefined;
+    try server.sendFlight(
+        .{ .chain = .{ .single = &fixtures.server_ecdsa_cert_der }, .signer = server_key.signer() },
+        null,
+        &flight_buf,
+    );
+
+    try client.provide(.plaintext, sh, &dhe);
+    while (server.next()) |out| switch (out) {
+        .message => |m| try client.provideHandshake(.handshake, m.bytes),
+        else => {},
+    };
+
+    // The client must send EndOfEarlyData before Finished; skipping it fails.
+    var eo_buf: [8]u8 = undefined;
+    const eoed = try client.sendEndOfEarlyData(&eo_buf);
+    try testing.expectEqual(@as(u8, compat.enumToInt(handshake.Type.end_of_early_data)), eoed[0]);
+
+    var fin_buf: [1024]u8 = undefined;
+    _ = try client.sendClientFinished(&fin_buf);
+    while (client.next()) |out| switch (out) {
+        .message => |m| try server.provideClientFlight(m.level, m.bytes),
+        else => {},
+    };
+    try testing.expect(server.end_of_early_data_received);
+    try testing.expectEqual(Server.State.connected, server.state);
+}
+
+// A client that skips EndOfEarlyData after 0-RTT was accepted is refused.
+test "early data: skipping EndOfEarlyData is refused" {
+    const psk: [32]u8 = @splat(0x42);
+    var keypairs: KeyPairs = try .init(try .generateDeterministic(.init(@splat(0xd1))));
+    keypairs.p256 = try .generateDeterministic(.init(@splat(0xd2)));
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+    var ch_buf: [1024]u8 = undefined;
+    const ch = try client.startEncoded(&ch_buf, .zero, keypairs, null, &.{}, &.{});
+    _ = client.next().?;
+
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+    try server.admitEarlyData(&psk);
+
+    // Move the server to `.flight_sent` by sending its flight.
+    const share: x25519.KeyPair = try .generateDeterministic(.init(@splat(0xd3)));
+    const key_share: server_hello.KeyShare = .{ .x25519 = share.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0xd4),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    const dhe: [32]u8 = @splat(0x7e);
+    try server.provideServerHello(.plaintext, sh, &dhe);
+    while (server.next()) |_| {}
+
+    var server_key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer server_key.deinit();
+    var flight_buf: [2048]u8 = undefined;
+    try server.sendFlight(
+        .{ .chain = .{ .single = &fixtures.server_ecdsa_cert_der }, .signer = server_key.signer() },
+        null,
+        &flight_buf,
+    );
+    try testing.expectEqual(Server.State.flight_sent, server.state);
+
+    // A Finished straight after the flight, with no EndOfEarlyData, is refused.
+    var bogus_fin: [36]u8 = @splat(0);
+    bogus_fin[0] = compat.enumToInt(handshake.Type.finished);
+    bogus_fin[3] = 32;
+    try testing.expectError(
+        error.UnexpectedMessage,
+        server.provideClientFlight(.handshake, &bogus_fin),
+    );
 }
