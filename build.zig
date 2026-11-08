@@ -224,6 +224,15 @@ pub fn build(b: *Build) void {
         capi_mod.addImport("stdx", stdx_dep.module("stdx"));
         capi_mod.link_libc = true;
 
+        // Zig 0.17's system-library search is paths-first and stops at the
+        // module's own library paths, so the C ABI build must name libcrypto's
+        // directory instead of relying on the implicit system sweep that 0.16
+        // performed. pkg-config is the source of truth in both shells.
+        const libdir_output = b.run(&.{ "pkg-config", "--variable=libdir", "libcrypto" });
+        const libdir = std.mem.trim(u8, libdir_output, " \t\r\n");
+        if (libdir.len == 0) panic("libcrypto pkg-config libdir is empty", .{});
+        capi_mod.addLibraryPath(.{ .cwd_relative = libdir });
+
         const crypto_cflags = b.run(&.{ "pkg-config", "--cflags-only-I", "libcrypto" });
         var include_flags = std.mem.tokenizeAny(u8, crypto_cflags, " \t\r\n");
         var include_count: usize = 0;

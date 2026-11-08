@@ -211,7 +211,16 @@ capi-ci:
         printf 'libbaskingspot_tls.a contains shared-object archive members:\n%s\n' "$shared_members" >&2
         exit 1
     fi
-    zig cc -o zig-out/c_client examples/c_client.c -I include -L "$libdir" -lbaskingspot_tls -lcrypto -lm
+    # Zig's bundled linker does not inherit the Nix wrapper's implicit -L flags,
+    # so libcrypto's directory is named explicitly. pkg-config is the source of
+    # truth in every shell, 0.16 and 0.17 alike.
+    crypto_libdir=$(pkg-config --variable=libdir libcrypto)
+    if [ -z "$crypto_libdir" ]; then
+        echo "pkg-config did not report libcrypto's libdir" >&2
+        exit 1
+    fi
+    zig cc -o zig-out/c_client examples/c_client.c -I include \
+        -L "$libdir" -L "$crypto_libdir" -lbaskingspot_tls -lcrypto -lm
     zig-out/c_client
 
 [doc("Run deterministic examples as TLS smoke tests")]
