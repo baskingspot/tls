@@ -105,6 +105,15 @@ mutable driver state. The caller sets deadlines and a per-turn work budget.
 `receiveBuffer()` means backpressure, not EOF. Do not retain a buffer slice across
 calls that advance its state.
 
+Never read from or write to the socket except through `receiveBuffer()` /
+`received(n)` and `sendBuffer()` / `sent(n)`. On an encrypted connection the fd
+carries ciphertext, so a read taken directly from the socket bypasses record
+framing: the next `next()` sees its bytes missing and a caller that parses the
+returned bytes reads a TLS record header as if it were protocol data. A deadline
+is the most common reason to reach for the fd, and it is the wrong reason. Set the
+socket nonblocking, wait for readiness with the deadline, and still move the bytes
+through these four calls.
+
 | Event | Caller action |
 | --- | --- |
 | `need_input` | Watch readability. Also watch writability if `sendBuffer()` is nonempty. |
