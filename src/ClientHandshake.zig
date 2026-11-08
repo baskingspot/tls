@@ -47,7 +47,9 @@ const handshake_key_pairs = @import("handshake_key_pairs.zig");
 const hybrid_kex = @import("hybrid_kex.zig");
 const traffic_secrets = @import("traffic_secrets.zig");
 const memx = @import("memx.zig");
-const NewSessionTicket = @import("NewSessionTicket.zig");
+/// Named so a caller can spell the type its `Event.new_session_ticket` arm
+/// carries. RFC 8446 §4.6.1.
+pub const NewSessionTicket = @import("NewSessionTicket.zig");
 const p256 = @import("p256.zig");
 const p384 = @import("p384.zig");
 const PendingWrite = @import("pending_write.zig").PendingWrite;

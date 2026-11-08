@@ -7,6 +7,17 @@ All notable changes to tls are recorded here. The format follows
 
 ### Added
 
+- `tls_nonblocking.Client`: a caller-driven TLS 1.3 client with the same shape
+  as `Server` — caller-owned buffers, one outbound record at a time, no
+  thread and no blocking call. Events are `need_input`, `need_output`,
+  `progress`, `handshake_complete`, `application_data`, `key_update`,
+  `new_session_ticket`, `close_notify`, and `closed`; `close_notify` stays
+  distinct from `closed` because RX can end while TX stays open (RFC 8446
+  §6.1). ALPN is reported, not enforced: a caller that requires `h2` checks
+  `selectedAlpn()` after `handshake_complete`. Trust anchors come from
+  `Options.ca` (Baskingspot issue #167).
+- `ClientHandshake.NewSessionTicket` is public, so a caller can name the type
+  its `new_session_ticket` event carries.
 - `tls_nonblocking.anchors.addCertsFromPemBytes` loads trust anchors from PEM
   bytes into a caller-owned `Certificate.Bundle`, so a client handed a CA in
   memory no longer needs a file on disk. It returns the number of anchors

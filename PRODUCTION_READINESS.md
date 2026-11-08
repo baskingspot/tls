@@ -32,6 +32,7 @@ commit because the branch moved.
 | Session resumption | Partial | The engine side is proven; persistence, expiry, rotation, replay, and SNI partitioning are yours |
 | 0-RTT early data | Partial | Offer, accept, and reject are proven; accept is gated on the RFC 8446 §4.2.10 exact-suite, ALPN, and first-identity checks; ticket-age and anti-replay policy are yours, and the engine default is off |
 | Caller-driven readiness server | Partial | `tls_nonblocking.Server` has byte-stream and OpenSSL tests on Linux. HTTP consumer acceptance with `h2spec` over TLS on Linux and macOS remains open (#167). |
+| Caller-driven readiness client | Partial | `tls_nonblocking.Client` has an in-memory handshake, ALPN, partial-write, and close_notify suite against `tls_nonblocking.Server`. No socket-level or third-party peer has exercised it yet, and no consumer wraps it (#167). |
 | kTLS | Proven | Linux only; key export and the kernel data plane |
 | C ABI | Partial | Client lifecycle only; see `include/baskingspot_tls.h` |
 | TLS 1.2, DTLS, Windows | Out of scope | Not coming |

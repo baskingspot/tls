@@ -771,3 +771,214 @@ test "anchors: a failed block leaves earlier anchors usable" {
     const public_key = try tls.certificate.parse(msg, policy);
     try testing.expect(public_key.len > 0);
 }
+
+// --- Client transport ------------------------------------------------------
+
+const TransportClient = @import("tls_nonblocking").Client;
+
+/// One client transport against one server transport, no socket in between.
+const Wire = struct {
+    client: TransportClient,
+    server: Server,
+    key: PrivateKey,
+    record: [tls.RecordBuffer.min_storage]u8,
+    out: [frame.max_wire_record_len]u8,
+    reassembly: [tls.ServerHandshake.ch_reassembly_buffer_size]u8,
+    client_record: [tls.RecordBuffer.min_storage]u8,
+    client_out: [frame.max_wire_record_len]u8,
+    client_reassembly: [tls.ClientHandshake.recommended_handshake_storage]u8,
+
+    fn init(self: *Wire) !void {
+        self.key = try .fromP256Scalar(scalar);
+        errdefer self.key.deinit();
+        try self.client.init(&.{
+            .insecure_no_chain_anchor = true,
+            .host_name = "ztls.server.test",
+            .now_sec = 1_790_000_000,
+            .alpn = &.{"h2"},
+        }, .{
+            .keypairs = try .init(.generate()),
+            .host_name = "ztls.server.test",
+            .now_sec = 1_790_000_000,
+            .random = .init(@splat(0x31)),
+            .alpn_protocols = &.{"h2"},
+            .reassembly = &self.client_reassembly,
+        }, .{ .record = &self.client_record, .out = &self.client_out });
+        errdefer self.client.deinit();
+        try self.server.init(&.{
+            .handshake = .{
+                .supported_suites = &.{.aes_128_gcm_sha256},
+                .alpn_protocols = &.{"h2"},
+            },
+            .cert_chain = &.{cert},
+            .signer = self.key.signer(),
+        }, .{
+            .keypairs = try .init(.generate()),
+            .random = .init(@splat(0x72)),
+            .reassembly = &self.reassembly,
+        }, .{ .record = &self.record, .out = &self.out });
+    }
+
+    fn deinit(self: *Wire) void {
+        self.server.deinit();
+        self.client.deinit();
+        self.key.deinit();
+        self.* = undefined;
+    }
+
+    /// Move every byte each transport is willing to hand over, one record at a time.
+    fn move(self: *Wire) void {
+        const cw = self.client.sendBuffer();
+        if (cw.len != 0) {
+            const dest = self.server.receiveBuffer();
+            const n = @min(cw.len, dest.len);
+            @memcpy(dest[0..n], cw[0..n]);
+            self.server.received(n);
+            self.client.sent(n);
+        }
+        const sw = self.server.sendBuffer();
+        if (sw.len != 0) {
+            const dest = self.client.receiveBuffer();
+            const n = @min(sw.len, dest.len);
+            @memcpy(dest[0..n], sw[0..n]);
+            self.client.received(n);
+            self.server.sent(n);
+        }
+    }
+
+    fn handshake(self: *Wire) !void {
+        var client_done = false;
+        var server_done = false;
+        for (0..10_000) |_| {
+            self.move();
+            if (!client_done) switch (try self.client.next()) {
+                .handshake_complete => client_done = true,
+                .need_input, .need_output, .progress => {},
+                else => return error.UnexpectedClientEvent,
+            };
+            if (!server_done) switch (try self.server.next()) {
+                .handshake_complete => server_done = true,
+                .need_input, .need_output, .progress => {},
+                else => return error.UnexpectedServerEvent,
+            };
+            if (client_done and server_done) return;
+        }
+        return error.HandshakeStuck;
+    }
+
+    fn clientEvent(self: *Wire) !TransportClient.Event {
+        for (0..10_000) |_| {
+            self.move();
+            switch (try self.client.next()) {
+                .need_input, .need_output, .progress => continue,
+                else => |event| return event,
+            }
+        }
+        return error.ClientStuck;
+    }
+
+    fn serverEvent(self: *Wire) !Server.Event {
+        for (0..10_000) |_| {
+            self.move();
+            switch (try self.server.next()) {
+                .need_input, .need_output, .progress => continue,
+                else => |event| return event,
+            }
+        }
+        return error.ServerStuck;
+    }
+};
+
+// RFC 8446 §4.4.4, §3.1 — a caller-driven client completes the handshake with
+// the caller-driven server and both report the ALPN protocol.
+test "client transport: handshake completes and reports ALPN" {
+    var w: Wire = undefined;
+    try w.init();
+    defer w.deinit();
+    try w.handshake();
+    try testing.expect(w.client.isConnected());
+    try testing.expect(w.server.isConnected());
+    try testing.expectEqualStrings("h2", w.client.selectedAlpn().?);
+    try testing.expectEqualStrings("h2", w.server.selectedAlpn().?);
+}
+
+// RFC 8446 §5.1 — application records cross in both directions once connected.
+test "client transport: one message each way" {
+    var w: Wire = undefined;
+    try w.init();
+    defer w.deinit();
+    try w.handshake();
+
+    try testing.expectEqual(@as(usize, 4), try w.client.write("ping"));
+    switch (try w.serverEvent()) {
+        .application_data => |bytes| {
+            try testing.expectEqualStrings("ping", bytes);
+            w.server.consumeApplication(bytes.len);
+        },
+        else => return error.UnexpectedServerEvent,
+    }
+
+    try testing.expectEqual(@as(usize, 4), try w.server.write("pong"));
+    switch (try w.clientEvent()) {
+        .application_data => |bytes| {
+            try testing.expectEqualStrings("pong", bytes);
+            w.client.consumeApplication(bytes.len);
+        },
+        else => return error.UnexpectedClientEvent,
+    }
+}
+
+// A partial write is normal: the caller acks bytes the socket accepted.
+test "client transport: accepts a one-byte-at-a-time drain" {
+    var w: Wire = undefined;
+    try w.init();
+    defer w.deinit();
+    try w.handshake();
+
+    try testing.expectEqual(@as(usize, 4), try w.client.write("ping"));
+    while (w.client.sendBuffer().len != 0) {
+        const before = w.client.sendBuffer().len;
+        const dest = w.server.receiveBuffer();
+        @memcpy(dest[0..1], w.client.sendBuffer()[0..1]);
+        w.server.received(1);
+        w.client.sent(1);
+        try testing.expectEqual(before - 1, w.client.sendBuffer().len);
+    }
+    switch (try w.serverEvent()) {
+        .application_data => |bytes| try testing.expectEqualStrings("ping", bytes),
+        else => return error.UnexpectedServerEvent,
+    }
+}
+
+// RFC 8446 §6.1 — close_notify ends RX only; the peer can still send, and the
+// two events stay distinguishable at the client transport.
+test "client transport: close_notify is not closed" {
+    var w: Wire = undefined;
+    try w.init();
+    defer w.deinit();
+    try w.handshake();
+
+    try w.server.closeWrite();
+    try testing.expectEqual(TransportClient.Event.close_notify, try w.clientEvent());
+    try testing.expectEqual(TransportClient.Event.closed, try w.clientEvent());
+    // The client's TX is still open after its RX ended.
+    try testing.expectEqual(@as(usize, 4), try w.client.write("ping"));
+    switch (try w.serverEvent()) {
+        .application_data => |bytes| try testing.expectEqualStrings("ping", bytes),
+        else => return error.UnexpectedServerEvent,
+    }
+}
+
+// RFC 8446 §6.1 — the same distinction in the other direction: the client's
+// close_notify ends the server's RX, and the server can still answer.
+test "server transport: close_notify is not closed" {
+    var w: Wire = undefined;
+    try w.init();
+    defer w.deinit();
+    try w.handshake();
+
+    try w.client.closeWrite();
+    try testing.expectEqual(Server.Event.close_notify, try w.serverEvent());
+    try testing.expectEqual(Server.Event.closed, try w.serverEvent());
+    try testing.expectEqual(@as(usize, 4), try w.server.write("pong"));
+}

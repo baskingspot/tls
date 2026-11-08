@@ -1,10 +1,18 @@
 # tls-nonblocking
 
-Caller-driven TLS 1.3 server transport for Zig 0.16.
+Caller-driven TLS 1.3 transports for Zig 0.16.
 
-`tls_nonblocking.Server` turns transport bytes into borrowed plaintext and exposes
-one outbound record at a time. The caller owns the socket and the readiness loop.
-No handshake operation waits for a peer. The integration has no runtime dependency.
+`tls_nonblocking.Server` and `tls_nonblocking.Client` turn transport bytes into
+borrowed plaintext and expose one outbound record at a time. The caller owns the
+socket and the readiness loop. No handshake operation waits for a peer, and
+neither transport allocates. The integration has no runtime dependency.
+
+`Client` takes the same shape as `Server`: `next()` returns one event, `write()`
+returns the bytes it accepted, and the caller acks wire bytes with `sent()`.
+Neither enforces ALPN. A caller that requires `h2` reads `selectedAlpn()` after
+`handshake_complete` and rejects the connection itself, because requiring a
+protocol is policy, not framing. `close_notify` and `closed` are separate events:
+RX can end while TX stays open (RFC 8446 §6.1).
 
 Readiness status lives in [`PRODUCTION_READINESS.md`](../../PRODUCTION_READINESS.md).
 
