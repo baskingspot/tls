@@ -22,6 +22,23 @@ const transport = @import("tls_nonblocking");
 const tls = transport.core;
 ```
 
+## Trust anchors from bytes
+
+A caller that holds a PEM bundle in memory — a conformance runner or a config
+blob — loads it without touching the filesystem:
+
+```zig
+var bundle: Certificate.Bundle = .empty;
+defer bundle.deinit(gpa);
+const added = try transport.anchors.addCertsFromPemBytes(&bundle, gpa, pem, now_sec);
+```
+
+`added` is the number of anchors the bundle gained. std drops an expired
+certificate or one with an unrecognized object identifier without an error, so
+zero means the trust store came up empty — check it before the first handshake
+rather than debugging the verification failure it produces. `now_sec` is the
+caller's clock; anchors are skipped when it is past their `notAfter`.
+
 ## Connection storage
 
 The caller supplies these disjoint buffers:

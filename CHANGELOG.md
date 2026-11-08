@@ -5,6 +5,13 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `tls_nonblocking.anchors.addCertsFromPemBytes` loads trust anchors from PEM
+  bytes into a caller-owned `Certificate.Bundle`, so a client handed a CA in
+  memory no longer needs a file on disk. It returns the number of anchors
+  added, because std drops an expired or unrecognized one silently (#175).
+
 ### Changed
 
 - The tree builds and tests on Zig 0.16 and 0.17 from one source. `nix develop`

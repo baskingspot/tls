@@ -611,3 +611,125 @@ test "deinit: idempotent before and after handshake, borrowed storage stays call
         try testing.expectEqual(@as(usize, 0), pair.server.receiveBuffer().len);
     }
 }
+
+// --- Trust anchors from PEM bytes -------------------------------------------
+
+const anchors = @import("tls_nonblocking").anchors;
+const Certificate = std.crypto.Certificate;
+const anchor_time = fixtures.key_capacity_time;
+
+/// Base64 one DER certificate into `out` as a wrapped PEM block.
+fn encodePem(out: []u8, der: []const u8) ![]const u8 {
+    const head = "-----BEGIN CERTIFICATE-----\n";
+    const tail = "-----END CERTIFICATE-----\n";
+    var b64: [16384]u8 = undefined;
+    const encoded = std.base64.standard.Encoder.encode(&b64, der);
+    const rows = encoded.len / 64 + 1;
+    if (out.len < head.len + encoded.len + rows + tail.len) return error.NoSpaceLeft;
+
+    @memcpy(out[0..head.len], head);
+    var n: usize = head.len;
+    // Wrap at 64 columns so the decoder's ignored whitespace is exercised.
+    var i: usize = 0;
+    while (i < encoded.len) : (i += 64) {
+        const end = @min(i + 64, encoded.len);
+        @memcpy(out[n..][0 .. end - i], encoded[i..end]);
+        n += end - i;
+        out[n] = '\n';
+        n += 1;
+    }
+    @memcpy(out[n..][0..tail.len], tail);
+    n += tail.len;
+    return out[0..n];
+}
+
+fn anchoredBundle(pem: []const u8, now_sec: i64) !Certificate.Bundle {
+    var bundle: Certificate.Bundle = .empty;
+    errdefer bundle.deinit(testing.allocator);
+    try testing.expectEqual(1, try anchors.addCertsFromPemBytes(
+        &bundle,
+        testing.allocator,
+        pem,
+        now_sec,
+    ));
+    return bundle;
+}
+
+// RFC 7468 §2, RFC 5280 §6.1 — an anchor supplied as PEM bytes authenticates a
+// chain the same way a path-loaded one does, with no filesystem access.
+test "anchors: PEM bytes anchor a chain" {
+    var pem_buf: [24576]u8 = undefined;
+    const pem = try encodePem(&pem_buf, &fixtures.key_capacity_root_der);
+    var bundle = try anchoredBundle(pem, anchor_time);
+    defer bundle.deinit(testing.allocator);
+
+    var msg_buf: [4096]u8 = undefined;
+    const msg = try tls.certificate.encode(&msg_buf, &.{
+        &fixtures.key_capacity_leaf_der,
+        &fixtures.key_capacity_root_der,
+    });
+    var policy: tls.certificate.Policy = .init;
+    policy.bundle = &bundle;
+    policy.host_name = "capacity.test";
+    policy.now_sec = anchor_time;
+    const public_key = try tls.certificate.parse(msg, policy);
+    try testing.expect(public_key.len > 0);
+}
+
+// RFC 5280 §6.1 — an anchor that did not issue the chain cannot authenticate it.
+test "anchors: a different anchor rejects the same chain" {
+    var pem_buf: [24576]u8 = undefined;
+    const pem = try encodePem(&pem_buf, &fixtures.key_capacity_leaf_der);
+    var bundle = try anchoredBundle(pem, anchor_time);
+    defer bundle.deinit(testing.allocator);
+
+    var msg_buf: [4096]u8 = undefined;
+    const msg = try tls.certificate.encode(&msg_buf, &.{
+        &fixtures.key_capacity_leaf_der,
+        &fixtures.key_capacity_root_der,
+    });
+    var policy: tls.certificate.Policy = .init;
+    policy.bundle = &bundle;
+    policy.host_name = "capacity.test";
+    policy.now_sec = anchor_time;
+    try testing.expectError(error.CertificateIssuerNotFound, tls.certificate.parse(msg, policy));
+}
+
+// parseCert skips an expired anchor silently, so the count is the only signal
+// that the trust store came up empty.
+test "anchors: an expired anchor adds nothing" {
+    var pem_buf: [24576]u8 = undefined;
+    const pem = try encodePem(&pem_buf, &fixtures.key_capacity_root_der);
+    var bundle: Certificate.Bundle = .empty;
+    defer bundle.deinit(testing.allocator);
+    try testing.expectEqual(0, try anchors.addCertsFromPemBytes(
+        &bundle,
+        testing.allocator,
+        pem,
+        4_000_000_000,
+    ));
+    try testing.expectEqual(@as(usize, 0), bundle.bytes.items.len);
+}
+
+test "anchors: no markers, a truncated block, and bad base64" {
+    var bundle: Certificate.Bundle = .empty;
+    defer bundle.deinit(testing.allocator);
+    try testing.expectEqual(0, try anchors.addCertsFromPemBytes(
+        &bundle,
+        testing.allocator,
+        "not a certificate",
+        anchor_time,
+    ));
+    try testing.expectError(error.MissingEndCertificateMarker, anchors.addCertsFromPemBytes(
+        &bundle,
+        testing.allocator,
+        "-----BEGIN CERTIFICATE-----\nMIIB\n",
+        anchor_time,
+    ));
+    try testing.expectError(error.InvalidPemBase64, anchors.addCertsFromPemBytes(
+        &bundle,
+        testing.allocator,
+        "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n",
+        anchor_time,
+    ));
+}
