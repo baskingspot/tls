@@ -304,6 +304,26 @@ two transcripts, which is the duplication the extraction exists to delete. The
 adapter therefore swaps transcript and key-schedule ownership first, as one
 commit per role, and the method-level delegations follow inside that.
 
+### 5.6 What the engine still owns after the adapter
+
+The test of a finished extraction, written before the work so it cannot be
+retrofitted. After the client adapter, `ClientHandshake` may own only:
+
+- record framing and parsing: content type, length, the 5-byte header;
+- record protection: the `RecordLayer`s, sequence numbers, the pending-write
+  latch, and the kTLS handoff surface;
+  buffer sizes for all of the above;
+- the legacy entry points, which forward to the core and add framing:
+  `start`, `startWithPsk`, `clientFinished`, `processServerHello`,
+  `processFlight`, `processHelloRetryRequest`, `receiveRecord`, `handleRecord`;
+- accessors that read core state: `isConnected`, `cipherSuite`,
+  `selectedAlpn`, `peerCertificateChain`, `lastPeerAlert`.
+
+Anything else is a second implementation in disguise. If the finished adapter
+owns a state transition, a transcript update, a key derivation, or a policy
+decision, the extraction is not finished and the server adapter would repeat the
+mistake.
+
 ## 6. The lockstep alternative
 
 Kept only so the difference is on the record. Here the new type is built by
