@@ -7,6 +7,15 @@ All notable changes to tls are recorded here. The format follows
 
 ### Added
 
+- `handshake_core.Server` derives the shared secret too, so no public entry in
+  either role accepts one. The server retains the client's classical key shares
+  from the ClientHello in caller-owned storage (`usePeerShareStorage`, sized by
+  `peer_share_storage_len`) and derives in `provideServerHello` from its own
+  keypairs (`useKeypairs`). A short buffer is
+  `error.PeerShareStorageTooSmall`, never a truncated share, and a ClientHello
+  offering RFC 10024 hybrid is `error.HybridServerUnsupported` because the core
+  has no server-side KEM path yet. The retained shares are public material and
+  are not zeroized; the keypairs are, in `deinit`.
 - `handshake_core.Client` derives the shared secret itself. `provide` takes the
   ServerHello and nothing else: the client retains the keypairs from
   `startEncoded`/`startEncodedWithPsk` (or `useKeypairs` for a caller-encoded

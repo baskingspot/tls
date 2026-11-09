@@ -151,7 +151,12 @@ pub const Error = error{
     /// A server configured with ALPN found no overlap with the client.
     NoApplicationProtocol,
 } || capabilities.HybridPolicyError || hybrid_kex.Error ||
-    error{ MissingP384KeyPair, MissingKeyPairs } ||
+    error{
+        MissingP384KeyPair,
+        MissingKeyPairs,
+        PeerShareStorageTooSmall,
+        HybridServerUnsupported,
+    } ||
     server_hello.ParseError || certificate.VerifyError ||
     certificate.ParseError || certificate.EncodeError ||
     finished.VerifyError || encrypted_extensions.ParseError ||
@@ -1202,6 +1207,20 @@ test "core client: a wrong-level ServerHello is refused" {
 
 /// The server's plaintext half: accept the ClientHello, queue the ServerHello,
 /// derive the same handshake traffic secrets the client derives.
+/// Storage for the classical client key shares a server retains from the
+/// ClientHello: x25519 (32) + P-256 (65) + P-384 (97), plus one group tag each.
+///
+/// A ClientHello offering an RFC 10024 hybrid share needs more than this. The
+/// core rejects that with `error.HybridServerUnsupported` rather than
+/// truncating — there is no server-side KEM path yet (docs/slop/QUIC-SEAM.md
+/// §5.6). Caller-owned: public key material, so it is never zeroized.
+pub const peer_share_storage_len = 32 + 65 + 97 + 3;
+
+pub const PeerShare = struct {
+    group: kex.NamedGroup,
+    bytes: []const u8,
+};
+
 pub const Server = struct {
     suite: suite_state.Suite,
     queue: level.Queue,
@@ -1227,6 +1246,16 @@ pub const Server = struct {
     /// Transcript hash of ClientHello1, needed for the HRR message_hash.
     ch1_hash: Client.TranscriptHash,
     hrr_sent: bool,
+    /// The caller's ephemeral keypairs, retained so `provideServerHello`
+    /// derives the shared secret from the client's key share. Secret state:
+    /// zeroized in `deinit`.
+    keypairs: ?KeyPairs,
+    /// Caller-owned storage for the client shares retained from the
+    /// ClientHello. `peer_share_storage_len` bytes is always enough for the
+    /// classical groups the core accepts.
+    peer_share_storage: []u8,
+    peer_shares: [3]PeerShare,
+    peer_share_count: u8,
 
     pub fn init(slots: []level.Output) Server {
         return .{
@@ -1240,6 +1269,10 @@ pub const Server = struct {
             .client_pub_key_len = 0,
             .ch1_hash = .init(),
             .hrr_sent = false,
+            .keypairs = null,
+            .peer_share_storage = &.{},
+            .peer_shares = undefined,
+            .peer_share_count = 0,
             .early_secret = undefined,
             .early_len = 0,
             .early_accepted = false,
@@ -1247,7 +1280,23 @@ pub const Server = struct {
         };
     }
 
+    pub fn useKeypairs(self: *Server, keypairs: KeyPairs) void {
+        self.keypairs = keypairs;
+    }
+
+    /// Caller-owned storage for the client shares retained from the
+    /// ClientHello. `peer_share_storage_len` bytes is always enough; a shorter
+    /// slice makes `provideClientHello` fail with
+    /// `error.PeerShareStorageTooSmall` rather than truncate silently.
+    pub fn usePeerShareStorage(self: *Server, storage: []u8) void {
+        self.peer_share_storage = storage;
+    }
+
     pub fn deinit(self: *Server) void {
+        if (self.keypairs) |*keypairs| keypairs.secureZero();
+        self.keypairs = null;
+        self.peer_share_count = 0;
+        self.peer_share_storage = &.{};
         self.suite.secureZero();
         self.queue.clear();
         self.* = undefined;
@@ -1266,15 +1315,28 @@ pub const Server = struct {
         client_hello_msg: []const u8,
         cipher_suite: CipherSuite,
         server_hello_msg: []const u8,
-        dhe: []const u8,
     ) Error!void {
         try self.provideClientHello(provided, client_hello_msg, cipher_suite);
-        try self.provideServerHello(.plaintext, server_hello_msg, dhe);
+        try self.provideServerHello(.plaintext, server_hello_msg);
     }
 
     /// Absorb a ClientHello at `.plaintext`. A server picks the suite, so the
     /// arm exists before the transcript starts and the message is absorbed
     /// once, with no buffering arm.
+    /// Internal seam mirroring `provide` for tests that carry a synthetic
+    /// secret. Not public, for the reason `Client.provideWithSecret` gives.
+    fn provideWithSecret(
+        self: *Server,
+        provided: level.Level,
+        client_hello_msg: []const u8,
+        cipher_suite: CipherSuite,
+        server_hello_msg: []const u8,
+        dhe: []const u8,
+    ) Error!void {
+        try self.provideClientHello(provided, client_hello_msg, cipher_suite);
+        try self.provideServerHelloWithSecret(.plaintext, server_hello_msg, dhe);
+    }
+
     pub fn provideClientHello(
         self: *Server,
         provided: level.Level,
@@ -1293,7 +1355,10 @@ pub const Server = struct {
         };
         self.suite.update(client_hello_msg);
         self.ch1_hash = self.transcriptHash();
-        try self.selectAlpn(client_hello_msg);
+        const parsed = client_hello.parse(client_hello_msg) catch
+            return error.UnexpectedMessage;
+        try self.retainPeerShares(parsed);
+        try self.selectAlpnParsed(parsed);
         self.state = .ch_absorbed;
     }
 
@@ -1340,9 +1405,50 @@ pub const Server = struct {
     /// RFC 7301 §3.2 - pick the first server-preference protocol the client
     /// offered. A server configured with a list that overlaps nothing fails the
     /// handshake rather than negotiating none.
-    fn selectAlpn(self: *Server, client_hello_msg: []const u8) Error!void {
+    /// Retain the client's classical key shares so `provideServerHello` can
+    /// derive from the one the server ends up selecting. RFC 8446 §4.2.8.
+    fn retainPeerShares(self: *Server, parsed: client_hello.Parsed) Error!void {
+        // No storage: the caller is not asking for retention, and a deriving
+        // `provideServerHello` will fail rather than guess.
+        if (self.peer_share_storage.len == 0) return;
+        if (parsed.hybrid_key_shares.len != 0) {
+            // The core has no server-side KEM path yet; refusing beats a share
+            // nobody can decapsulate. See docs/slop/QUIC-SEAM.md §5.6.
+            return error.HybridServerUnsupported;
+        }
+        var used: usize = 0;
+        self.peer_share_count = 0;
+        const shares = [_]struct { group: kex.NamedGroup, bytes: ?[]const u8 }{
+            .{ .group = .x25519, .bytes = if (parsed.public_key) |k| &k.data else null },
+            .{ .group = .secp256r1, .bytes = if (parsed.public_key_p256) |k| &k.data else null },
+            .{ .group = .secp384r1, .bytes = if (parsed.public_key_p384) |k| &k.data else null },
+        };
+        for (shares) |share| {
+            const bytes = share.bytes orelse continue;
+            if (used + bytes.len + 1 > self.peer_share_storage.len)
+                return error.PeerShareStorageTooSmall;
+            // The tag byte records the group; the share follows it.
+            self.peer_share_storage[used] = @intCast(compat.enumToInt(share.group));
+            used += 1;
+            @memcpy(self.peer_share_storage[used..][0..bytes.len], bytes);
+            self.peer_shares[self.peer_share_count] = .{
+                .group = share.group,
+                .bytes = self.peer_share_storage[used..][0..bytes.len],
+            };
+            used += bytes.len;
+            self.peer_share_count += 1;
+        }
+    }
+
+    fn peerShare(self: *const Server, group: kex.NamedGroup) ?[]const u8 {
+        for (self.peer_shares[0..self.peer_share_count]) |share| {
+            if (share.group == group) return share.bytes;
+        }
+        return null;
+    }
+
+    fn selectAlpnParsed(self: *Server, parsed: client_hello.Parsed) Error!void {
         if (self.alpn.len == 0) return;
-        const parsed = client_hello.parse(client_hello_msg) catch return error.UnexpectedMessage;
         // The parser already strips the outer list length: this is the
         // ProtocolNameList body, one length-prefixed name per entry.
         const list = parsed.alpn_protocols;
@@ -1396,10 +1502,77 @@ pub const Server = struct {
         self: *Server,
         provided: level.Level,
         server_hello_msg: []const u8,
+    ) Error!void {
+        if (self.state != .ch_absorbed) return error.UnexpectedMessage;
+        try level.check(.server_hello, provided);
+        const sh = try server_hello.parse(server_hello_msg);
+        const group = sh.key_share.group();
+        var secret: [hybrid_kex.max_shared_secret_len]u8 = undefined;
+        defer std.crypto.secureZero(u8, &secret);
+        const shared = try self.deriveSharedSecret(group, &secret);
+        return self.provideServerHelloParsed(server_hello_msg, shared);
+    }
+
+    /// Internal seam for tests that drive the state machine with a synthetic
+    /// secret. Not public, for the reason `Client.provideWithSecret` gives.
+    fn provideServerHelloWithSecret(
+        self: *Server,
+        provided: level.Level,
+        server_hello_msg: []const u8,
         dhe: []const u8,
     ) Error!void {
         if (self.state != .ch_absorbed) return error.UnexpectedMessage;
         try level.check(.server_hello, provided);
+        return self.provideServerHelloParsed(server_hello_msg, dhe);
+    }
+
+    /// Derive the (EC)DHE secret from the client's retained share for the group
+    /// the ServerHello selected. RFC 8446 §4.2.8.
+    fn deriveSharedSecret(
+        self: *Server,
+        group: kex.NamedGroup,
+        out: *[hybrid_kex.max_shared_secret_len]u8,
+    ) Error![]const u8 {
+        const keypairs = if (self.keypairs) |*kp| kp else return error.MissingKeyPairs;
+        const peer = self.peerShare(group) orelse return error.UnexpectedMessage;
+        return switch (group) {
+            .x25519 => blk: {
+                if (peer.len != x25519.public_length) return error.UnexpectedMessage;
+                try x25519.sharedSecret(
+                    keypairs.x25519.secret_key,
+                    .init(peer[0..x25519.public_length].*),
+                    out[0..32],
+                );
+                break :blk out[0..32];
+            },
+            .secp256r1 => blk: {
+                if (peer.len != p256.public_length) return error.UnexpectedMessage;
+                try p256.sharedSecret(
+                    keypairs.p256.secret_key,
+                    .init(peer[0..p256.public_length].*),
+                    out[0..32],
+                );
+                break :blk out[0..32];
+            },
+            .secp384r1 => blk: {
+                const keypair = keypairs.p384 orelse return error.MissingP384KeyPair;
+                if (peer.len != p384.public_length) return error.UnexpectedMessage;
+                try p384.sharedSecret(
+                    keypair.secret_key,
+                    .init(peer[0..p384.public_length].*),
+                    out[0..48],
+                );
+                break :blk out[0..48];
+            },
+            else => return error.HybridServerUnsupported,
+        };
+    }
+
+    fn provideServerHelloParsed(
+        self: *Server,
+        server_hello_msg: []const u8,
+        dhe: []const u8,
+    ) Error!void {
         self.suite.update(server_hello_msg);
         try deriveHandshakeSecrets(&self.suite, dhe);
 
@@ -1709,7 +1882,7 @@ test "core: client and server derive the same handshake secrets" {
     _ = client.next().?;
     try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
 
-    try server.provide(
+    try server.provideWithSecret(
         .plaintext,
         &rfc8448_client_hello,
         .aes_128_gcm_sha256,
@@ -1730,7 +1903,7 @@ test "core: the server queues its ServerHello at plaintext" {
     var slots: [8]level.Output = undefined;
     var server: Server = .init(&slots);
     defer server.deinit();
-    try server.provide(
+    try server.provideWithSecret(
         .plaintext,
         &rfc8448_client_hello,
         .aes_128_gcm_sha256,
@@ -2059,6 +2232,133 @@ test "client hybrid: policy and group mismatches are caught" {
     }
 }
 
+// Neither role is handed a shared secret: the client derives from the
+// ServerHello's share, the server from the share the ClientHello carried, and
+// the handshake only completes if the two agree.
+test "core: both roles derive the same secret, and neither is given one" {
+    var key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer key.deinit();
+    const signer = key.signer();
+
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+
+    var ch_buf: [2048]u8 = undefined;
+    const ch = try client.startEncoded(
+        &ch_buf,
+        .init(@splat(0x71)),
+        client_keys,
+        "capacity.test",
+        &.{},
+        &.{},
+    );
+    _ = client.next().?;
+
+    var share_storage: [peer_share_storage_len]u8 = undefined;
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    server.useKeypairs(server_keys);
+    server.usePeerShareStorage(&share_storage);
+    try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+
+    const key_share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0x72),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    try server.provideServerHello(.plaintext, sh);
+    while (server.next()) |_| {}
+
+    var flight_buf: [2048]u8 = undefined;
+    try server.sendFlight(
+        .{ .chain = .{ .single = &fixtures.server_ecdsa_cert_der }, .signer = signer },
+        null,
+        &flight_buf,
+    );
+    try client.provide(.plaintext, sh);
+    while (server.next()) |out| switch (out) {
+        .message => |m| try client.provideHandshake(.handshake, m.bytes),
+        else => {},
+    };
+    // The client verifies the server's Finished under the derived handshake
+    // key, so this line fails if either side derived a different secret.
+    try testing.expectEqual(Client.State.server_finished_verified, client.state);
+}
+
+// Retention is bounded and named: a hybrid offer and a short buffer are both
+// errors, never a truncated share.
+test "server: hybrid offers and short storage are named errors" {
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+
+    var slots: [16]level.Output = undefined;
+    const policy: certificate.Policy = .init;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    client.offerHybrid(.{
+        .supported_groups = &.{.x25519_mlkem768},
+        .initial_key_share = .x25519_mlkem768,
+    });
+    var ch_buf: [4096]u8 = undefined;
+    const hybrid_ch = try client.startEncoded(
+        &ch_buf,
+        .init(@splat(0x73)),
+        client_keys,
+        "capacity.test",
+        &.{},
+        &.{},
+    );
+
+    var big_storage: [peer_share_storage_len]u8 = undefined;
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    server.useKeypairs(server_keys);
+    server.usePeerShareStorage(&big_storage);
+    try testing.expectError(
+        error.HybridServerUnsupported,
+        server.provideClientHello(.plaintext, hybrid_ch, .aes_128_gcm_sha256),
+    );
+
+    var small_storage: [8]u8 = undefined;
+    var plain: Client = .init(&slots, policy);
+    defer plain.deinit();
+    var plain_buf: [2048]u8 = undefined;
+    const ch = try plain.startEncoded(
+        &plain_buf,
+        .init(@splat(0x74)),
+        client_keys,
+        "capacity.test",
+        &.{},
+        &.{},
+    );
+    var other_slots: [16]level.Output = undefined;
+    var small: Server = .init(&other_slots);
+    defer small.deinit();
+    small.useKeypairs(server_keys);
+    small.usePeerShareStorage(&small_storage);
+    try testing.expectError(
+        error.PeerShareStorageTooSmall,
+        small.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256),
+    );
+}
+
 test "core: client and server complete a handshake with each other" {
     const server_hello_mod = server_hello;
     const ecdsa_cert = fixtures.server_ecdsa_cert_der;
@@ -2085,7 +2385,7 @@ test "core: client and server complete a handshake with each other" {
     var server_slots: [16]level.Output = undefined;
     var server: Server = .init(&server_slots);
     defer server.deinit();
-    try server.provide(
+    try server.provideWithSecret(
         .plaintext,
         &rfc8448_client_hello,
         .aes_128_gcm_sha256,
@@ -2163,7 +2463,7 @@ test "core: client authentication completes both ways" {
     var server: Server = .init(&server_slots);
     defer server.deinit();
     server.requireClientCertificate(server_policy);
-    try server.provide(.plaintext, &rfc8448_client_hello, .aes_128_gcm_sha256, sh, &dhe);
+    try server.provideWithSecret(.plaintext, &rfc8448_client_hello, .aes_128_gcm_sha256, sh, &dhe);
 
     // Drain the ServerHello and its level events; the flight is next.
     while (server.next()) |_| {}
@@ -2696,7 +2996,7 @@ test "tickets: server issues one and both sides derive the same PSK" {
     var server_slots: [16]level.Output = undefined;
     var server: Server = .init(&server_slots);
     defer server.deinit();
-    try server.provide(.plaintext, &rfc8448_client_hello, .aes_128_gcm_sha256, sh, &dhe);
+    try server.provideWithSecret(.plaintext, &rfc8448_client_hello, .aes_128_gcm_sha256, sh, &dhe);
     while (server.next()) |_| {}
     var flight_buf: [2048]u8 = undefined;
     try server.sendFlight(
@@ -2836,7 +3136,7 @@ test "early data: the server derives the same early secret, and demands EndOfEar
         &key_share,
     );
     const dhe: [32]u8 = @splat(0x7d);
-    try server.provideServerHello(.plaintext, sh, &dhe);
+    try server.provideServerHelloWithSecret(.plaintext, sh, &dhe);
     while (server.next()) |_| {}
     var server_key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
     defer server_key.deinit();
@@ -2902,7 +3202,7 @@ test "early data: skipping EndOfEarlyData is refused" {
         &key_share,
     );
     const dhe: [32]u8 = @splat(0x7e);
-    try server.provideServerHello(.plaintext, sh, &dhe);
+    try server.provideServerHelloWithSecret(.plaintext, sh, &dhe);
     while (server.next()) |_| {}
 
     var server_key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
@@ -2971,7 +3271,7 @@ test "alpn: server preference wins and both roles see the selection" {
         &key_share,
     );
     const dhe: [32]u8 = @splat(0x7f);
-    try server.provideServerHello(.plaintext, sh, &dhe);
+    try server.provideServerHelloWithSecret(.plaintext, sh, &dhe);
     while (server.next()) |_| {}
     var server_key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
     defer server_key.deinit();
@@ -3015,13 +3315,12 @@ test "alpn: a server with no overlap refuses the handshake" {
 // The bound must actually bound: encode into flightBufferLen bytes, then assert
 // every message fit and the whole flight re-encodes into half that many runs.
 test "prepared flight: flightBufferLen bounds what sendFlight writes" {
-    const ch = [_]u8{
-        compat.enumToInt(handshake.Type.client_hello), 0, 0, 2, 0, 0,
-    };
     var server_slots: [16]level.Output = undefined;
     var server: Server = .init(&server_slots);
     defer server.deinit();
-    try server.provideClientHello(.plaintext, &ch, .aes_128_gcm_sha256);
+    // A real ClientHello: absorbing one now parses it, so the retained shares
+    // can be looked up when the ServerHello arrives.
+    try server.provideClientHello(.plaintext, &rfc8448_client_hello, .aes_128_gcm_sha256);
 
     var creds: Credentials = .{
         .chain = .{ .single = &fixtures.server_ecdsa_cert_der },
