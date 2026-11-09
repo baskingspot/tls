@@ -376,6 +376,10 @@ pub const Client = struct {
     /// Internal seam for tests that drive the state machine with a synthetic
     /// secret. Not public: a caller that supplies a shared secret can supply
     /// the wrong one, and the handshake still completes.
+    ///
+    /// The RFC 8448 vectors carry no private keys, so a test that replayed them
+    /// through `provide` would have to re-derive a secret to test a transcript.
+    /// That is why this exists, and why it stays private and unpromoted.
     fn provideWithSecret(
         self: *Client,
         provided: level.Level,
