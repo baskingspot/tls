@@ -156,6 +156,7 @@ pub const Error = error{
         MissingKeyPairs,
         PeerShareStorageTooSmall,
         HybridServerUnsupported,
+        GroupNotOffered,
     } ||
     server_hello.ParseError || certificate.VerifyError ||
     certificate.ParseError || certificate.EncodeError ||
@@ -1534,7 +1535,11 @@ pub const Server = struct {
         out: *[hybrid_kex.max_shared_secret_len]u8,
     ) Error![]const u8 {
         const keypairs = if (self.keypairs) |*kp| kp else return error.MissingKeyPairs;
-        const peer = self.peerShare(group) orelse return error.UnexpectedMessage;
+        // The caller builds the ServerHello and picks the group, so this is the
+        // only place a group the client never offered can be caught.
+        // The caller builds the ServerHello and picks the group, so this is the
+        // only place a group the client never offered can be caught.
+        const peer = self.peerShare(group) orelse return error.GroupNotOffered;
         return switch (group) {
             .x25519 => blk: {
                 if (peer.len != x25519.public_length) return error.UnexpectedMessage;
@@ -2297,6 +2302,54 @@ test "core: both roles derive the same secret, and neither is given one" {
     // The client verifies the server's Finished under the derived handshake
     // key, so this line fails if either side derived a different secret.
     try testing.expectEqual(Client.State.server_finished_verified, client.state);
+}
+
+// The caller builds the ServerHello and picks the group; the core refuses one
+// the client never offered rather than deriving against nothing.
+test "server: a group the client never offered is refused" {
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+    var p384_keys = try p384.KeyPair.generate();
+    defer p384_keys.secureZero();
+
+    var slots: [16]level.Output = undefined;
+    const policy: certificate.Policy = .init;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    var ch_buf: [2048]u8 = undefined;
+    const ch = try client.startEncoded(
+        &ch_buf,
+        .init(@splat(0x75)),
+        client_keys,
+        "capacity.test",
+        &.{},
+        &.{},
+    );
+
+    var share_storage: [peer_share_storage_len]u8 = undefined;
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    server.useKeypairs(server_keys);
+    server.usePeerShareStorage(&share_storage);
+    try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+
+    // The client offered x25519 and P-256 only; selecting P-384 has no share.
+    const key_share: server_hello.KeyShare = .{ .secp384r1 = p384_keys.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0x76),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    try testing.expectError(
+        error.GroupNotOffered,
+        server.provideServerHello(.plaintext, sh),
+    );
 }
 
 // Retention is bounded and named: a hybrid offer and a short buffer are both

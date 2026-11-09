@@ -314,12 +314,19 @@ every public entry point can be expressed through it. Twice now, work that
 looked like an adapter needed core work first; that is the evidence for the rule
 rather than an excuse from it.
 
-Known open, same class, found while doing the client: the core's *server* still
-takes a caller-supplied `dhe` on its provide path and has no RFC 10024 hybrid
-support at all. Both must move before the server adapter, for the reason the
-client's move gave: a second consumer (quic, then the server adapter) would
-otherwise own ECDHE and hybrid key agreement itself. The client is done —
-`provide` derives from its own keypair, and no public entry accepts a secret.
+Both roles now derive their own shared secret: neither `provide` nor
+`provideServerHello` takes one, and the server retains the client's shares from
+the ClientHello in caller-owned storage. A ServerHello that selects a group the
+client never offered is refused with `error.GroupNotOffered`, because the caller
+builds that message, and the lookup is the only chance the core gets to catch it.
+
+Known open, same class: the core's server **cannot complete a KEM handshake at
+all today**. It has no server-side RFC 10024 path, so a ClientHello offering a
+hybrid share is refused with `error.HybridServerUnsupported` — deliberately, not
+silently, because a retained share nobody can decapsulate is worse than a named
+refusal. That must land before the server adapter, for the reason the client's
+move gave: the next consumer (quic, then the server adapter) would otherwise own
+hybrid key agreement itself.
 
 After the client adapter, `ClientHandshake` may own only:
 
