@@ -157,6 +157,7 @@ pub const Error = error{
         PeerShareStorageTooSmall,
         HybridServerUnsupported,
         GroupNotOffered,
+        NoPeerSharesRetained,
     } ||
     server_hello.ParseError || certificate.VerifyError ||
     certificate.ParseError || certificate.EncodeError ||
@@ -1537,8 +1538,12 @@ pub const Server = struct {
         const keypairs = if (self.keypairs) |*kp| kp else return error.MissingKeyPairs;
         // The caller builds the ServerHello and picks the group, so this is the
         // only place a group the client never offered can be caught.
-        // The caller builds the ServerHello and picks the group, so this is the
-        // only place a group the client never offered can be caught.
+        if (self.peer_share_storage.len == 0) return error.NoPeerSharesRetained;
+        // Two different mistakes, two different names. No storage means the
+        // caller never asked for retention, so the shares were never kept; a
+        // miss with storage present means the ServerHello selected a group the
+        // client did not offer. The core builds neither message, so this lookup
+        // is its only chance to catch the second.
         const peer = self.peerShare(group) orelse return error.GroupNotOffered;
         return switch (group) {
             .x25519 => blk: {
@@ -2348,6 +2353,50 @@ test "server: a group the client never offered is refused" {
     );
     try testing.expectError(
         error.GroupNotOffered,
+        server.provideServerHello(.plaintext, sh),
+    );
+}
+
+// A server that never enabled retention says so, rather than blaming the
+// caller's group selection for shares it never kept.
+test "server: deriving without retained shares is its own error" {
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+
+    var slots: [16]level.Output = undefined;
+    const policy: certificate.Policy = .init;
+    var client: Client = .init(&slots, policy);
+    defer client.deinit();
+    var ch_buf: [2048]u8 = undefined;
+    const ch = try client.startEncoded(
+        &ch_buf,
+        .init(@splat(0x77)),
+        client_keys,
+        "capacity.test",
+        &.{},
+        &.{},
+    );
+
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    server.useKeypairs(server_keys);
+    // No usePeerShareStorage: nothing is retained.
+    try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+
+    const key_share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0x78),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    try testing.expectError(
+        error.NoPeerSharesRetained,
         server.provideServerHello(.plaintext, sh),
     );
 }
