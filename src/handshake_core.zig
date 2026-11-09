@@ -120,9 +120,11 @@ const handshake = @import("handshake.zig");
 const level = @import("level.zig");
 const server_hello = @import("server_hello.zig");
 const aead = @import("aead.zig");
-// Test-only modules; not needed by the core itself.
-const fixtures = @import("fixtures");
 const x25519 = @import("x25519.zig");
+const p256 = @import("p256.zig");
+const p384 = @import("p384.zig");
+// Test-only module; not needed by the core itself.
+const fixtures = @import("fixtures");
 const suite_state = @import("suite_state.zig");
 const capabilities = @import("capabilities.zig");
 const hybrid_kex = @import("hybrid_kex.zig");
@@ -149,7 +151,8 @@ pub const Error = error{
     /// A server configured with ALPN found no overlap with the client.
     NoApplicationProtocol,
 } || capabilities.HybridPolicyError || hybrid_kex.Error ||
-    error{MissingP384KeyPair} || server_hello.ParseError || certificate.VerifyError ||
+    error{ MissingP384KeyPair, MissingKeyPairs } ||
+    server_hello.ParseError || certificate.VerifyError ||
     certificate.ParseError || certificate.EncodeError ||
     finished.VerifyError || encrypted_extensions.ParseError ||
     encrypted_extensions.EncodeError || certificate_request.ParseError ||
@@ -217,6 +220,10 @@ pub const Client = struct {
     /// Set once ServerHello selects the suite, so later messages can be checked
     /// against the chosen arm.
     selected: ?CipherSuite,
+    /// The caller's ephemeral keypairs, retained so `provide` derives the
+    /// shared secret from the peer's key share instead of accepting one.
+    /// Secret state: zeroized in `deinit`.
+    keypairs: ?KeyPairs,
     /// RFC 10024 hybrid policy. Set by `offerHybrid` before the ClientHello is
     /// encoded; `startEncoded` reads it.
     hybrid: capabilities.HybridPolicy,
@@ -296,6 +303,7 @@ pub const Client = struct {
             .early_len = 0,
             .post_handshake_count = 0,
             .selected = null,
+            .keypairs = null,
             .hybrid = .empty,
             .kem_key = null,
             .state = .start,
@@ -303,6 +311,8 @@ pub const Client = struct {
     }
 
     pub fn deinit(self: *Client) void {
+        if (self.keypairs) |*keypairs| keypairs.secureZero();
+        self.keypairs = null;
         if (self.kem_key) |*key| key.deinit();
         self.kem_key = null;
         self.suite.secureZero();
@@ -316,6 +326,12 @@ pub const Client = struct {
     /// before a byte is written.
     pub fn offerHybrid(self: *Client, policy: capabilities.HybridPolicy) void {
         self.hybrid = policy;
+    }
+
+    /// Retain the ephemeral keypairs for a ClientHello the caller encoded
+    /// itself. `startEncoded` and `startEncodedWithPsk` call this for you.
+    pub fn useKeypairs(self: *Client, keypairs: KeyPairs) void {
+        self.keypairs = keypairs;
     }
 
     pub fn next(self: *Client) ?level.Output {
@@ -348,6 +364,22 @@ pub const Client = struct {
         self: *Client,
         provided: level.Level,
         server_hello_msg: []const u8,
+    ) Error!void {
+        try self.acceptServerHello(provided);
+        const sh = try server_hello.parse(server_hello_msg);
+        var secret: [hybrid_kex.max_shared_secret_len]u8 = undefined;
+        defer std.crypto.secureZero(u8, &secret);
+        const shared = try self.deriveSharedSecret(sh, &secret);
+        return self.provideServerHelloParsed(server_hello_msg, sh, shared);
+    }
+
+    /// Internal seam for tests that drive the state machine with a synthetic
+    /// secret. Not public: a caller that supplies a shared secret can supply
+    /// the wrong one, and the handshake still completes.
+    fn provideWithSecret(
+        self: *Client,
+        provided: level.Level,
+        server_hello_msg: []const u8,
         dhe: []const u8,
     ) Error!void {
         try self.acceptServerHello(provided);
@@ -355,34 +387,40 @@ pub const Client = struct {
         return self.provideServerHelloParsed(server_hello_msg, sh, dhe);
     }
 
-    /// ServerHello when the peer selected an RFC 10024 hybrid group. The core
-    /// retains the client KEM key, so decapsulation happens here; `dhe` is used
-    /// only if the server selected a classical group instead. RFC 10024 §4.3.
-    pub fn provideHybrid(
+    /// Derive the (EC)DHE secret from the peer's key share and the keypairs
+    /// this client retained. Classical and RFC 10024 hybrid take the same path,
+    /// so no caller can hand in a secret for the wrong group or role.
+    fn deriveSharedSecret(
         self: *Client,
-        provided: level.Level,
-        server_hello_msg: []const u8,
-        keypairs: KeyPairs,
-        dhe: []const u8,
-    ) Error!void {
-        try self.acceptServerHello(provided);
-        const sh = try server_hello.parse(server_hello_msg);
-        switch (sh.key_share) {
-            .kem => |*share| {
+        sh: server_hello.ServerHello,
+        out: *[hybrid_kex.max_shared_secret_len]u8,
+    ) Error![]const u8 {
+        const keypairs = if (self.keypairs) |*kp| kp else return error.MissingKeyPairs;
+        return switch (sh.key_share) {
+            .x25519 => |key| blk: {
+                try x25519.sharedSecret(keypairs.x25519.secret_key, key, out[0..32]);
+                break :blk out[0..32];
+            },
+            .secp256r1 => |key| blk: {
+                try p256.sharedSecret(keypairs.p256.secret_key, key, out[0..32]);
+                break :blk out[0..32];
+            },
+            .secp384r1 => |key| blk: {
+                const keypair = keypairs.p384 orelse return error.MissingP384KeyPair;
+                try p384.sharedSecret(keypair.secret_key, key, out[0..48]);
+                break :blk out[0..48];
+            },
+            .kem => |*share| blk: {
                 const client_key = if (self.kem_key) |*key| key else return error.UnexpectedMessage;
                 if (client_key.group != share.group) return error.UnexpectedMessage;
-                var secret: [hybrid_kex.max_shared_secret_len]u8 = undefined;
-                defer std.crypto.secureZero(u8, &secret);
-                const shared = try hybrid_kex.decapsulate(
+                break :blk try hybrid_kex.decapsulate(
                     client_key,
                     share.data.constSlice(),
-                    &keypairs,
-                    &secret,
+                    keypairs,
+                    out,
                 );
-                return self.provideServerHelloParsed(server_hello_msg, sh, shared);
             },
-            else => return self.provideServerHelloParsed(server_hello_msg, sh, dhe),
-        }
+        };
     }
 
     fn acceptServerHello(self: *Client, provided: level.Level) Error!void {
@@ -501,6 +539,7 @@ pub const Client = struct {
     ) Error![]const u8 {
         var share_buffer: [hybrid_kex.max_client_share_len]u8 = undefined;
         const share = try self.prepareHybrid(&keypairs, &share_buffer);
+        self.keypairs = keypairs;
         const ch = try client_hello.encodeWithHybridGroupsAndExtensions(
             out,
             random,
@@ -554,6 +593,7 @@ pub const Client = struct {
         const suite = self.psk_suite orelse .aes_128_gcm_sha256;
         var share_buffer: [hybrid_kex.max_client_share_len]u8 = undefined;
         const share = try self.prepareHybrid(&keypairs, &share_buffer);
+        self.keypairs = keypairs;
         const result = try client_hello.encodeWithPskAndHybridGroups(
             out,
             random,
@@ -1121,7 +1161,7 @@ test "core client: RFC 8448 §3 plaintext half" {
     try testing.expectEqual(@as(?level.Output, null), client.next());
 
     // ServerHello at plaintext: the core owns the transcript from here.
-    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
     try testing.expectEqual(level.Level.handshake, client.next().?.read_level);
     try testing.expectEqual(level.Level.handshake, client.next().?.write_level);
     try testing.expectEqual(level.Level.handshake, client.next().?.key_available);
@@ -1152,7 +1192,7 @@ test "core client: a wrong-level ServerHello is refused" {
     _ = client.next().?;
     try testing.expectError(
         error.WrongLevel,
-        client.provide(.handshake, &rfc8448_server_hello, &dhe_rfc8448),
+        client.provideWithSecret(.handshake, &rfc8448_server_hello, &dhe_rfc8448),
     );
 }
 
@@ -1663,7 +1703,7 @@ test "core: client and server derive the same handshake secrets" {
 
     try client.start(&rfc8448_client_hello);
     _ = client.next().?;
-    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
 
     try server.provide(
         .plaintext,
@@ -1720,7 +1760,7 @@ test "core client: RFC 8448 §3 encrypted flight verifies in order" {
 
     try client.start(&rfc8448_client_hello);
     _ = client.next().?;
-    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
 
     var flight_buf: [4096]u8 = undefined;
     const flight = fixtures.rfc8448.b64("server_flight.b64");
@@ -1746,7 +1786,7 @@ test "core client: the flight is refused at the wrong level" {
     defer client.deinit();
     try client.start(&rfc8448_client_hello);
     _ = client.next().?;
-    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
 
     var flight_buf: [4096]u8 = undefined;
     const flight = fixtures.rfc8448.b64("server_flight.b64");
@@ -1798,7 +1838,7 @@ test "core client: RFC 8448 §3 full replay closes the gate" {
     try client.start(&rfc8448_client_hello);
     try testing.expectEqual(level.Level.plaintext, client.next().?.message.level);
 
-    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
     try testing.expectEqual(level.Level.handshake, client.next().?.read_level);
     try testing.expectEqual(level.Level.handshake, client.next().?.write_level);
     try testing.expectEqual(level.Level.handshake, client.next().?.key_available);
@@ -1897,7 +1937,55 @@ test "client hybrid: the core retains the KEM key and decapsulates the server sh
         .aes_128_gcm_sha256,
         &share,
     );
-    try client.provideHybrid(.plaintext, sh, keypairs, &.{});
+    try client.provide(.plaintext, sh);
+    try testing.expectEqual(Client.State.wait_encrypted_extensions, client.state);
+}
+
+// The core derives the classical shared secret from the peer's key share. The
+// server half here exists only to produce the share and the secret the client
+// must arrive at; no caller supplies a secret to the core.
+test "client: provide derives the classical shared secret" {
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+
+    var slots: [8]level.Output = undefined;
+    var client: Client = .init(&slots, .init);
+    defer client.deinit();
+
+    var ch_buf: [2048]u8 = undefined;
+    _ = try client.startEncoded(
+        &ch_buf,
+        .init(@splat(0x21)),
+        client_keys,
+        "capacity.test",
+        &.{"h2"},
+        &.{},
+    );
+
+    const share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    var sh_buf: [512]u8 = undefined;
+    const sh = try server_hello.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0x42),
+        &.{},
+        .aes_128_gcm_sha256,
+        &share,
+    );
+
+    var secret_buf: [hybrid_kex.max_shared_secret_len]u8 = undefined;
+    const parsed_sh = try server_hello.parse(sh);
+    const derived = try client.deriveSharedSecret(parsed_sh, &secret_buf);
+    var expected: [32]u8 = undefined;
+    try x25519.sharedSecret(
+        server_keys.x25519.secret_key,
+        client_keys.x25519.public_key,
+        &expected,
+    );
+    try testing.expectEqualSlices(u8, &expected, derived);
+
+    try client.provide(.plaintext, sh);
     try testing.expectEqual(Client.State.wait_encrypted_extensions, client.state);
 }
 
@@ -1962,7 +2050,7 @@ test "client hybrid: policy and group mismatches are caught" {
         );
         try testing.expectError(
             error.UnexpectedMessage,
-            client.provideHybrid(.plaintext, sh, keypairs, &.{}),
+            client.provide(.plaintext, sh),
         );
     }
 }
@@ -2019,7 +2107,7 @@ test "core: client and server complete a handshake with each other" {
     defer client.deinit();
     try client.start(&rfc8448_client_hello);
     _ = client.next().?;
-    try client.provide(.plaintext, sh, &dhe);
+    try client.provideWithSecret(.plaintext, sh, &dhe);
 
     // Drain the server's queued flight and hand each message to the client.
     var flight_messages: usize = 0;
@@ -2095,7 +2183,7 @@ test "core: client authentication completes both ways" {
     };
     try client.start(&rfc8448_client_hello);
     _ = client.next().?;
-    try client.provide(.plaintext, sh, &dhe);
+    try client.provideWithSecret(.plaintext, sh, &dhe);
 
     // The server's flight, with a CertificateRequest in its legal position:
     // after EncryptedExtensions and before Certificate (RFC 8446 §4.3.2).
@@ -2147,7 +2235,7 @@ test "core client: resumption_master_secret and PSK match RFC 8448 §4" {
 
     try client.start(&rfc8448_client_hello);
     _ = client.next().?;
-    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
 
     var flight_buf: [4096]u8 = undefined;
     const flight = fixtures.rfc8448.b64("server_flight.b64");
@@ -2414,7 +2502,7 @@ fn rfc8448ConnectedClient(slots: []level.Output) !Client {
     client.offered.insert(.record_size_limit);
     try client.start(&rfc8448_client_hello);
     _ = client.next().?;
-    try client.provide(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
 
     var flight_buf: [4096]u8 = undefined;
     const flight = fixtures.rfc8448.b64("server_flight.b64");
@@ -2621,7 +2709,7 @@ test "tickets: server issues one and both sides derive the same PSK" {
     defer client.deinit();
     try client.start(&rfc8448_client_hello);
     _ = client.next().?;
-    try client.provide(.plaintext, sh, &dhe);
+    try client.provideWithSecret(.plaintext, sh, &dhe);
     while (server.next()) |out| switch (out) {
         .message => |m| try client.provideHandshake(.handshake, m.bytes),
         else => {},
@@ -2755,7 +2843,7 @@ test "early data: the server derives the same early secret, and demands EndOfEar
         &flight_buf,
     );
 
-    try client.provide(.plaintext, sh, &dhe);
+    try client.provideWithSecret(.plaintext, sh, &dhe);
     while (server.next()) |out| switch (out) {
         .message => |m| try client.provideHandshake(.handshake, m.bytes),
         else => {},
@@ -2890,7 +2978,7 @@ test "alpn: server preference wins and both roles see the selection" {
         &flight_buf,
     );
 
-    try client.provide(.plaintext, sh, &dhe);
+    try client.provideWithSecret(.plaintext, sh, &dhe);
     const ee = server.next().?.message;
     try client.provideHandshake(.handshake, ee.bytes);
     try testing.expectEqualStrings("http/1.1", client.selectedAlpn().?);
