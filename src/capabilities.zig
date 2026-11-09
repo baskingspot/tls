@@ -56,13 +56,42 @@ pub fn validateHybridGroups(
     }
 }
 
+/// RFC 10024 hybrid negotiation policy for one handshake role.
+pub const HybridPolicy = struct {
+    /// Hybrid groups advertised in supported_groups. Caller-owned; the slice
+    /// must outlive the handshake because HRR reuses it verbatim.
+    supported_groups: []const NamedGroup,
+    /// Optional hybrid key_share sent in ClientHello1. It must also appear in
+    /// supported_groups. null advertises support without an initial share,
+    /// allowing a server to select the group through HelloRetryRequest.
+    initial_key_share: ?NamedGroup,
+
+    /// Hybrid negotiation disabled: no advertised groups and no initial share.
+    pub const empty: HybridPolicy = .{ .supported_groups = &.{}, .initial_key_share = null };
+
+    /// Validate the compiled support, group list, and initial-share relation.
+    pub fn validate(self: HybridPolicy) HybridPolicyError!void {
+        if (self.initial_key_share) |group| {
+            if (std.mem.findScalar(NamedGroup, self.supported_groups, group) == null)
+                return error.InvalidHybridPolicy;
+        }
+        try validateHybridGroups(.client, self.supported_groups);
+    }
+
+    /// Report whether this policy requires a P-384 keypair.
+    pub fn requiresP384(self: HybridPolicy) bool {
+        for (self.supported_groups) |group| {
+            const spec = group.hybridSpec() orelse continue;
+            if (spec.classical_group == .secp384r1) return true;
+        }
+        return false;
+    }
+};
+
 /// Report whether a group list requires a P-384 keypair.
 pub fn requiresP384(groups: []const NamedGroup) bool {
-    for (groups) |group| {
-        const spec = group.hybridSpec() orelse continue;
-        if (spec.classical_group == .secp384r1) return true;
-    }
-    return false;
+    const policy: HybridPolicy = .{ .supported_groups = groups, .initial_key_share = null };
+    return policy.requiresP384();
 }
 
 test "active backend identity matches the private provider facade" {

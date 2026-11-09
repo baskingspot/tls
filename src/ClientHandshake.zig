@@ -220,32 +220,7 @@ pub const KeyPairs = handshake_key_pairs.KeyPairs;
 
 pub const HybridPolicyError = capabilities.HybridPolicyError;
 
-pub const HybridPolicy = struct {
-    /// RFC 10024 hybrid groups advertised in supported_groups. Caller-owned;
-    /// the slice must outlive the handshake because HRR reuses it verbatim.
-    supported_groups: []const NamedGroup,
-    /// Optional hybrid key_share sent in ClientHello1. It must also appear in
-    /// supported_groups. null advertises support without an initial share,
-    /// allowing a server to select the group through HelloRetryRequest.
-    initial_key_share: ?NamedGroup,
-
-    /// Hybrid negotiation disabled: no advertised groups and no initial share.
-    pub const empty: HybridPolicy = .{ .supported_groups = &.{}, .initial_key_share = null };
-
-    /// Validate the compiled support, group list, and initial-share relation.
-    pub fn validate(self: HybridPolicy) HybridPolicyError!void {
-        if (self.initial_key_share) |group| {
-            if (mem.findScalar(NamedGroup, self.supported_groups, group) == null)
-                return error.InvalidHybridPolicy;
-        }
-        try capabilities.validateHybridGroups(.client, self.supported_groups);
-    }
-
-    /// Report whether this policy requires a P-384 keypair.
-    pub fn requiresP384(self: HybridPolicy) bool {
-        return capabilities.requiresP384(self.supported_groups);
-    }
-};
+pub const HybridPolicy = capabilities.HybridPolicy;
 
 // ast-grep-ignore: public-struct-field-default -- options bag: call sites override one knob
 pub const Config = struct {

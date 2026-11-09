@@ -307,7 +307,14 @@ commit per role, and the method-level delegations follow inside that.
 ### 5.6 What the engine still owns after the adapter
 
 The test of a finished extraction, written before the work so it cannot be
-retrofitted. After the client adapter, `ClientHandshake` may own only:
+retrofitted.
+
+The core is not finished when the RFC 8448 trace replays. It is finished when
+every public entry point can be expressed through it. Twice now, work that
+looked like an adapter needed core work first; that is the evidence for the rule
+rather than an excuse from it.
+
+After the client adapter, `ClientHandshake` may own only:
 
 - record framing and parsing: content type, length, the 5-byte header;
 - record protection: the `RecordLayer`s, sequence numbers, the pending-write

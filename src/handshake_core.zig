@@ -124,6 +124,8 @@ const aead = @import("aead.zig");
 const fixtures = @import("fixtures");
 const x25519 = @import("x25519.zig");
 const suite_state = @import("suite_state.zig");
+const capabilities = @import("capabilities.zig");
+const hybrid_kex = @import("hybrid_kex.zig");
 
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 
@@ -146,7 +148,8 @@ pub const Error = error{
     ClientCertificateRequired,
     /// A server configured with ALPN found no overlap with the client.
     NoApplicationProtocol,
-} || server_hello.ParseError || certificate.VerifyError ||
+} || capabilities.HybridPolicyError || hybrid_kex.Error ||
+    error{MissingP384KeyPair} || server_hello.ParseError || certificate.VerifyError ||
     certificate.ParseError || certificate.EncodeError ||
     finished.VerifyError || encrypted_extensions.ParseError ||
     encrypted_extensions.EncodeError || certificate_request.ParseError ||
@@ -214,6 +217,13 @@ pub const Client = struct {
     /// Set once ServerHello selects the suite, so later messages can be checked
     /// against the chosen arm.
     selected: ?CipherSuite,
+    /// RFC 10024 hybrid policy. Set by `offerHybrid` before the ClientHello is
+    /// encoded; `startEncoded` reads it.
+    hybrid: capabilities.HybridPolicy,
+    /// The RFC 10024 client key for the group the server may select later.
+    /// Retained because the handshake still owns it until ServerHello says
+    /// which group won; zeroized in `deinit`.
+    kem_key: ?hybrid_kex.ClientKeyPair,
     state: State,
 
     pub const State = enum {
@@ -286,14 +296,26 @@ pub const Client = struct {
             .early_len = 0,
             .post_handshake_count = 0,
             .selected = null,
+            .hybrid = .empty,
+            .kem_key = null,
             .state = .start,
         };
     }
 
     pub fn deinit(self: *Client) void {
+        if (self.kem_key) |*key| key.deinit();
+        self.kem_key = null;
         self.suite.secureZero();
         self.queue.clear();
         self.* = undefined;
+    }
+
+    /// Advertise RFC 10024 hybrid groups, and optionally send an initial share.
+    /// Legal before the ClientHello is encoded and not after. `keypairs` are
+    /// checked when the ClientHello is built, so a missing P-384 pair fails
+    /// before a byte is written.
+    pub fn offerHybrid(self: *Client, policy: capabilities.HybridPolicy) void {
+        self.hybrid = policy;
     }
 
     pub fn next(self: *Client) ?level.Output {
@@ -328,10 +350,52 @@ pub const Client = struct {
         server_hello_msg: []const u8,
         dhe: []const u8,
     ) Error!void {
+        try self.acceptServerHello(provided);
+        const sh = try server_hello.parse(server_hello_msg);
+        return self.provideServerHelloParsed(server_hello_msg, sh, dhe);
+    }
+
+    /// ServerHello when the peer selected an RFC 10024 hybrid group. The core
+    /// retains the client KEM key, so decapsulation happens here; `dhe` is used
+    /// only if the server selected a classical group instead. RFC 10024 §4.3.
+    pub fn provideHybrid(
+        self: *Client,
+        provided: level.Level,
+        server_hello_msg: []const u8,
+        keypairs: KeyPairs,
+        dhe: []const u8,
+    ) Error!void {
+        try self.acceptServerHello(provided);
+        const sh = try server_hello.parse(server_hello_msg);
+        switch (sh.key_share) {
+            .kem => |*share| {
+                const client_key = if (self.kem_key) |*key| key else return error.UnexpectedMessage;
+                if (client_key.group != share.group) return error.UnexpectedMessage;
+                var secret: [hybrid_kex.max_shared_secret_len]u8 = undefined;
+                defer std.crypto.secureZero(u8, &secret);
+                const shared = try hybrid_kex.decapsulate(
+                    client_key,
+                    share.data.constSlice(),
+                    &keypairs,
+                    &secret,
+                );
+                return self.provideServerHelloParsed(server_hello_msg, sh, shared);
+            },
+            else => return self.provideServerHelloParsed(server_hello_msg, sh, dhe),
+        }
+    }
+
+    fn acceptServerHello(self: *Client, provided: level.Level) Error!void {
         if (self.state != .wait_server_hello) return error.UnexpectedMessage;
         try level.check(.server_hello, provided);
+    }
 
-        const sh = try server_hello.parse(server_hello_msg);
+    fn provideServerHelloParsed(
+        self: *Client,
+        server_hello_msg: []const u8,
+        sh: server_hello.ServerHello,
+        dhe: []const u8,
+    ) Error!void {
         // Move the buffered transcript into the selected arm: the ClientHello
         // is already absorbed, and the hash state carries across.
         switch (self.suite) {
@@ -435,6 +499,8 @@ pub const Client = struct {
         alpn: []const []const u8,
         extras: []const extension_type.ExtraExtension,
     ) Error![]const u8 {
+        var share_buffer: [hybrid_kex.max_client_share_len]u8 = undefined;
+        const share = try self.prepareHybrid(&keypairs, &share_buffer);
         const ch = try client_hello.encodeWithHybridGroupsAndExtensions(
             out,
             random,
@@ -443,12 +509,32 @@ pub const Client = struct {
             if (keypairs.p384) |k| k.public_key else null,
             host,
             alpn,
-            &.{},
-            null,
+            self.hybrid.supported_groups,
+            share,
             extras,
         );
         try self.start(ch);
         return ch;
+    }
+
+    /// Generate and retain the RFC 10024 client key when the policy asks for an
+    /// initial share, and return the key_share value to encode. Regenerating on
+    /// a later ClientHello (HelloRetryRequest) replaces the retained key.
+    fn prepareHybrid(
+        self: *Client,
+        keypairs: *const KeyPairs,
+        out: *[hybrid_kex.max_client_share_len]u8,
+    ) Error!?client_hello.KemShare {
+        try self.hybrid.validate();
+        if (self.hybrid.requiresP384() and keypairs.p384 == null)
+            return error.MissingP384KeyPair;
+        const group = self.hybrid.initial_key_share orelse return null;
+        if (self.kem_key == null or self.kem_key.?.group != group) {
+            if (self.kem_key) |*old| old.deinit();
+            self.kem_key = try .generate(group);
+        }
+        const public_key = try self.kem_key.?.publicKey(keypairs, out);
+        return .{ .group = group, .data = public_key };
     }
 
     /// Encode a resumption ClientHello: pre_shared_key last, binder computed
@@ -466,6 +552,8 @@ pub const Client = struct {
         obfuscated_ticket_age: u32,
     ) Error![]const u8 {
         const suite = self.psk_suite orelse .aes_128_gcm_sha256;
+        var share_buffer: [hybrid_kex.max_client_share_len]u8 = undefined;
+        const share = try self.prepareHybrid(&keypairs, &share_buffer);
         const result = try client_hello.encodeWithPskAndHybridGroups(
             out,
             random,
@@ -474,8 +562,8 @@ pub const Client = struct {
             if (keypairs.p384) |k| k.public_key else null,
             host,
             alpn,
-            &.{},
-            null,
+            self.hybrid.supported_groups,
+            share,
             .psk_dhe_ke,
             identity,
             obfuscated_ticket_age,
@@ -1743,6 +1831,142 @@ test "core client: RFC 8448 §3 full replay closes the gate" {
 // The core talking to itself: no engine, both roles, a real certificate and a
 // real signature. The client accepts the flight the server composed, which is
 // the milestone the adapter phase depends on.
+// RFC 10024 §4.1-§4.3 - the core encodes the hybrid share, retains the client
+// key, and decapsulates the server's share. Nothing outside the core holds the
+// KEM key at any point.
+test "client hybrid: the core retains the KEM key and decapsulates the server share" {
+    var keypairs: KeyPairs = try .init(.generate());
+    defer keypairs.secureZero();
+
+    var slots: [8]level.Output = undefined;
+    var client: Client = .init(&slots, .init);
+    defer client.deinit();
+    client.offerHybrid(.{
+        .supported_groups = &.{.x25519_mlkem768},
+        .initial_key_share = .x25519_mlkem768,
+    });
+
+    var ch_buf: [4096]u8 = undefined;
+    const ch = try client.startEncoded(
+        &ch_buf,
+        .init(@splat(0x21)),
+        keypairs,
+        "capacity.test",
+        &.{"h2"},
+        &.{},
+    );
+    try testing.expect(client.kem_key != null);
+
+    const parsed = try client_hello.parse(ch);
+    try testing.expectEqual(@as(usize, 1), parsed.hybrid_key_shares.len);
+    const client_share = parsed.hybrid_key_shares.constSlice()[0];
+    try testing.expectEqual(@as(kex.NamedGroup, .x25519_mlkem768), client_share.group);
+
+    // The server half of RFC 10024, done here only to produce a share and the
+    // secret the client must arrive at.
+    var server_share: [hybrid_kex.max_server_share_len]u8 = undefined;
+    var server_secret: [hybrid_kex.max_shared_secret_len]u8 = undefined;
+    const encapsulated = try hybrid_kex.encapsulate(
+        .x25519_mlkem768,
+        client_share.data,
+        &keypairs,
+        &server_share,
+        &server_secret,
+    );
+
+    var client_secret: [hybrid_kex.max_shared_secret_len]u8 = undefined;
+    defer std.crypto.secureZero(u8, &client_secret);
+    const decapsulated = try hybrid_kex.decapsulate(
+        &client.kem_key.?,
+        encapsulated.server_share,
+        &keypairs,
+        &client_secret,
+    );
+    try testing.expectEqualSlices(u8, encapsulated.shared_secret, decapsulated);
+
+    var share: server_hello.KeyShare = .{ .kem = .{
+        .group = .x25519_mlkem768,
+        .data = .empty,
+    } };
+    share.kem.data.appendSliceAssumeCapacity(encapsulated.server_share);
+    var sh_buf: [2048]u8 = undefined;
+    const sh = try server_hello.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0x42),
+        &.{},
+        .aes_128_gcm_sha256,
+        &share,
+    );
+    try client.provideHybrid(.plaintext, sh, keypairs, &.{});
+    try testing.expectEqual(Client.State.wait_encrypted_extensions, client.state);
+}
+
+// A hybrid policy is checked before a byte is encoded, and a server that names
+// a different hybrid group than the one we retained a key for is rejected.
+test "client hybrid: policy and group mismatches are caught" {
+    var keypairs: KeyPairs = try .init(.generate());
+    defer keypairs.secureZero();
+    var slots: [8]level.Output = undefined;
+    var out: [4096]u8 = undefined;
+
+    {
+        var client: Client = .init(&slots, .init);
+        defer client.deinit();
+        client.offerHybrid(.{
+            .supported_groups = &.{.x25519_mlkem768},
+            .initial_key_share = .secp256r1_mlkem768,
+        });
+        try testing.expectError(error.InvalidHybridPolicy, client.startEncoded(
+            &out,
+            .init(@splat(0x21)),
+            keypairs,
+            "capacity.test",
+            &.{"h2"},
+            &.{},
+        ));
+        try testing.expect(client.kem_key == null);
+    }
+
+    {
+        var client: Client = .init(&slots, .init);
+        defer client.deinit();
+        client.offerHybrid(.{
+            .supported_groups = &.{.x25519_mlkem768},
+            .initial_key_share = .x25519_mlkem768,
+        });
+        _ = try client.startEncoded(
+            &out,
+            .init(@splat(0x21)),
+            keypairs,
+            "capacity.test",
+            &.{"h2"},
+            &.{},
+        );
+        var share: server_hello.KeyShare = .{ .kem = .{
+            .group = .secp384r1_mlkem1024,
+            .data = .empty,
+        } };
+        // Well-formed length for that group, so the rejection comes from the
+        // core's group check and not from the ServerHello parser.
+        const spec = kex.NamedGroup.secp384r1_mlkem1024.hybridSpec().?;
+        var zeros: [hybrid_kex.max_server_share_len]u8 = @splat(0);
+        zeros[0] = 0x04; // uncompressed-point marker for the NIST component
+        share.kem.data.appendSliceAssumeCapacity(zeros[0..spec.server_share_len]);
+        var sh_buf: [2048]u8 = undefined;
+        const sh = try server_hello.encodeWithKeyShare(
+            &sh_buf,
+            @splat(0x42),
+            &.{},
+            .aes_128_gcm_sha256,
+            &share,
+        );
+        try testing.expectError(
+            error.UnexpectedMessage,
+            client.provideHybrid(.plaintext, sh, keypairs, &.{}),
+        );
+    }
+}
+
 test "core: client and server complete a handshake with each other" {
     const server_hello_mod = server_hello;
     const ecdsa_cert = fixtures.server_ecdsa_cert_der;

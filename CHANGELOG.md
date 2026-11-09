@@ -7,6 +7,13 @@ All notable changes to tls are recorded here. The format follows
 
 ### Added
 
+- `handshake_core.Client` owns RFC 10024 hybrid key agreement: `offerHybrid`
+  sets the group policy and optional initial share, `startEncoded` and
+  `startEncodedWithPsk` encode the share, the client KEM key is retained and
+  zeroized in `deinit`, and `provideHybrid` decapsulates the server share. The
+  classical shared secret stays caller-supplied, so the core takes the retained
+  secret state and nothing else. `capabilities.HybridPolicy` is now the one
+  policy type; `ClientHandshake.HybridPolicy` is an alias for it.
 - `tls_nonblocking.Client`: a caller-driven TLS 1.3 client with the same shape
   as `Server` — caller-owned buffers, one outbound record at a time, no
   thread and no blocking call. Events are `need_input`, `need_output`,
