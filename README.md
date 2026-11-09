@@ -65,6 +65,18 @@ The [guide](https://baskingspot.dev/tls/#install) has the full setup.
 The library builds on Zig 0.16 and 0.17. The `tls_std`, `tls_nonblocking`, and
 `tls_ktls` integrations build on both; `tls_xev` builds on 0.16 only.
 
+The build needs libcrypto and `pkg-config` to find it. The module calls
+`linkSystemLibrary("crypto")`, and the C ABI step runs `pkg-config --variable=libdir
+libcrypto` directly, so supplying a library path is not enough:
+
+```nix
+buildInputs = [ pkgs.openssl.dev pkgs.openssl.out pkgs.pkg-config ];
+PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+```
+
+Without the `.pc` file the build fails while translating the OpenSSL headers
+with a message about the dynamic system library `crypto` and no search paths.
+
 ## Documentation
 
 - The [guide](https://baskingspot.dev/tls/) covers the buffer model, the drive loop, and working client and server code.
