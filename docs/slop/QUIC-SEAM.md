@@ -314,6 +314,13 @@ every public entry point can be expressed through it. Twice now, work that
 looked like an adapter needed core work first; that is the evidence for the rule
 rather than an excuse from it.
 
+Known open, same class, found while doing the client: the core's *server* still
+takes a caller-supplied `dhe` on its provide path and has no RFC 10024 hybrid
+support at all. Both must move before the server adapter, for the reason the
+client's move gave: a second consumer (quic, then the server adapter) would
+otherwise own ECDHE and hybrid key agreement itself. The client is done —
+`provide` derives from its own keypair, and no public entry accepts a secret.
+
 After the client adapter, `ClientHandshake` may own only:
 
 - record framing and parsing: content type, length, the 5-byte header;
