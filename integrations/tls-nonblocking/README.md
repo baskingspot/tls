@@ -1,6 +1,6 @@
 # tls-nonblocking
 
-Caller-driven TLS 1.3 transports for Zig 0.16.
+Caller-driven TLS 1.3 transports for Zig 0.16 and 0.17.
 
 `tls_nonblocking.Server` and `tls_nonblocking.Client` turn transport bytes into
 borrowed plaintext and expose one outbound record at a time. The caller owns the
@@ -15,6 +15,45 @@ protocol is policy, not framing. `close_notify` and `closed` are separate events
 RX can end while TX stays open (RFC 8446 §6.1).
 
 Readiness status lives in [`PRODUCTION_READINESS.md`](../../PRODUCTION_READINESS.md).
+
+## Blocking socket client
+
+`SocketClient` drives `Client` over a connected `std.Io.net.Stream`. It presents
+plaintext `Io.Reader` and `Io.Writer` interfaces and completes the handshake in
+`init`. The caller owns and closes the socket on success and failure. `deinit`
+releases only TLS buffers and the optional trust bundle, including after a
+failed `init`.
+
+```zig
+var connection: transport.SocketClient = undefined;
+try connection.init(gpa, io, socket, .{
+    .ca_pem = pem,
+    .host_name = "example.com",
+    .now_sec = now_sec,
+    .alpn = &.{"h2"},
+    .deadline_ns = deadline_ns,
+});
+defer connection.deinit();
+const reader = connection.reader();
+const writer = connection.writer();
+```
+
+`ca_pem` is parsed into a bundle owned by the connection. `host_name`, the ALPN
+slice and entries, and their bytes are borrowed until `deinit`. `selectedAlpn`
+reports the authenticated choice; callers decide which protocols to accept.
+
+`Options.deadline_ns` and `setDeadline` use absolute monotonic nanoseconds for
+read waits, including the eager handshake. They do not bound writes. `TimedOut`
+sets `expired`; cancellation and `DeadlineUnsupported` do not. Zig 0.16 can
+report an already-expired deadline but reports a future one as
+`DeadlineUnsupported`. `readError` and `writeError` recover the cause collapsed
+by the std interfaces. `peerAlert` retains the peer's exact alert after
+`error.PeerAlert`. Bare transport EOF is `UnexpectedEof`. An authenticated
+`close_notify` ends the plaintext reader with `error.EndOfStream`.
+
+Timed reads reap pending batch operations before they return. A concurrent
+successful completion retains its received bytes. A successful await without
+a completion returns `error.NoReadCompletion`, not a timeout.
 
 ## Import
 
@@ -43,9 +82,12 @@ const added = try transport.anchors.addCertsFromPemBytes(&bundle, gpa, pem, now_
 
 `added` is the number of anchors the bundle gained. std drops an expired
 certificate or one with an unrecognized object identifier without an error, so
-zero means the trust store came up empty — check it before the first handshake
-rather than debugging the verification failure it produces. `now_sec` is the
-caller's clock; anchors are skipped when it is past their `notAfter`.
+zero means the trust store came up empty. `now_sec` is the caller's clock;
+anchors are skipped when it is past their `notAfter`.
+
+Use `anchors.build(gpa, pem, now_sec)` when the caller wants a complete owned
+store. It returns `NoTrustAnchors` for an empty result and discards every anchor
+if a later PEM block fails. Call `deinit(gpa)` on the returned bundle.
 
 ## Connection storage
 

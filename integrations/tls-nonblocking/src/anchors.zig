@@ -6,6 +6,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Certificate = std.crypto.Certificate;
+const TlsCertificate = @import("tls").Certificate;
 
 /// PEM bodies wrap at 64 columns, so interior newlines are part of the encoding.
 const pem_decoder = std.base64.standard.decoderWithIgnore("\t\n\x0b\x0c\r ");
@@ -17,17 +18,34 @@ pub const Error = Certificate.Bundle.ParseCertError || error{
     MissingEndCertificateMarker,
     /// A certificate body that is not valid base64.
     InvalidPemBase64,
-    /// The decoded bytes are not one DER SEQUENCE that fills the block.
+    /// The decoded bytes do not form a complete DER certificate.
     InvalidCertificateDer,
 };
 
+pub const BuildError = Error || error{NoTrustAnchors};
+
+/// Build an owned trust store from every PEM certificate block.
+///
+/// `addCertsFromPemBytes` can leave valid anchors behind when a later block
+/// fails. This constructor discards that partial store, and reports an empty
+/// result as `error.NoTrustAnchors`. Call `bundle.deinit(allocator)` on success.
+pub fn build(
+    allocator: Allocator,
+    pem: []const u8,
+    now_sec: i64,
+) BuildError!Certificate.Bundle {
+    var bundle: Certificate.Bundle = .empty;
+    errdefer bundle.deinit(allocator);
+    const added = try addCertsFromPemBytes(&bundle, allocator, pem, now_sec);
+    if (added == 0) return error.NoTrustAnchors;
+    return bundle;
+}
+
 /// A DER certificate is a single SEQUENCE that fills the whole buffer.
 ///
-/// `std.crypto.Certificate.Bundle.parseCert` walks the certificate with
-/// unchecked reads: `der.Element.parse` indexes `bytes[i]` and `bytes[i + 1]`
-/// past the end of a short or truncated block. In Debug that is a panic; in
-/// ReleaseFast it is an out-of-bounds read. The whole buffer is checked here,
-/// before std sees it, so caller-supplied PEM cannot reach that path.
+/// Check the TLV bounds and outer layout here.
+/// The checked TLS parser validates nested fields before the standard-library
+/// bundle parser reads them.
 fn validCertificateDer(der: []const u8) bool {
     const outer = derElement(der, 0) orelse return false;
     if (outer.tag != 0x30 or outer.end != der.len) return false;
@@ -38,14 +56,16 @@ fn validCertificateDer(der: []const u8) bool {
     var tbs_children: u8 = 0;
     var i = outer.body;
     while (i < outer.end) {
+        if (seen == 3) return false;
         const child = derElement(der, i) orelse return false;
         if (child.end > outer.end) return false;
         if (seen == 0) {
             if (child.tag != 0x30) return false;
             tbs_children = countChildren(der, child);
-            // version, serialNumber, signature, issuer, validity, subject,
-            // subjectPublicKeyInfo are the first seven std reads.
-            if (tbs_children < 6) return false;
+            // An explicit version precedes the six mandatory TBS fields.
+            const first = derElement(der, child.body) orelse return false;
+            const required: u8 = if (first.tag == 0xa0) 7 else 6;
+            if (tbs_children < required) return false;
         }
         seen += 1;
         i = child.end;
@@ -157,6 +177,14 @@ pub fn addCertsFromPemBytes(
             bundle.bytes.items.len = start;
             return error.InvalidCertificateDer;
         }
+        _ = TlsCertificate.parse(.{
+            .buffer = bundle.bytes.items,
+            .index = start,
+        }) catch |err| {
+            bundle.bytes.items.len = start;
+            if (err == error.CertificateHasUnrecognizedObjectId) continue;
+            return error.InvalidCertificateDer;
+        };
         bundle.parseCert(gpa, start, now_sec) catch |err| {
             bundle.bytes.items.len = start;
             return err;

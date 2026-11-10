@@ -2,9 +2,9 @@
 
 This page answers one question: what does tls actually do, and what proves it?
 
-It is not a release note and not a roadmap. There is no tagged release and no
-frozen API, so pin a commit. The claims below bind to the commits that produced
-their evidence; a later commit inherits nothing automatically.
+It is not a release note and not a roadmap. Tags through v0.2.1 exist, but the
+API is not frozen. The claims below bind to the commits that produced their
+evidence; a later commit inherits nothing automatically.
 
 ## The claim
 
@@ -32,7 +32,7 @@ commit because the branch moved.
 | Session resumption | Partial | The engine side is proven; persistence, expiry, rotation, replay, and SNI partitioning are yours |
 | 0-RTT early data | Partial | Offer, accept, and reject are proven; accept is gated on the RFC 8446 §4.2.10 exact-suite, ALPN, and first-identity checks; ticket-age and anti-replay policy are yours, and the engine default is off |
 | Caller-driven readiness server | Partial | `tls_nonblocking.Server` has byte-stream and OpenSSL tests on Linux. HTTP consumer acceptance with `h2spec` over TLS on Linux and macOS remains open (#167). |
-| Caller-driven readiness client | Partial | `tls_nonblocking.Client` has an in-memory handshake, ALPN, partial-write, and close_notify suite against `tls_nonblocking.Server`. No socket-level or third-party peer has exercised it yet, and no consumer wraps it (#167). |
+| Caller-driven readiness client | Partial | `tls_nonblocking.Client` has in-memory handshake, ALPN, partial-write, and close_notify tests against `tls_nonblocking.Server`. `SocketClient` adds loopback coverage with forced short socket I/O, coalesced early plaintext, partial consumption, deadlines, peer alerts, close_notify, and truncation. No third-party peer has exercised this new adapter. HTTP's loopback consumer evidence remains bound to its recorded dependency revision, not this commit (#167). |
 | kTLS | Proven | Linux only; key export and the kernel data plane |
 | C ABI | Partial | Client lifecycle only; see `include/baskingspot_tls.h` |
 | TLS 1.2, DTLS, Windows | Out of scope | Not coming |
@@ -111,10 +111,11 @@ The row is reported on its own.
 - **Forced-HRR interop.** HelloRetryRequest is proven in memory and in
   TLS-Anvil. The harness does not yet force OpenSSL into HRR, so that path is
   not gated.
-- **HTTP readiness transport.** The caller-driven server has library tests. The
-  HTTP readiness consumer still needs TLS integration and `h2spec` acceptance on
-  Linux and macOS (#167). Those results do not follow from the blocking engine's
-  consumer evidence.
+- **HTTP readiness transport.** The caller-driven server has library tests, and
+  HTTP has loopback client evidence at its own pinned revision. The caller-driven
+  transport still needs `h2spec` acceptance on Linux and macOS (#167). Neither
+  result follows from the blocking engine's consumer evidence, and neither
+  qualifies the adapter on this commit.
 - **Deployment shapes beyond the tested profiles.** The resource and recovery
   checks cover the recorded Linux profiles, not every kernel, allocator, or
   connection pattern a deployment will see.

@@ -57,6 +57,13 @@ pub fn build(b: *std.Build) void {
     });
     const run = b.addRunArtifact(tests);
     run.has_side_effects = true;
+    const unit_tests = b.addTest(.{
+        .root_module = mod,
+        .test_runner = .{ .path = testingx.path("src/runner.zig"), .mode = .simple },
+    });
+    const run_units = b.addRunArtifact(unit_tests);
+    run_units.has_side_effects = true;
     const test_step = b.step("test", "Run byte-stream and backpressure tests");
     test_step.dependOn(&run.step);
+    test_step.dependOn(&run_units.step);
 }

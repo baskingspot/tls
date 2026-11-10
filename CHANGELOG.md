@@ -5,8 +5,11 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
 ### Added
 
+- `Certificate` exposes the bounds-checked X.509 parser. PEM anchor validation uses it before the standard-library bundle parser.
 - `handshake_core.Server` derives the shared secret too, so no public entry in
   either role accepts one. The server retains the client's classical key shares
   from the ClientHello in caller-owned storage (`usePeerShareStorage`, sized by
@@ -34,6 +37,8 @@ All notable changes to tls are recorded here. The format follows
   §6.1). ALPN is reported, not enforced: a caller that requires `h2` checks
   `selectedAlpn()` after `handshake_complete`. Trust anchors come from
   `Options.ca` (Baskingspot issue #167).
+- `tls_nonblocking.SocketClient` is a blocking TLS client over a caller-owned `std.Io.net.Stream`. It exposes plaintext byte interfaces and preserves TLS errors through diagnostic methods. Read deadlines include handshake waits and exclude writes. Future deadlines require Zig 0.17. Zig 0.16 reports `DeadlineUnsupported` for future waits. The caller owns the socket.
+- `tls_nonblocking.anchors.build` parses PEM trust anchors into an owned bundle. A parse failure discards the incomplete bundle.
 - `ClientHandshake.NewSessionTicket` is public, so a caller can name the type
   its `new_session_ticket` event carries.
 - `tls_nonblocking.anchors.addCertsFromPemBytes` loads trust anchors from PEM
@@ -56,6 +61,11 @@ All notable changes to tls are recorded here. The format follows
 - Caller-supplied TLS extensions: `extension_type.ExtraExtension` rides `ClientHello` or `EncryptedExtensions` as opaque bytes, and `Config.required_extensions` makes an absent one fail the handshake with `error.MissingRequiredExtension` and `missingExtension()` naming the type. The peer sees `missing_extension` (RFC 8446 §6.2). Every existing encoder signature is unchanged; the extensions-aware forms are new functions. QUIC transport parameters need nothing more from tls than this.
 - `ClientHandshake.clientFinishedMessage` and `ServerHandshake.processClientFinishedMessage` exchange the Finished as bare handshake messages, for a caller that owns its own record layer (QUIC CRYPTO frames). Both enter the same state machine as the record paths: `clientFinished` and `processClientFinished` are now thin wrappers around the shared assembly and verification code, and the record output is unchanged. The bare client path rejects a 0-RTT handshake with `error.EarlyDataUnsupported`, because EndOfEarlyData is not part of that flight; it classifies as an internal limitation, not a peer protocol error.
 - `ClientHandshake` and `ServerHandshake` can retain the TLS 1.3 traffic secrets when the caller asks: set `Config.traffic_secrets` or call `useTrafficSecretStorage`, and `trafficSecrets()` returns them. Without it the engine derives and wipes exactly as before, and the accessor returns `error.NotRetained` rather than zeros. `traffic_secrets.TrafficSecrets.expand` applies HKDF-Expand-Label to a held secret for callers that derive their own keys, such as QUIC (RFC 8446 §7.1, RFC 9001 §5.1).
+
+### Fixed
+
+- `tls_nonblocking.anchors` returns `InvalidCertificateDer` for certificates with excessive fields instead of an integer-overflow panic.
+- `SocketClient.init` rejects out-of-order handshake application data with `UnexpectedRecord` instead of a loop without progress.
 
 ## [0.2.1] - 2026-11-05
 

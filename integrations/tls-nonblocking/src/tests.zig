@@ -2,13 +2,16 @@
 const std = @import("std");
 const testing = std.testing;
 const tls = @import("tls");
-const Server = @import("tls_nonblocking").Server;
+const transport = @import("tls_nonblocking");
+const Server = transport.Server;
+const SocketClient = transport.SocketClient;
 const PrivateKey = tls.signature.PrivateKey;
 const fixtures = @import("fixtures");
 const interop_tests = @import("interop_tests.zig");
 
 comptime {
     _ = interop_tests;
+    _ = SocketClient;
 }
 const frame = tls.frame;
 const cert = &fixtures.server_ecdsa_cert_der;
@@ -653,6 +656,142 @@ fn anchoredBundle(pem: []const u8, now_sec: i64) !Certificate.Bundle {
         now_sec,
     ));
     return bundle;
+}
+
+fn derSequence(out: []u8, parts: []const []const u8) ![]const u8 {
+    std.debug.assert(parts.len <= 3);
+    var length: usize = 0;
+    for (parts) |part| length += part.len;
+    std.debug.assert(length <= std.math.maxInt(u16));
+    var writer: std.Io.Writer = .fixed(out);
+    try writer.writeByte(0x30);
+    if (length < 0x80) {
+        try writer.writeByte(@intCast(length));
+    } else if (length <= std.math.maxInt(u8)) {
+        try writer.writeByte(0x81);
+        try writer.writeByte(@intCast(length));
+    } else {
+        try writer.writeByte(0x82);
+        try writer.writeByte(@intCast(length >> 8));
+        try writer.writeByte(@truncate(length));
+    }
+    for (parts) |part| try writer.writeAll(part);
+    return writer.buffered();
+}
+
+test "anchors: an empty signature BIT STRING returns InvalidCertificateDer" {
+    const source = &fixtures.key_capacity_root_der;
+    const outer = try Certificate.der.Element.parse(source, 0);
+    const tbs = try Certificate.der.Element.parse(source, outer.slice.start);
+    const algorithm = try Certificate.der.Element.parse(source, tbs.slice.end);
+    var der_buf: [8192]u8 = undefined;
+    const malformed = try derSequence(&der_buf, &.{
+        source[outer.slice.start..algorithm.slice.end],
+        "\x03\x00",
+    });
+    var pem_buf: [16384]u8 = undefined;
+    const pem = try encodePem(&pem_buf, malformed);
+    try testing.expectError(error.InvalidCertificateDer, anchors.build(
+        testing.allocator,
+        pem,
+        anchor_time,
+    ));
+}
+
+test "anchors: empty mandatory nested fields return InvalidCertificateDer" {
+    const source = &fixtures.key_capacity_root_der;
+    const outer = try Certificate.der.Element.parse(source, 0);
+    const tbs = try Certificate.der.Element.parse(source, outer.slice.start);
+    const algorithm = try Certificate.der.Element.parse(source, tbs.slice.end);
+    var der_buf: [8192]u8 = undefined;
+    var tbs_buf: [8192]u8 = undefined;
+    var pem_buf: [16384]u8 = undefined;
+    const empty_algorithm = try derSequence(&der_buf, &.{
+        source[outer.slice.start..tbs.slice.end],
+        "\x30\x00",
+        source[algorithm.slice.end..outer.slice.end],
+    });
+    try testing.expectError(error.InvalidCertificateDer, anchors.build(
+        testing.allocator,
+        try encodePem(&pem_buf, empty_algorithm),
+        anchor_time,
+    ));
+    try testing.expectEqual(@as(u8, 0xa0), source[tbs.slice.start]);
+    for ([_]usize{ 4, 6 }) |field_index| {
+        var offset = tbs.slice.start;
+        for (0..field_index) |_| {
+            const child = try Certificate.der.Element.parse(source, offset);
+            offset = child.slice.end;
+        }
+        const field = try Certificate.der.Element.parse(source, offset);
+        const changed_tbs = try derSequence(&tbs_buf, &.{
+            source[tbs.slice.start..offset],
+            "\x30\x00",
+            source[field.slice.end..tbs.slice.end],
+        });
+        const malformed = try derSequence(&der_buf, &.{
+            changed_tbs,
+            source[tbs.slice.end..outer.slice.end],
+        });
+        try testing.expectError(error.InvalidCertificateDer, anchors.build(
+            testing.allocator,
+            try encodePem(&pem_buf, malformed),
+            anchor_time,
+        ));
+    }
+}
+
+// RFC 5280 §4.1.2 — an explicit version precedes six mandatory TBS fields.
+test "anchors: an explicit version requires seven TBS fields" {
+    const der = [_]u8{
+        0x30, 0x17, 0x30, 0x0f, 0xa0, 0x03, 0x02, 0x01, 0x02,
+        0x05, 0x00, 0x05, 0x00, 0x05, 0x00, 0x05, 0x00, 0x05,
+        0x00, 0x30, 0x00, 0x03, 0x02, 0x00, 0x00,
+    };
+    var pem_buf: [128]u8 = undefined;
+    const pem = try encodePem(&pem_buf, &der);
+    try testing.expectError(
+        error.InvalidCertificateDer,
+        anchors.build(testing.allocator, pem, anchor_time),
+    );
+}
+
+test "anchors: 256 outer certificate fields return InvalidCertificateDer" {
+    var der: [528]u8 = undefined;
+    @memcpy(der[0..4], &[_]u8{ 0x30, 0x82, 0x02, 0x0c });
+    @memcpy(der[4..6], &[_]u8{ 0x30, 0x0c });
+    for (0..261) |i| {
+        der[6 + 2 * i] = 0x05;
+        der[7 + 2 * i] = 0;
+    }
+    var pem_buf: [800]u8 = undefined;
+    const pem = try encodePem(&pem_buf, &der);
+    try testing.expectError(
+        error.InvalidCertificateDer,
+        anchors.build(testing.allocator, pem, anchor_time),
+    );
+}
+
+test "anchors.build is owned, nonempty, and atomic" {
+    var pem_buf: [24576]u8 = undefined;
+    const pem = try encodePem(&pem_buf, &fixtures.key_capacity_root_der);
+    var bundle = try anchors.build(testing.allocator, pem, anchor_time);
+    defer bundle.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), bundle.map.count());
+    try testing.expectError(
+        error.NoTrustAnchors,
+        anchors.build(testing.allocator, "not a certificate", anchor_time),
+    );
+
+    var bad_buf: [128]u8 = undefined;
+    const bad = try encodePem(&bad_buf, &.{ 0xde, 0xad, 0xbe, 0xef });
+    var combined: [32768]u8 = undefined;
+    @memcpy(combined[0..pem.len], pem);
+    @memcpy(combined[pem.len..][0..bad.len], bad);
+    try testing.expectError(
+        error.InvalidCertificateDer,
+        anchors.build(testing.allocator, combined[0 .. pem.len + bad.len], anchor_time),
+    );
 }
 
 // RFC 7468 §2, RFC 5280 §6.1 — an anchor supplied as PEM bytes authenticates a

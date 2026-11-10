@@ -4,12 +4,16 @@ const Io = std.Io;
 const c = std.c;
 const testing = std.testing;
 const tls = @import("tls");
-const Server = @import("tls_nonblocking").Server;
+const transport = @import("tls_nonblocking");
+const Server = transport.Server;
+const SocketClient = transport.SocketClient;
 const fixtures = @import("fixtures");
 
 const Context = struct {
     listener: Io.net.Server,
     failure: ?anyerror,
+    early: ?[]const u8 = null,
+    stop_after_handshake: bool = false,
 
     fn run(self: *Context) void {
         self.exchange() catch |err| {
@@ -41,7 +45,7 @@ const Context = struct {
             .reassembly = &reassembly,
         }, .{ .record = &record, .out = &out });
         defer server.deinit();
-        try echo(&server, socket.socket.handle);
+        try echo(&server, socket.socket.handle, self.early, self.stop_after_handshake);
     }
 };
 
@@ -56,9 +60,15 @@ fn wait(fd: c.fd_t, events: i16) !void {
 }
 
 /// Per-call DONTWAIT works on Linux and macOS without a platform-specific loop.
-fn echo(server: *Server, fd: c.fd_t) !void {
+fn echo(
+    server: *Server,
+    fd: c.fd_t,
+    initial: ?[]const u8,
+    stop_after_handshake: bool,
+) !void {
     const Phase = enum { request, response, closing };
     var phase: Phase = .request;
+    var early = initial;
     const request = "ping";
     var request_pos: usize = 0;
     const started = Io.Timestamp.now(testing.io, .awake);
@@ -66,7 +76,14 @@ fn echo(server: *Server, fd: c.fd_t) !void {
         if (started.durationTo(.now(testing.io, .awake)).toMilliseconds() > 5000)
             return error.PeerTimeout;
         switch (try server.next()) {
-            .handshake_complete => try testing.expectEqualStrings("h2", server.selectedAlpn().?),
+            .handshake_complete => {
+                try testing.expectEqualStrings("h2", server.selectedAlpn().?);
+                if (stop_after_handshake) return;
+                if (early) |bytes| {
+                    try testing.expectEqual(bytes.len, try server.write(bytes));
+                    early = null;
+                }
+            },
             .application_data => |bytes| {
                 try testing.expect(bytes.len <= request.len - request_pos);
                 try testing.expectEqualStrings(request[request_pos..][0..bytes.len], bytes);
@@ -155,6 +172,304 @@ test "OpenSSL: poll adapter, short nonblocking I/O, h2 ALPN, echo, and close_not
         defer thread.join();
         try openSsl(target);
     }
+    if (context.failure) |err| return err;
+}
+
+fn connectTo(listener: *Io.net.Server) !Io.net.Stream {
+    const address: Io.net.IpAddress = try .parse(
+        "127.0.0.1",
+        listener.socket.address.getPort(),
+    );
+    return address.connect(testing.io, .{ .mode = .stream });
+}
+
+fn listen() !Io.net.Server {
+    const address: Io.net.IpAddress = try .parse("127.0.0.1", 0);
+    return address.listen(testing.io, .{ .mode = .stream, .reuse_address = true });
+}
+
+fn initLoopbackClient(client: *SocketClient, socket: Io.net.Stream) !void {
+    try client.init(testing.allocator, testing.io, socket, .{
+        .insecure_no_chain_anchor = true,
+        .host_name = "ztls.server.test",
+        .now_sec = 1_790_000_000,
+        .alpn = &.{"h2"},
+    });
+}
+
+// RFC 8446 §4.4.4, §5.1, §6.1. The socket adapter keeps coalesced early
+// plaintext, hands over partial plaintext tails, and drains partial ciphertext.
+test "SocketClient: loopback, early plaintext, partial consume, echo, close_notify" {
+    var context: Context = .{
+        .listener = try listen(),
+        .failure = null,
+        .early = "abcdefgh",
+    };
+    defer context.listener.deinit(testing.io);
+    const thread = try std.Thread.spawn(.{}, Context.run, .{&context});
+    defer thread.join();
+
+    const socket = try connectTo(&context.listener);
+    defer socket.close(testing.io);
+    var client: SocketClient = undefined;
+    try initLoopbackClient(&client, socket);
+    defer client.deinit();
+    try testing.expectEqualStrings("h2", client.selectedAlpn().?);
+
+    var first: [3]u8 = undefined;
+    var second: [2]u8 = undefined;
+    var vectors: [2][]u8 = .{ &first, &second };
+    try testing.expectEqual(@as(usize, 5), try client.reader().readVec(&vectors));
+    try testing.expectEqualStrings("abc", &first);
+    try testing.expectEqualStrings("de", &second);
+    try client.writer().writeAll("ping");
+    var tail: [4]u8 = undefined;
+    var tail_vector: [1][]u8 = .{&tail};
+    try testing.expectEqual(@as(usize, 3), try client.reader().readVec(&tail_vector));
+    try testing.expectEqualStrings("fgh", tail[0..3]);
+
+    var response: [4]u8 = undefined;
+    var fixed: Io.Writer = .fixed(&response);
+    try testing.expectEqual(
+        @as(usize, 4),
+        try client.reader().stream(&fixed, .limited(response.len)),
+    );
+    try testing.expectEqualStrings("ping", &response);
+    var response_vector: [1][]u8 = .{&response};
+    try testing.expectError(error.EndOfStream, client.reader().readVec(&response_vector));
+    try testing.expectEqual(@as(usize, 0), try client.reader().readSliceShort(&response));
+    try testing.expectError(error.EndOfStream, client.reader().readSliceAll(&response));
+    try testing.expect(client.readError() == null);
+    try testing.expect(!client.expired());
+    if (context.failure) |err| return err;
+}
+
+test "SocketClient: a read timeout keeps its cause across deadline cleanup" {
+    const BatchWaits = struct {
+        threadlocal var count: usize = 0;
+
+        fn awaitBatch(
+            data: ?*anyopaque,
+            batch: *Io.Batch,
+            timeout: Io.Timeout,
+        ) Io.Batch.AwaitConcurrentError!void {
+            count += 1;
+            return testing.io.vtable.batchAwaitConcurrent(data, batch, timeout);
+        }
+    };
+    var context: Context = .{
+        .listener = try listen(),
+        .failure = null,
+    };
+    defer context.listener.deinit(testing.io);
+    const thread = try std.Thread.spawn(.{}, Context.run, .{&context});
+    defer thread.join();
+    const socket = try connectTo(&context.listener);
+    defer socket.close(testing.io);
+    var client: SocketClient = undefined;
+    try initLoopbackClient(&client, socket);
+    defer client.deinit();
+
+    var vtable = testing.io.vtable.*;
+    vtable.batchAwaitConcurrent = BatchWaits.awaitBatch;
+    client.io = .{ .userdata = testing.io.userdata, .vtable = &vtable };
+    BatchWaits.count = 0;
+    const future = @hasField(Io.Operation, "net_read");
+    const now = Io.Clock.awake.now(testing.io).nanoseconds;
+    client.setDeadline(if (future) now + 200 * std.time.ns_per_ms else now - 1);
+    var response: [4]u8 = undefined;
+    var vectors: [1][]u8 = .{&response};
+    try testing.expectError(error.ReadFailed, client.reader().readVec(&vectors));
+    try testing.expect(client.expired());
+    try testing.expect(client.readError().? == error.TimedOut);
+    if (future) try testing.expect(BatchWaits.count != 0);
+
+    client.setDeadline(null);
+    try testing.expect(!client.expired());
+    try testing.expect(client.readError().? == error.TimedOut);
+    try client.writer().writeAll("ping");
+    try client.reader().readSliceAll(&response);
+    try testing.expectEqualStrings("ping", &response);
+    try testing.expect(client.readError() == null);
+    if (context.failure) |err| return err;
+}
+
+// RFC 8446 §6.1. Bare EOF after authentication is truncation, not close_notify.
+test "SocketClient: bare EOF is a read error, not a timeout or clean close" {
+    var context: Context = .{
+        .listener = try listen(),
+        .failure = null,
+        .stop_after_handshake = true,
+    };
+    defer context.listener.deinit(testing.io);
+    const thread = try std.Thread.spawn(.{}, Context.run, .{&context});
+    defer thread.join();
+
+    const socket = try connectTo(&context.listener);
+    defer socket.close(testing.io);
+    var client: SocketClient = undefined;
+    try initLoopbackClient(&client, socket);
+    defer client.deinit();
+    var destination: [1]u8 = undefined;
+    var vectors: [1][]u8 = .{&destination};
+    try testing.expectError(error.ReadFailed, client.reader().readVec(&vectors));
+    try testing.expect(client.readError().? == error.UnexpectedEof);
+    try testing.expect(!client.expired());
+    try testing.expect(client.peerAlert() == null);
+    if (context.failure) |err| return err;
+}
+
+const RawContext = struct {
+    const Mode = enum { silent, alert };
+
+    listener: Io.net.Server,
+    failure: ?anyerror,
+    mode: Mode,
+    release: std.atomic.Value(bool) = .init(false),
+
+    fn run(self: *RawContext) void {
+        self.exchange() catch |err| {
+            self.failure = err;
+        };
+    }
+
+    fn exchange(self: *RawContext) !void {
+        const io = testing.io;
+        const socket = try self.listener.accept(io);
+        defer socket.close(io);
+        if (self.mode == .alert) {
+            const message: [2]u8 = .{ 2, 49 };
+            var wire: [tls.frame.header_len + 2]u8 = undefined;
+            const bytes = try tls.alert.plaintextRecord(&message, &wire);
+            var writer = socket.writer(io, &.{});
+            try writer.interface.writeAll(bytes);
+        }
+        // No accidental input or EOF decides a deadline or alert assertion.
+        while (!self.release.load(.acquire)) try io.sleep(.fromMilliseconds(1), .awake);
+    }
+};
+
+fn rawClientOptions(deadline_ns: ?i96) SocketClient.Options {
+    return .{
+        .insecure_no_chain_anchor = true,
+        .host_name = "ztls.server.test",
+        .now_sec = 1_790_000_000,
+        .alpn = &.{"h2"},
+        .deadline_ns = deadline_ns,
+    };
+}
+
+// RFC 8446 §6.2. The peer's exact alert survives failed-init cleanup and is
+// never reclassified as expiry. The caller's socket remains open.
+test "SocketClient: a fatal peer alert survives init cleanup" {
+    var context: RawContext = .{
+        .listener = try listen(),
+        .failure = null,
+        .mode = .alert,
+    };
+    defer context.listener.deinit(testing.io);
+    const thread = try std.Thread.spawn(.{}, RawContext.run, .{&context});
+    defer thread.join();
+    defer context.release.store(true, .release);
+    const socket = try connectTo(&context.listener);
+    defer socket.close(testing.io);
+    var client: SocketClient = undefined;
+    try testing.expectError(
+        error.PeerAlert,
+        client.init(testing.allocator, testing.io, socket, rawClientOptions(null)),
+    );
+    const received_alert: ?tls.alert.Description = if (client.peerAlert()) |peer_alert|
+        peer_alert.description
+    else
+        null;
+    try testing.expectEqual(@as(?tls.alert.Description, .access_denied), received_alert);
+    try testing.expect(!client.expired());
+    client.deinit();
+    if (context.failure) |err| return err;
+}
+
+// The eager handshake uses Options.deadline_ns before its first socket wait.
+// Zig 0.16 rejects only future deadlines; both versions handle an expired one.
+test "SocketClient: deadline bounds eager handshake and init releases resources" {
+    const future = @hasField(Io.Operation, "net_read");
+    var context: RawContext = .{
+        .listener = try listen(),
+        .failure = null,
+        .mode = .silent,
+    };
+    defer context.listener.deinit(testing.io);
+    const thread = try std.Thread.spawn(.{}, RawContext.run, .{&context});
+    defer thread.join();
+    defer context.release.store(true, .release);
+    const socket = try connectTo(&context.listener);
+    defer socket.close(testing.io);
+    var client: SocketClient = undefined;
+    const now = Io.Clock.awake.now(testing.io).nanoseconds;
+    const deadline = if (future) now + 20 * 1_000_000 else now + 1_000_000;
+    const result = client.init(
+        testing.allocator,
+        testing.io,
+        socket,
+        rawClientOptions(deadline),
+    );
+    if (future) {
+        try testing.expectError(error.TimedOut, result);
+        try testing.expect(client.expired());
+    } else {
+        try testing.expectError(error.DeadlineUnsupported, result);
+        try testing.expect(!client.expired());
+    }
+    client.deinit();
+    if (context.failure) |err| return err;
+}
+
+test "SocketClient: an already expired deadline works on both Zig versions" {
+    var context: RawContext = .{
+        .listener = try listen(),
+        .failure = null,
+        .mode = .silent,
+    };
+    defer context.listener.deinit(testing.io);
+    const thread = try std.Thread.spawn(.{}, RawContext.run, .{&context});
+    defer thread.join();
+    defer context.release.store(true, .release);
+    const socket = try connectTo(&context.listener);
+    defer socket.close(testing.io);
+    var client: SocketClient = undefined;
+    const now = Io.Clock.awake.now(testing.io).nanoseconds;
+    try testing.expectError(
+        error.TimedOut,
+        client.init(testing.allocator, testing.io, socket, rawClientOptions(now - 1)),
+    );
+    try testing.expect(client.expired());
+    client.setDeadline(null);
+    try testing.expect(!client.expired());
+    client.deinit();
+    if (context.failure) |err| return err;
+}
+
+// PEM setup is atomic, including allocation cleanup. Socket ownership stays
+// with the caller when trust loading fails before ClientHello exists.
+test "SocketClient: invalid trust anchors clean up without closing the socket" {
+    var context: RawContext = .{
+        .listener = try listen(),
+        .failure = null,
+        .mode = .silent,
+    };
+    defer context.listener.deinit(testing.io);
+    const thread = try std.Thread.spawn(.{}, RawContext.run, .{&context});
+    defer thread.join();
+    defer context.release.store(true, .release);
+    const socket = try connectTo(&context.listener);
+    defer socket.close(testing.io);
+    var client: SocketClient = undefined;
+    var options = rawClientOptions(null);
+    options.ca_pem = "not a certificate";
+    try testing.expectError(
+        error.NoTrustAnchors,
+        client.init(testing.allocator, testing.io, socket, options),
+    );
+    client.deinit();
     if (context.failure) |err| return err;
 }
 

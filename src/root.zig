@@ -5,6 +5,8 @@ pub const alert = @import("alert.zig");
 pub const AlpnError = @import("alpn.zig").Error;
 pub const AlpnProtocols = @import("alpn.zig").Protocols;
 pub const certificate = @import("certificate.zig");
+/// The bounds-checked X.509 parser used by the handshake.
+pub const Certificate = @import("certificate_parser.zig");
 pub const certificate_chain = @import("certificate_chain.zig");
 pub const CertificateChain = certificate_chain.CertificateChain;
 pub const capabilities = @import("capabilities.zig");
