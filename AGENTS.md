@@ -493,6 +493,10 @@ refactors do not need one unless they change how someone uses the package.
 Write from the user's side: what changed, and what they must do about it. Name
 the symbol, flag, or error. One line, under Added, Changed, Fixed, or Removed.
 
-To release, dispatch the repo's `release.yml` with the version. The workflow
-moves the Unreleased section into a dated heading, sets `.version` in
-`build.zig.zon`, commits, tags, and opens the GitHub release. Do not tag by hand.
+To release, run `release-prep.py` from the org's `.github` repo with the
+version. It moves the Unreleased section into a dated heading, sets `.version`
+in `build.zig.zon`, and points both install commands at the new tag. Review the
+diff, then commit and push it yourself. Dispatch the repo's `release.yml` with
+the same version afterwards: the workflow only tags that commit and opens the
+GitHub release, and it refuses to run when the changelog or the manifest does
+not already name the version. Do not tag by hand.

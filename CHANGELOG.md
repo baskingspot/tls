@@ -5,6 +5,8 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-11
+
 ### Removed
 
 - `tls_xev`, the `.xev` dependency option, and the root package's libxev
