@@ -1,4 +1,5 @@
-//! tls-std: opinionated TLS 1.3 stream wrapper over `std.Io.net` (Zig 0.16).
+//! tls-std: opinionated TLS 1.3 stream wrapper over `std.Io.net` (Zig 0.16 and
+//! 0.17).
 //!
 //! Converts a connected `std.Io.net` stream into a TLS connection so a caller
 //! can `connect`/`read`/`write`/`close` without writing a Sans-I/O drive loop.

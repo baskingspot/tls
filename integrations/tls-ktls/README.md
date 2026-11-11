@@ -1,6 +1,6 @@
 # tls-ktls
 
-Linux kTLS data-plane integration for `tls`, built with Zig 0.16.
+Linux kTLS data-plane integration for `tls`, built with Zig 0.16 and 0.17.
 
 The core library performs the TLS 1.3 handshake in userspace. `tls-ktls` then installs the
 negotiated TX and RX traffic epochs on the connected TCP socket. Application
@@ -22,7 +22,7 @@ const tls_dep = b.dependency("tls", .{
 const tls_ktls = tls_dep.module("tls_ktls");
 ```
 
-The module requires Zig 0.16 and Linux. See
+The module requires Zig 0.16 or 0.17, and Linux. See
 [`docs/content/_index.md`](../../docs/content/_index.md#install) for the complete
 consumer wiring.
 

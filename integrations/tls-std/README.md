@@ -1,11 +1,11 @@
 # tls-std
 
-Opinionated TLS 1.3 stream wrapper over Zig 0.16 `std.Io.net`.
+Opinionated TLS 1.3 stream wrapper over `std.Io.net`.
 
 `tls` core is Sans-I/O: you feed it bytes and get bytes out. `tls-std` packages
 the proven drive loop with sane defaults so a caller can wrap a connected
 `std.Io.net.Stream` and get a TLS connection — `connect`/`read`/`write`/`close` —
-without writing a Sans-I/O loop. Zig 0.16 only. This is the reference
+without writing a Sans-I/O loop. Zig 0.16 and 0.17. This is the reference
 integration; `tls-ktls` adapts its handshake-to-completion loop.
 
 Readiness status for this integration lives in
@@ -15,7 +15,7 @@ implementation landed under [#77](https://github.com/baskingspot/tls/issues/77).
 ## Install
 
 Fetch the root `tls` package, then import its `tls_std` module. One dependency
-contains core and all integration sources; this module requires Zig 0.16.
+contains core and all integration sources; this module supports Zig 0.16 and 0.17.
 
 ```zig
 const tls_dep = b.dependency("tls", .{
@@ -588,7 +588,7 @@ seam, and it is the reason the zero-copy read path had to go.
   mechanism and belongs to whoever owns the runtime. `abort()` provides manual
   wakeup for blocked halves. `examples/zio_client.zig` races the exchange
   against an `Io.Select` deadline. `readError()` then returns `error.Canceled`.
-- **0.15 support** — the whole package is 0.16-only now (#144).
+- **0.15 support** — dropped in #144; the package supports 0.16 and 0.17.
 - **Distribution as an independently `zig fetch`-able package** — tracked by #79.
 
 ## Build
@@ -611,7 +611,7 @@ in both directions, including mTLS success and rejection paths; an absent
 executable is a test failure, not a skip.
 
 The root workspace delegates to this subproject through `just integrations-ci`,
-which is wired into `just ci`. The library is Zig 0.16-only.
+which is wired into `just ci`. The library builds on Zig 0.16 and 0.17.
 
 Run the example client against a real server:
 

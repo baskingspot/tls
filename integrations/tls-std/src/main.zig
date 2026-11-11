@@ -1,5 +1,5 @@
 //! Smoke executable: proves the tls-std + tls wiring builds and runs under
-//! Zig 0.16.
+//! Zig 0.16 and 0.17.
 const std = @import("std");
 const Io = std.Io;
 
