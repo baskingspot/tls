@@ -104,24 +104,13 @@ build_consumer() {
 }
 
 build_consumer core
-assert_not_cached testingx libxev
+assert_not_cached testingx
 
 build_consumer nonblocking
-assert_not_cached testingx libxev
+assert_not_cached testingx
 
 build_consumer std
-assert_not_cached testingx libxev
-
-xev_guard_log="$tmp/xev-option-guard.log"
-if build_consumer xev_without_option >"$xev_guard_log" 2>&1; then
-    echo "tls_xev unexpectedly compiled without the xev dependency option" >&2
-    exit 1
-fi
-if ! grep -F "tls_xev is opt-in" "$xev_guard_log" >/dev/null; then
-    cat "$xev_guard_log" >&2
-    echo "tls_xev failure did not use the opt-in diagnostic" >&2
-    exit 1
-fi
+assert_not_cached testingx
 
 if [ "$(uname -s)" = Linux ]; then
     build_consumer ktls
@@ -129,11 +118,6 @@ else
     echo "tls_ktls: Linux-only distribution smoke skipped"
 fi
 
-build_consumer xev
-cache_contains libxev || {
-    echo "tls_xev did not fetch its declared libxev dependency" >&2
-    exit 1
-}
 assert_not_cached testingx
 
 echo "tls distribution smoke passed from an isolated fetched package"

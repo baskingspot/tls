@@ -17,13 +17,6 @@
             .hash = "testingx-0.4.0-ib95-2JkAwDVM639ma-akYafT4bdewLfpFaAEnLBzQXG",
             .lazy = true,
         },
-        // Integration-only: fetched when a consumer opts into tls_xev.
-        // Keep this pin in sync with integrations/tls-xev/build.zig.zon.
-        .libxev = .{
-            .url = "git+https://github.com/mitchellh/libxev#7497c85dfc3ae5141308944f2cd47c836772c300",
-            .hash = "libxev-0.0.0-86vtc6BWFAAs_tGsasNfjQsxSsElhddIUnqVwGhwdnsu",
-            .lazy = true,
-        },
     },
     .paths = .{
         "LICENSE",
@@ -34,7 +27,6 @@
         "tests/fixtures",
         "integrations/tls-nonblocking/src",
         "integrations/tls-std/src",
-        "integrations/tls-xev/src",
         "integrations/tls-ktls/src",
     },
 }

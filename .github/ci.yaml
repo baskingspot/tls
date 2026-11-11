@@ -7,22 +7,17 @@ jobs:
   - recipe: check-backend-boringssl
     # The BoringSSL suite needs the devshell that links BoringSSL.
     shell: boringssl
-  # kqueue coverage. Five defects in integrations/tls-xev have been invisible
-  # under io_uring and every one was found because a human ran a Mac by hand;
-  # the 21/21 that closed #76 was stale within a day. Scoped to the integration
-  # packages and the distribution smoke gate rather than the whole lane:
-  # conformance needs a Python/TLS-Anvil stack that has never been exercised
-  # on macOS.
-  #
-  # The three integrations that build on both Zig versions run on the default
-  # shell. libxev pins a commit that only builds on 0.16, so its integration
-  # and the distribution smoke (which tests the minimum supported Zig by
-  # design) stay in `zig-old`.
+  # macOS coverage for the transport-facing packages. The engine is
+  # platform-neutral, but every integration here drives a real socket, and the
+  # readiness backends differ in ways Linux never shows. Scoped to the
+  # integration packages and the distribution smoke gate rather than the whole
+  # lane: conformance needs a Python/TLS-Anvil stack that has never been
+  # exercised on macOS.
   - recipe: integrations-ci
     runners: [ubuntu-26.04, macos-26]
-  - recipe: integrations-xev-ci
-    shell: zig-old
-    runners: [ubuntu-26.04, macos-26]
+
+  # The distribution smoke tests the minimum supported Zig by design, so it
+  # runs on the older toolchain.
   - recipe: distribution-ci
     shell: zig-old
     runners: [ubuntu-26.04, macos-26]

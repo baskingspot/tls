@@ -5,6 +5,14 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- `tls_xev`, the `.xev` dependency option, and the root package's libxev
+  dependency. A consumer that imports `tls_xev` must drive the engine from its
+  own libxev completions, use `tls_nonblocking`, or stay on v0.3.0. The module
+  is no longer exported, and `.xev = true` in `b.dependency("tls", ...)` now
+  fails with `error: invalid option: "xev"`.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added

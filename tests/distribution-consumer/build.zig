@@ -4,8 +4,6 @@ const Mode = enum {
     core,
     nonblocking,
     std,
-    xev,
-    xev_without_option,
     ktls,
 };
 
@@ -14,22 +12,14 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const mode = b.option(Mode, "mode", "tls module to compile") orelse .core;
 
-    const tls_dep = if (mode == .xev)
-        b.dependency("tls", .{
-            .target = target,
-            .optimize = optimize,
-            .xev = true,
-        })
-    else
-        b.dependency("tls", .{
-            .target = target,
-            .optimize = optimize,
-        });
+    const tls_dep = b.dependency("tls", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const integration_name = switch (mode) {
         .core => "tls",
         .nonblocking => "tls_nonblocking",
         .std => "tls_std",
-        .xev, .xev_without_option => "tls_xev",
         .ktls => "tls_ktls",
     };
 

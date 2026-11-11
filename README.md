@@ -26,7 +26,7 @@ TLS-Anvil and tlsfuzzer. The API is not frozen, so pin a commit.
 - [The buffer model](https://baskingspot.dev/tls/#the-buffer-model): the engine owns the protocol, you own every buffer, and `RecordBuffer` frames a byte stream into records.
 - [The drive loop](https://baskingspot.dev/tls/#the-drive-loop): working client and server code, the `pending_write` interlock, close semantics, and peer alerts.
 - [Credentials and negotiation](https://baskingspot.dev/tls/#credentials-and-negotiation): server credentials, certificate policy, tickets, SNI, ALPN, and the RFC 10024 hybrid groups.
-- [Integrations](https://baskingspot.dev/tls/#integrations): blocking streams, epoll, io_uring, libxev, and kTLS.
+- [Integrations](https://baskingspot.dev/tls/#integrations): blocking streams, epoll, io_uring, and kTLS.
 - [C ABI](https://baskingspot.dev/tls/#c-abi): the partial, client-only C surface: `baskingspot_tls_*`, `include/baskingspot_tls.h`, and `libbaskingspot_tls.a`.
 - [Performance](https://baskingspot.dev/tls/#performance): the AES-128-GCM headline row against rustls and libssl, three n=10 captures, and where it loses.
 
@@ -59,11 +59,10 @@ const tls = @import("tls");
 `tlsx`.
 
 The same dependency exposes `tls_std`, `tls_nonblocking` (caller-driven server),
-`tls_xev` (opt-in with `.xev = true`), and `tls_ktls` (Linux).
+and `tls_ktls` (Linux).
 The [guide](https://baskingspot.dev/tls/#install) has the full setup.
 
-The library builds on Zig 0.16 and 0.17. The `tls_std`, `tls_nonblocking`, and
-`tls_ktls` integrations build on both; `tls_xev` builds on 0.16 only.
+The library and every integration module build on Zig 0.16 and 0.17.
 
 The build needs libcrypto and `pkg-config` to find it. The module calls
 `linkSystemLibrary("crypto")`, and the C ABI step runs `pkg-config --variable=libdir

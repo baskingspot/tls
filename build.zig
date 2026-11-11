@@ -69,11 +69,6 @@ pub fn build(b: *Build) void {
 
     // Library-only mirrors of the standalone integration build scripts. The
     // distribution smoke compiles each mirror from the fetched root package.
-    const expose_xev = b.option(
-        bool,
-        "xev",
-        "Expose tls_xev and fetch its lazy libxev dependency",
-    ) orelse false;
     {
         const nonblocking_mod = b.addModule("tls_nonblocking", .{
             .root_source_file = b.path("integrations/tls-nonblocking/src/root.zig"),
@@ -97,24 +92,6 @@ pub fn build(b: *Build) void {
         });
         ktls_mod.addImport("tls", mod);
         ktls_mod.link_libc = true;
-
-        const xev_mod = b.addModule("tls_xev", .{
-            .root_source_file = b.path(if (expose_xev)
-                "integrations/tls-xev/src/root.zig"
-            else
-                "src/integration_requires_xev.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        if (expose_xev) {
-            const libxev = b.lazyDependency("libxev", .{
-                .target = target,
-                .optimize = optimize,
-            });
-            if (libxev) |dependency| xev_mod.addImport("xev", dependency.module("xev"));
-            xev_mod.addImport("tls", mod);
-            xev_mod.link_libc = true;
-        }
     }
 
     // Dependency consumers need only the exported modules. Keeping the

@@ -17,7 +17,7 @@ there is no tagged release, so pin a commit.
 - [The buffer model](#the-buffer-model): the engine owns the protocol, you own every buffer, and `RecordBuffer` frames a byte stream into records.
 - [The drive loop](#the-drive-loop): working client and server code, the `pending_write` interlock, close semantics, and peer alerts.
 - [Credentials and negotiation](#credentials-and-negotiation): server credentials, certificate policy, tickets, SNI, ALPN, and the RFC 10024 hybrid groups.
-- [Integrations](#integrations): blocking streams, epoll, io_uring, libxev, and kTLS.
+- [Integrations](#integrations): blocking streams, epoll, io_uring, and kTLS.
 - [C ABI](#c-abi): the partial, client-only C surface.
 - [Performance](#performance): the headline row, the three captures, and where it loses.
 - [Limits](#limits): what the engine does not do.
@@ -47,21 +47,12 @@ choose:
 | `tls`      | Zig 0.16 and 0.17                                |
 | `tls_std`  | Zig 0.16 and 0.17                                |
 | `tls_nonblocking` | Zig 0.16 and 0.17, caller-driven server transport |
-| `tls_xev`  | Zig 0.16 and the dependency option `.xev = true` |
 | `tls_ktls` | Zig 0.16 and 0.17 on Linux                       |
-
-A libxev consumer opts in when resolving the dependency, so a core-only consumer
-does not fetch libxev:
-
-```zig
-const tls = b.dependency("tls", .{ .target = target, .optimize = optimize, .xev = true });
-exe.root_module.addImport("tls_xev", tls.module("tls_xev"));
-```
 
 All modules use the same libcrypto headers and library, selected through
 `PKG_CONFIG_PATH`. The compiler infers OpenSSL, AWS-LC, or BoringSSL from the
 headers. Add `.@"crypto-fips" = true` only for an explicitly configured FIPS
-build. Importing `tls_xev` without `.xev = true` reports the missing opt-in.
+build.
 
 The integration directories keep standalone manifests for in-tree development.
 External consumers depend only on the root package.
@@ -677,9 +668,9 @@ A hybrid offer still permits classical key exchange. Invalid explicit policy nev
 
 `secp384r1_mlkem1024` requires a P-384 keypair on each enabled role. All three group values can appear in one policy.
 
-The group slices are borrowed. They must outlive the handshake. A reusable xev configuration requires them until every associated connection ends.
+The group slices are borrowed. They must outlive the handshake. A configuration reused across connections needs them until every connection that borrowed it ends.
 
-Call `tls-std` option `validate()` methods before socket creation. `connect` and `accept` repeat validation before key generation. The fallible xev configuration constructors validate before trust-store work.
+Call `tls-std` option `validate()` methods before socket creation. `connect` and `accept` repeat validation before key generation.
 
 # Integrations
 
@@ -714,11 +705,6 @@ storage. `endInput()` reports EOF without a false `close_notify`.
 
 The [integration contract](https://github.com/baskingspot/tls/blob/main/integrations/tls-nonblocking/README.md)
 defines buffer lifetimes and readiness interests. It also covers ALPN and shutdown.
-The module requires no libxev opt-in.
-
-## libxev
-
-[`tls_xev`](https://github.com/baskingspot/tls/blob/main/integrations/tls-xev/README.md) is the non-blocking adapter for [libxev](https://github.com/mitchellh/libxev). It is opt-in: set `.xev = true` in the dependency options.
 
 ## kTLS
 
@@ -804,4 +790,4 @@ regression gate compares a fresh n=10 capture against the committed baseline
 - **A stable API.** Signatures move, and there are no release tags yet. `main` is the only artifact, so pin a commit and read the docs at that commit.
 - **TLS 1.2, DTLS, and Windows.** Out of scope. There is no downgrade target, and the library runs on Linux and macOS only.
 - **Exporters.** Not implemented, and not planned until someone asks for one.
-- **A general io_uring or arbitrary-runtime wrapper.** The in-tree integration packages cover `std.Io`, libxev, and Linux kTLS without moving transport I/O into the core engine.
+- **A general io_uring or arbitrary-runtime wrapper.** The in-tree integration packages cover `std.Io` and Linux kTLS without moving transport I/O into the core engine.

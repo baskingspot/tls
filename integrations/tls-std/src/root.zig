@@ -2,7 +2,7 @@
 //!
 //! Converts a connected `std.Io.net` stream into a TLS connection so a caller
 //! can `connect`/`read`/`write`/`close` without writing a Sans-I/O drive loop.
-//! This is the reference integration; tls-xev and tls-ktls adapt its
+//! This is the reference integration; tls-ktls adapts its
 //! handshake-to-completion loop. See #77.
 //!
 //! Design: eager handshake (connect/accept run the full handshake before

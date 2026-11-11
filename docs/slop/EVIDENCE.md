@@ -136,7 +136,7 @@ revision, not automatically to later commits.
 | Pillar | Status | One-line |
 |---|---|---|
 | 1. Correctness | `PROVEN` | Immutable candidate `8814f1e` passes six terminal TLS-Anvil profiles, both consumer suites, negative controls, and bounded resource/recovery checks (#121–#122). Caller responsibilities and unsupported profiles remain explicit. |
-| 2. Ergonomics | `PROVEN` | CI-gated examples cover both roles across io_uring, epoll, kqueue, and `std.Io`. Core and wrapper APIs expose hybrid capabilities and reject invalid local policy before key generation or wire I/O (#105). `tls-std` (#77) gates plain and mTLS OpenSSL interop in both directions. `tls-xev` satisfies #76's Linux/macOS contract, including in-flight cancellation (#83). |
+| 2. Ergonomics | `PROVEN` | CI-gated examples and the macOS integration lane cover both roles across io_uring, epoll, kqueue-backed `std.Io`, and blocking streams. Core and wrapper APIs expose hybrid capabilities and reject invalid local policy before key generation or wire I/O (#105). `tls-std` (#77) gates plain and mTLS OpenSSL interop in both directions. |
 | 3. Performance | `PROVEN` | n=10 captures on x86_64 (c7i.2xlarge), aarch64 (c7g.2xlarge), and macOS (Apple M1 Max) with formal CIs (p=0.000): tls beats libssl on every comparable app-data row on all three platforms and rustls on all AES-GCM rows; regression gate committed. |
 | 4. Providers | `PROVEN` | OpenSSL, AWS-LC, and BoringSSL pass all six terminal TLS-Anvil profiles at `8814f1e`. Malformed ML-KEM keys produce `illegal_parameter`, while provider faults remain `internal_error`. Captures remain revision-bound. |
 | 5. Marketing | `PROVEN` | README leads with the proven performance story (n=10, both architectures, honest ChaCha20 loss) and the adversarial security posture; the why-tls narrative and headline benchmarks are on the front door, backed by PERFORMANCE.md. |
@@ -1417,9 +1417,8 @@ proof and is compiled by `just integrations-ci`; zio is a lazy dependency so
 consumers of tls-std do not fetch an I/O runtime. Deliberately **not** a
 `tls-zio` package: it would duplicate the drive loop, the reader/writer vtables,
 and the error table with `Io` replaced by `Io`, which is the duplicate-artifact
-failure mode. `tls-xev` (#76) and `tls-ktls` (#78) still warrant their own
-packages because libxev is a callback-based completion loop with its own API and
-kTLS is a kernel offload; neither implements the interface tls-std targets.
+failure mode. `tls-ktls` (#78) still warrants its own package because kTLS is a
+kernel offload; it does not implement the interface tls-std targets.
 
 That example also closes the timeout gap by demonstration rather than by API:
 the whole exchange races a sleep through `Io.Select`, and a fired deadline arrives
@@ -1428,7 +1427,14 @@ phases: `handshake cancelled by the deadline` and `transfer cancelled by the
 deadline (recovered as error.Canceled)`. Before the `err` convention landed, the
 identical experiment reported a bare `ReadFailed`.
 
-### libxev — tls-xev (#76) — PROVEN
+### libxev — tls-xev (#76) — REMOVED 2026-11-11
+
+The adapter and its root-package wiring were removed on 2026-11-11. The
+maintenance cost did not pay for a second copy of the drive loop, and libxev
+never implemented `std.Io`, so nothing else here depended on it. The section
+below is the record of what the package did at the revision that removed it;
+nothing in it describes the current tree. A caller that needs a completion loop
+drives the engine from its own completions, or uses `tls_nonblocking`.
 
 `integrations/tls-xev/` is the completion-driven integration. libxev does not
 implement `std.Io` — it borrows `std.Io.net.IpAddress` as a type and nothing else
@@ -2234,11 +2240,10 @@ guides, without reading source.
 
 **Current evidence:** `README.md` gives a root on-ramp and fresh-project module
 wiring pointer. The root fetched package exposes `tls` and the
-`tls_std`, `tls_xev`, and Linux-only `tls_ktls` integration modules, all
-Zig 0.16-only (#79). `tls_xev` gates its libxev dependency behind an explicit
-opt-in. The distribution consumer compiles from an isolated package cache,
-checks the xev opt-in diagnostic, and rejects eager benchmark, test-runner,
-fixture-decoder, or libxev fetches on core and standard-wrapper paths. `docs/content/_index.md` documents the
+`tls_std`, `tls_nonblocking`, and Linux-only `tls_ktls` integration modules, all
+Zig 0.16 and 0.17. The distribution consumer compiles from an isolated package
+cache and rejects eager benchmark, test-runner, or fixture-decoder fetches on
+core and standard-wrapper paths. `docs/content/_index.md` documents the
 caller-owned-buffer model, `RecordBuffer`, `Outbox`, the `pending_write` /
 `completeWrite()` interlock,
 server credential flow (`setCredentials` plus `sendServerFlightBuffered`), ALPN

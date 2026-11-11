@@ -6,7 +6,7 @@ Opinionated TLS 1.3 stream wrapper over Zig 0.16 `std.Io.net`.
 the proven drive loop with sane defaults so a caller can wrap a connected
 `std.Io.net.Stream` and get a TLS connection — `connect`/`read`/`write`/`close` —
 without writing a Sans-I/O loop. Zig 0.16 only. This is the reference
-integration; `tls-xev` and `tls-ktls` adapt its handshake-to-completion loop.
+integration; `tls-ktls` adapts its handshake-to-completion loop.
 
 Readiness status for this integration lives in
 [`PRODUCTION_READINESS.md`](../../PRODUCTION_READINESS.md), not here. The
@@ -654,6 +654,5 @@ $ zio_client --host example.com --no-request --timeout-ms 800
 [zio] transfer cancelled by the deadline (recovered as error.Canceled)
 ```
 
-`tls-xev` (#76) and `tls-ktls` (#78) do get their own packages, because libxev
-is a callback-based completion loop with its own API and kTLS is a kernel offload.
-Neither implements the interface tls-std already speaks.
+`tls-ktls` (#78) does get its own package, because kTLS is a kernel offload and
+does not implement the interface tls-std already speaks.

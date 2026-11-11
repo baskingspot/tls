@@ -57,7 +57,7 @@ a completion returns `error.NoReadCompletion`, not a timeout.
 
 ## Import
 
-The root package exports this module without an opt-in or a libxev dependency:
+The root package exports this module with no build option to set:
 
 ```zig
 const tls_dep = b.dependency("tls", .{ .target = target, .optimize = optimize });
