@@ -181,6 +181,35 @@ const IntrospectingClient = tls.ClientWith(.{
 each knob to an exact `@sizeOf` delta and keeps the default types below their
 stated ceilings.
 
+#### Reading the peer's identity
+
+`info().peer_chain` is the verified chain as DER. The engine decodes it; there
+is no second parser to bring and nothing to allocate:
+
+```zig
+const chain = conn.info().peer_chain;                  // leaf first
+const leaf = try tls_core.Certificate.parse(.{ .buffer = chain[0], .index = 0 });
+
+var out: [256]u8 = undefined;
+var w: std.Io.Writer = .fixed(&out);
+var attributes = leaf.subjectAttributes();             // or issuerAttributes()
+while (try attributes.next()) |entry| {
+    if ((entry.attribute orelse continue) != .commonName) continue;
+    try entry.value.write(&w);                         // escaped, never raw
+}
+// leaf.subjectAltNames() walks the SANs; leaf.validity has both timestamps.
+```
+
+The attribute values and SAN entries stay in the encoding the certificate used.
+`DirectoryString.write` renders UTF8String, PrintableString, IA5String,
+NumericString and VisibleString, transcodes BMPString and UniversalString, and
+shows TeletexString or anything it does not recognize as `\xNN` escapes rather
+than guessing. It also escapes C0 controls, DEL, and invalid UTF-8, because that
+text came from the peer and may be headed for a terminal or a log line.
+
+Presentation is yours: attribute order, `CN=` labels, and separators are a
+decision a library should not make for every caller.
+
 ### Client / Server
 
 `Client` and `Server` ARE the connection types — not namespaces around one.

@@ -14,6 +14,7 @@
 const std = @import("std");
 const stdx = @import("stdx");
 const compat = @import("compat.zig");
+const Io = std.Io;
 const crypto = std.crypto;
 const mem = std.mem;
 const testing = std.testing;
@@ -82,7 +83,7 @@ const AlgorithmCategory = enum {
     });
 };
 
-const Attribute = enum {
+pub const Attribute = enum {
     commonName,
     serialNumber,
     countryName,
@@ -181,7 +182,7 @@ const ExtensionId = enum {
     });
 };
 
-const GeneralNameTag = enum(u5) {
+pub const GeneralNameTag = enum(u5) {
     otherName = 0,
     rfc822Name = 1,
     dNSName = 2,
@@ -193,6 +194,307 @@ const GeneralNameTag = enum(u5) {
     registeredID = 8,
     _,
 };
+
+/// A string value from a certificate, with the ASN.1 type that encoded it.
+///
+/// The bytes are borrowed from the certificate buffer and are *not* decoded
+/// text: call `write` to render them. Certificate text comes from whoever the
+/// peer's chain says it is, so it is untrusted input. `write` escapes every
+/// byte that could forge terminal or log output (C0 controls including
+/// newline and ESC, DEL, and bytes that are not valid UTF-8), and renders an
+/// encoding it cannot decode as `\xNN` escapes rather than guessing.
+///
+/// RFC 5280 §4.1.2.4.
+pub const DirectoryString = struct {
+    encoding: Encoding,
+    bytes: []const u8,
+
+    /// The ASN.1 string types a certificate's text fields can use.
+    pub const Encoding = enum {
+        utf8_string,
+        printable_string,
+        /// RFC 5280 requires this one of conforming CAs, but old ones emit it.
+        ia5_string,
+        /// T.61, whose mapping is a national variant minefield. Never guessed.
+        teletex_string,
+        /// UCS-2 in practice: two-byte big-endian code units.
+        bmp_string,
+        /// Four-byte big-endian code units.
+        universal_string,
+        /// Still legal in DirectoryString, still seen in old chains.
+        numeric_string,
+        visible_string,
+        /// Any other tag, rendered as hex rather than as text.
+        unrecognized,
+    };
+
+    /// The text types `write` renders as UTF-8. The rest are escaped.
+    fn isText(encoding: Encoding) bool {
+        return switch (encoding) {
+            .utf8_string, .printable_string, .ia5_string, .numeric_string, .visible_string => true,
+            .teletex_string, .bmp_string, .universal_string, .unrecognized => false,
+        };
+    }
+
+    /// Write this value as UTF-8, with hostile bytes escaped.
+    ///
+    /// Not a round-trip format: the output is for a person or a log line, not
+    /// for parsing back. A backslash is written as-is; what is escaped is only
+    /// what could forge output.
+    pub fn write(self: DirectoryString, w: *Io.Writer) Io.Writer.Error!void {
+        if (DirectoryString.isText(self.encoding)) return writeEscapedUtf8(w, self.bytes);
+        return switch (self.encoding) {
+            .bmp_string => writeCodeUnits(w, self.bytes, .big),
+            .universal_string => writeCodeUnits(w, self.bytes, .big32),
+            .teletex_string, .unrecognized => writeEscapedBytes(w, self.bytes),
+            // Excluded by `isText`, kept for the compiler's exhaustive check.
+            .utf8_string, .printable_string, .ia5_string, .numeric_string, .visible_string => unreachable,
+        };
+    }
+};
+
+/// One AttributeTypeAndValue from a distinguished name (RFC 5280 §4.1.2.4).
+///
+/// `oid` is the attribute's object identifier as raw DER content bytes, kept so
+/// an attribute this parser does not model is still reportable. `attribute` is
+/// the modeled name, or null when the identifier is unknown.
+///
+/// A RelativeDistinguishedName that holds more than one attribute yields them
+/// one after another with no grouping marker. That is deliberate: the only
+/// thing a display needs is the values, and multi-valued RDNs are rare.
+pub const NameEntry = struct {
+    oid: []const u8,
+    attribute: ?Attribute,
+    value: DirectoryString,
+};
+
+/// Walks the AttributeTypeAndValues of a distinguished name, in wire order.
+pub const NameIterator = struct {
+    bytes: []const u8,
+    /// The next RelativeDistinguishedName to enter, and the end of the Name.
+    next_rdn: u32,
+    name_end: u32,
+    /// The next AttributeTypeAndValue in the current RDN, and where it ends.
+    atav: u32,
+    rdn_end: u32,
+
+    pub const Error = der.Element.ParseError || ParseEnumError;
+
+    pub fn init(bytes: []const u8) NameIterator {
+        return .initRange(bytes, 0, @intCast(bytes.len));
+    }
+
+    fn initRange(bytes: []const u8, start: u32, end: u32) NameIterator {
+        return .{
+            .bytes = bytes,
+            .next_rdn = start,
+            .name_end = end,
+            .atav = 0,
+            .rdn_end = 0,
+        };
+    }
+
+    /// Offsets rather than slices, so `parse` can walk the same code and still
+    /// store the offsets the rest of the parser uses.
+    const RawEntry = struct {
+        oid: der.Element.Slice,
+        attribute: ?Attribute,
+        encoding: DirectoryString.Encoding,
+        value: der.Element.Slice,
+    };
+
+    fn nextRaw(self: *NameIterator) Error!?RawEntry {
+        while (self.atav == self.rdn_end) {
+            if (self.next_rdn >= self.name_end) return null;
+            const rdn = try der.Element.parse(self.bytes, self.next_rdn);
+            self.next_rdn = rdn.slice.end;
+            self.atav = rdn.slice.start;
+            self.rdn_end = rdn.slice.end;
+        }
+        const atav = try der.Element.parse(self.bytes, self.atav);
+        self.atav = atav.slice.end;
+        const ty = try der.Element.parse(self.bytes, atav.slice.start);
+        const val = try der.Element.parse(self.bytes, ty.slice.end);
+        return .{
+            .oid = ty.slice,
+            // An identifier this parser does not name is still reportable; its
+            // raw OID is in `oid`.
+            .attribute = parseAttribute(self.bytes, ty) catch |err| switch (err) {
+                error.CertificateHasUnrecognizedObjectId => null,
+                else => |e| return e,
+            },
+            .encoding = directoryStringEncoding(val.identifier),
+            .value = val.slice,
+        };
+    }
+
+    pub fn next(self: *NameIterator) Error!?NameEntry {
+        const raw = (try self.nextRaw()) orelse return null;
+        return .{
+            .oid = self.bytes[raw.oid.start..raw.oid.end],
+            .attribute = raw.attribute,
+            .value = .{
+                .encoding = raw.encoding,
+                .bytes = self.bytes[raw.value.start..raw.value.end],
+            },
+        };
+    }
+};
+
+/// One entry of a subjectAltName GeneralNames sequence (RFC 5280 §4.2.1.6).
+pub const GeneralName = struct {
+    kind: GeneralNameTag,
+    /// The value, still encoded as the certificate carried it. For `iPAddress`
+    /// that is the address in network byte order, four octets for IPv4 and
+    /// sixteen for IPv6. For `dNSName` it is the name. Nothing is decoded.
+    value: []const u8,
+};
+
+/// Walks the GeneralNames of a subjectAltName extension in wire order.
+pub const SanIterator = struct {
+    bytes: []const u8,
+    index: u32,
+    end: u32,
+
+    pub fn next(self: *SanIterator) der.Element.ParseError!?GeneralName {
+        while (self.index < self.end) {
+            const name = try der.Element.parse(self.bytes, self.index);
+            self.index = name.slice.end;
+            if (name.identifier.class != .context_specific) continue;
+            return .{
+                .kind = compat.enumFromInt(
+                    GeneralNameTag,
+                    compat.enumToInt(name.identifier.tag),
+                ),
+                .value = self.bytes[name.slice.start..name.slice.end],
+            };
+        }
+        return null;
+    }
+};
+
+/// The ASN.1 type a Name value was encoded with.
+///
+/// RFC 5280 §4.1.2.4 defines DirectoryString as a CHOICE over six of these;
+/// IA5String and the rest reach the same fields from older profiles.
+fn directoryStringEncoding(identifier: der.Identifier) DirectoryString.Encoding {
+    if (identifier.class != .universal) return .unrecognized;
+    return switch (compat.enumToInt(identifier.tag)) {
+        12 => .utf8_string,
+        18 => .numeric_string,
+        19 => .printable_string,
+        20 => .teletex_string,
+        22 => .ia5_string,
+        26 => .visible_string,
+        28 => .universal_string,
+        30 => .bmp_string,
+        else => .unrecognized,
+    };
+}
+
+/// Write text as UTF-8, escaping anything that could forge terminal or log
+/// output: C0 controls (newline and ESC included), DEL, and bytes that are not
+/// valid UTF-8.
+fn writeEscapedUtf8(w: *Io.Writer, bytes: []const u8) Io.Writer.Error!void {
+    var rest = bytes;
+    while (rest.len != 0) {
+        const len = std.unicode.utf8ByteSequenceLength(rest[0]) catch {
+            try writeEscapedByte(w, rest[0]);
+            rest = rest[1..];
+            continue;
+        };
+        if (rest.len < len) {
+            try writeEscapedByte(w, rest[0]);
+            rest = rest[1..];
+            continue;
+        }
+        const code_point = std.unicode.utf8Decode(rest[0..len]) catch {
+            try writeEscapedByte(w, rest[0]);
+            rest = rest[1..];
+            continue;
+        };
+        try writeCodePoint(w, code_point);
+        rest = rest[len..];
+    }
+}
+
+/// Write every byte as `\xNN`. Used for an encoding this parser will not
+/// guess at, so the bytes are shown without being interpreted.
+fn writeEscapedBytes(w: *Io.Writer, bytes: []const u8) Io.Writer.Error!void {
+    for (bytes) |byte| try writeEscapedByte(w, byte);
+}
+
+const CodeUnitSize = enum { big, big32 };
+
+/// Write big-endian UTF-16 or UTF-32 code units as UTF-8.
+fn writeCodeUnits(
+    w: *Io.Writer,
+    bytes: []const u8,
+    comptime size: CodeUnitSize,
+) Io.Writer.Error!void {
+    const width: usize = if (size == .big) 2 else 4;
+    var i: usize = 0;
+    while (i + width <= bytes.len) : (i += width) {
+        var unit: u32 = 0;
+        for (bytes[i..][0..width]) |byte| unit = (unit << 8) | byte;
+        if (size == .big) {
+            // RFC 2781 surrogate pairs. A lone surrogate is not a code point;
+            // show the unit rather than invent one.
+            if (unit >= 0xd800 and unit <= 0xdbff) {
+                if (i + 4 <= bytes.len) {
+                    var low: u32 = 0;
+                    for (bytes[i + 2 ..][0..2]) |byte| low = (low << 8) | byte;
+                    if (low >= 0xdc00 and low <= 0xdfff) {
+                        const code_point = 0x10000 +
+                            ((unit - 0xd800) << 10) + (low - 0xdc00);
+                        try writeCodePoint(w, code_point);
+                        i += 2;
+                        continue;
+                    }
+                }
+                try writeEscapedBytes(w, bytes[i..][0..2]);
+                continue;
+            }
+            if (unit >= 0xdc00 and unit <= 0xdfff) {
+                try writeEscapedBytes(w, bytes[i..][0..2]);
+                continue;
+            }
+        }
+        try writeCodePoint(w, unit);
+    }
+    // A trailing partial code unit is malformed; show its bytes.
+    if (i != bytes.len) try writeEscapedBytes(w, bytes[i..]);
+}
+
+/// One code point, escaped when it is not printable.
+fn writeCodePoint(w: *Io.Writer, code_point: u32) Io.Writer.Error!void {
+    if (code_point < 0x20 or code_point == 0x7f) return writeEscapedCodePoint(w, code_point);
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(@intCast(code_point), &buf) catch {
+        return writeEscapedCodePoint(w, code_point);
+    };
+    try w.writeAll(buf[0..len]);
+}
+
+fn writeEscapedByte(w: *Io.Writer, byte: u8) Io.Writer.Error!void {
+    try writeEscapedCodePoint(w, byte);
+}
+
+fn writeEscapedCodePoint(w: *Io.Writer, code_point: u32) Io.Writer.Error!void {
+    const digits = "0123456789abcdef";
+    var out: [6]u8 = undefined;
+    if (code_point < 0x100) {
+        out = .{ '\\', 'x', digits[code_point >> 4], digits[code_point & 0xf], 0, 0 };
+        return w.writeAll(out[0..4]);
+    }
+    // Above a byte this can only come from a wide encoding; U+XXXX is enough to
+    // identify it and still cannot forge output.
+    out = .{
+        '\\',                            'u',                      digits[(code_point >> 12) & 0xf], digits[(code_point >> 8) & 0xf],
+        digits[(code_point >> 4) & 0xf], digits[code_point & 0xf],
+    };
+    try w.writeAll(out[0..6]);
+}
 
 pub const Parsed = struct {
     certificate: Certificate,
@@ -300,6 +602,43 @@ pub const Parsed = struct {
 
     fn subjectAltName(p: Parsed) []const u8 {
         return p.slice(p.subject_alt_name_slice);
+    }
+
+    /// Every AttributeTypeAndValue in the subject, in wire order.
+    ///
+    /// Values are borrowed and still encoded; render each with
+    /// `DirectoryString.write`. See `NameEntry` for what a single entry holds.
+    pub fn subjectAttributes(p: Parsed) NameIterator {
+        const name = p.subject();
+        return .init(name);
+    }
+
+    /// Every AttributeTypeAndValue in the issuer, in wire order.
+    pub fn issuerAttributes(p: Parsed) NameIterator {
+        const name = p.issuer();
+        return .init(name);
+    }
+
+    pub const SanIteratorError = der.Element.ParseError || error{
+        CertificateFieldHasWrongDataType,
+    };
+
+    /// The subjectAltName entries as the certificate carries them, or an empty
+    /// iterator when the extension is absent.
+    ///
+    /// The extension's GeneralNames SEQUENCE is unwrapped here, so a caller
+    /// never handles the container. Values are not decoded: a `dNSName` is its
+    /// bytes and an `iPAddress` is its address bytes, four for IPv4 and
+    /// sixteen for IPv6 (RFC 5280 §4.2.1.6).
+    pub fn subjectAltNames(p: Parsed) SanIteratorError!SanIterator {
+        const san = p.subjectAltName();
+        if (san.len == 0) return .{ .bytes = san, .index = 0, .end = 0 };
+        const names = try der.Element.parse(san, 0);
+        if (names.identifier.class != .universal or
+            names.identifier.tag != .sequence or
+            names.identifier.pc != .constructed)
+            return error.CertificateFieldHasWrongDataType;
+        return .{ .bytes = san, .index = names.slice.start, .end = names.slice.end };
     }
 
     fn keyUsage(p: Parsed) []const u8 {
@@ -1059,6 +1398,232 @@ test "Parsed.verifyHostName: both SAN forms, one match" {
     try parsed.verifyHostName("127.0.0.1");
     try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("example.org"));
     try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("127.0.0.2"));
+}
+
+// ───────────────────────────────
+// Identity inspection (#172)
+// ───────────────────────────────
+
+/// Minimal DER writer for the inspection tests: short-form lengths only, which
+/// is all a test builder needs.
+const TestDer = struct {
+    out: []u8,
+    len: usize = 0,
+
+    fn open(self: *TestDer, tag: u8) usize {
+        self.out[self.len] = tag;
+        self.out[self.len + 1] = 0;
+        self.len += 2;
+        return self.len - 1;
+    }
+
+    fn close(self: *TestDer, length_byte: usize) void {
+        self.out[length_byte] = @intCast(self.len - length_byte - 1);
+    }
+
+    fn raw(self: *TestDer, bytes: []const u8) void {
+        @memcpy(self.out[self.len..][0..bytes.len], bytes);
+        self.len += bytes.len;
+    }
+
+    fn slice(self: *const TestDer) []const u8 {
+        return self.out[0..self.len];
+    }
+};
+
+/// RDN sequence content (what `NameIterator.init` walks) holding one
+/// AttributeTypeAndValue whose value uses `value_tag`.
+fn oneAttribute(builder: *TestDer, oid: []const u8, value_tag: u8, value: []const u8) void {
+    const rdn = builder.open(0x31);
+    const atav = builder.open(0x30);
+    const oid_head = [2]u8{ 0x06, @intCast(oid.len) };
+    builder.raw(&oid_head);
+    builder.raw(oid);
+    const val = builder.open(value_tag);
+    builder.raw(value);
+    builder.close(val);
+    builder.close(atav);
+    builder.close(rdn);
+}
+
+const oid_common_name = &[_]u8{ 0x55, 0x04, 0x03 };
+const oid_organization = &[_]u8{ 0x55, 0x04, 0x0a };
+
+fn parsedWithSubject(buffer: []const u8, subject: Parsed.Slice) Parsed {
+    var parsed = parsedForNameConstraintsTest(buffer, .empty, .empty, .empty, false);
+    parsed.subject_slice = subject;
+    parsed.issuer_slice = subject;
+    return parsed;
+}
+
+fn renderString(value: DirectoryString, out: []u8) ![]const u8 {
+    var w: Io.Writer = .fixed(out);
+    try value.write(&w);
+    return w.buffered();
+}
+
+// RFC 5280 §4.1.2.4, §4.2.1.6 — a verified certificate's subject and SANs are
+// reachable as values, without the caller decoding DER (#172).
+test "inspect: a real certificate yields its subject and SANs" {
+    const fixture = @import("fixtures");
+    const parsed = try Certificate.parse(.{
+        .buffer = &fixture.chain_leaf_der,
+        .index = 0,
+    });
+
+    var subject = parsed.subjectAttributes();
+    var names: usize = 0;
+    var rendered: [128]u8 = undefined;
+    while (try subject.next()) |entry| {
+        switch (entry.attribute orelse continue) {
+            .commonName => {
+                names += 1;
+                try testing.expectEqualStrings(
+                    "chain.test",
+                    try renderString(entry.value, &rendered),
+                );
+            },
+            else => {},
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), names);
+
+    var issuer = parsed.issuerAttributes();
+    var issuer_names: usize = 0;
+    while (try issuer.next()) |entry| {
+        switch (entry.attribute orelse continue) {
+            .commonName => {
+                issuer_names += 1;
+                try testing.expectEqualStrings(
+                    "ztls test intermediate",
+                    try renderString(entry.value, &rendered),
+                );
+            },
+            else => {},
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), issuer_names);
+
+    var sans = try parsed.subjectAltNames();
+    var dns_names: usize = 0;
+    while (try sans.next()) |name| {
+        try testing.expectEqual(GeneralNameTag.dNSName, name.kind);
+        dns_names += 1;
+        if (dns_names == 1) try testing.expectEqualStrings("chain.test", name.value);
+        if (dns_names == 2) try testing.expectEqualStrings("www.chain.test", name.value);
+    }
+    try testing.expectEqual(@as(usize, 2), dns_names);
+}
+
+// RFC 5280 §4.1.2.4 — every DirectoryString form a chain can carry is either
+// rendered as text or shown as escapes, and nothing is guessed at.
+test "inspect: DirectoryString encodings render or escape" {
+    const cases = [_]struct {
+        tag: u8,
+        value: []const u8,
+        expected: []const u8,
+    }{
+        // utf8String, printableString, ia5String: ASCII text as-is.
+        .{ .tag = 12, .value = "example.com", .expected = "example.com" },
+        .{ .tag = 19, .value = "Example Ltd", .expected = "Example Ltd" },
+        .{ .tag = 22, .value = "admin@example.com", .expected = "admin@example.com" },
+        // BMPString: UCS-2 big-endian, so "Aé" is 0041 00e9, é as C3 A9.
+        .{ .tag = 30, .value = "\x00\x41\x00\xe9", .expected = "A\xc3\xa9" },
+        // A surrogate pair for U+1F600, four bytes of UTF-8.
+        .{
+            .tag = 30,
+            .value = "\xd8\x3d\xde\x00",
+            .expected = "\xf0\x9f\x98\x80",
+        },
+        // UniversalString: UTF-32 big-endian, U+00e9.
+        .{ .tag = 28, .value = "\x00\x00\x00\xe9", .expected = "\xc3\xa9" },
+        // TeletexString is T.61 with national variants. Not guessed at: every
+        // byte is shown.
+        .{ .tag = 20, .value = "Joe", .expected = "\\x4a\\x6f\\x65" },
+    };
+    for (cases) |case| {
+        var buf: [64]u8 = undefined;
+        var builder: TestDer = .{ .out = &buf };
+        oneAttribute(&builder, oid_common_name, case.tag, case.value);
+        var it: NameIterator = .init(builder.slice());
+        const entry = (try it.next()).?;
+        try testing.expectEqual(Attribute.commonName, entry.attribute.?);
+
+        var out: [64]u8 = undefined;
+        try testing.expectEqualStrings(case.expected, try renderString(entry.value, &out));
+        try testing.expectEqual(@as(?NameEntry, null), try it.next());
+    }
+}
+
+// The value comes from the peer. A name holding a newline, an ESC, or invalid
+// UTF-8 must not reach a terminal or a log line as itself.
+test "inspect: hostile bytes are escaped, not printed" {
+    var buf: [128]u8 = undefined;
+    var builder: TestDer = .{ .out = &buf };
+    // A newline, an ESC, and a lone continuation byte, all in one value.
+    oneAttribute(&builder, oid_common_name, 12, "ok\nFAKE: \x1b\x80x");
+
+    var it: NameIterator = .init(builder.slice());
+    const entry = (try it.next()).?;
+    var out: [128]u8 = undefined;
+    try testing.expectEqualStrings(
+        "ok\\x0aFAKE: \\x1b\\x80x",
+        try renderString(entry.value, &out),
+    );
+}
+
+// RFC 5280 §4.2.1.6 — every GeneralName kind is reported with the bytes the
+// certificate carried, and the container is unwrapped for the caller.
+test "inspect: SAN kinds and values" {
+    var buf: [256]u8 = undefined;
+    var builder: TestDer = .{ .out = &buf };
+    const list = builder.open(0x30);
+    builder.raw("\x82\x0bexample.com"); // [2] dNSName
+    builder.raw("\x87\x04\x7f\x00\x00\x01"); // [7] iPAddress, 4 octets
+    builder.raw("\x81\x11admin@example.com"); // [1] rfc822Name
+    builder.raw("\x86\x13https://example.com"); // [6] URI
+    builder.close(list);
+
+    var parsed = parsedForNameConstraintsTest(&buf, .empty, .{ .start = 0, .end = @intCast(builder.len) }, .empty, false);
+    var sans = try parsed.subjectAltNames();
+
+    const first = (try sans.next()).?;
+    try testing.expectEqual(GeneralNameTag.dNSName, first.kind);
+    try testing.expectEqualStrings("example.com", first.value);
+
+    const second = (try sans.next()).?;
+    try testing.expectEqual(GeneralNameTag.iPAddress, second.kind);
+    try testing.expectEqualSlices(u8, &.{ 0x7f, 0x00, 0x00, 0x01 }, second.value);
+
+    const third = (try sans.next()).?;
+    try testing.expectEqual(GeneralNameTag.rfc822Name, third.kind);
+    try testing.expectEqualStrings("admin@example.com", third.value);
+
+    const fourth = (try sans.next()).?;
+    try testing.expectEqual(GeneralNameTag.uniformResourceIdentifier, fourth.kind);
+    try testing.expectEqualStrings("https://example.com", fourth.value);
+
+    try testing.expectEqual(@as(?GeneralName, null), try sans.next());
+
+    // No extension at all is an empty walk, not an error.
+    const absent = parsedForNameConstraintsTest(&buf, .empty, .empty, .empty, false);
+    var empty = try absent.subjectAltNames();
+    try testing.expectEqual(@as(?GeneralName, null), try empty.next());
+}
+
+// An attribute this parser does not model is still reportable: the raw OID
+// travels with a null name, so a display can show it rather than drop the
+// attribute.
+test "inspect: an unknown attribute keeps its OID" {
+    var buf: [64]u8 = undefined;
+    var builder: TestDer = .{ .out = &buf };
+    const unknown_oid = &[_]u8{ 0x2a, 0x03, 0x04 };
+    oneAttribute(&builder, unknown_oid, 12, "x");
+
+    var it: NameIterator = .init(builder.slice());
+    const entry = (try it.next()).?;
+    try testing.expectEqual(@as(?Attribute, null), entry.attribute);
+    try testing.expectEqualSlices(u8, unknown_oid, entry.oid);
 }
 
 // RFC 6125 §6.4.3 and CA/B Forum BR §3.2.2.6 — wildcard certificates must
@@ -1863,30 +2428,12 @@ pub fn parse(cert: Certificate) ParseError!Parsed {
     const pub_key_elem = try der.Element.parse(cert_bytes, pub_key_signature_algorithm.slice.end);
     const pub_key = try parseBitString(cert, pub_key_elem);
 
+    // The same walk the public `subjectAttributes` iterator exposes, so the
+    // engine's own convenience cannot drift from the primitive.
     var common_name = der.Element.Slice.empty;
-    var name_i = subject.slice.start;
-    while (name_i < subject.slice.end) {
-        const rdn = try der.Element.parse(cert_bytes, name_i);
-        var rdn_i = rdn.slice.start;
-        while (rdn_i < rdn.slice.end) {
-            const atav = try der.Element.parse(cert_bytes, rdn_i);
-            var atav_i = atav.slice.start;
-            while (atav_i < atav.slice.end) {
-                const ty_elem = try der.Element.parse(cert_bytes, atav_i);
-                const val = try der.Element.parse(cert_bytes, ty_elem.slice.end);
-                atav_i = val.slice.end;
-                const ty = parseAttribute(cert_bytes, ty_elem) catch |err| switch (err) {
-                    error.CertificateHasUnrecognizedObjectId => continue,
-                    else => |e| return e,
-                };
-                switch (ty) {
-                    .commonName => common_name = val.slice,
-                    else => {},
-                }
-            }
-            rdn_i = atav.slice.end;
-        }
-        name_i = rdn.slice.end;
+    var attribute_it: NameIterator = .initRange(cert_bytes, subject.slice.start, subject.slice.end);
+    while (try attribute_it.nextRaw()) |entry| {
+        if (entry.attribute == .commonName) common_name = entry.value;
     }
 
     const sig_algo = try der.Element.parse(cert_bytes, tbs_certificate.slice.end);

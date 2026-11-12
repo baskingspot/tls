@@ -2150,3 +2150,58 @@ test "trust store: an unterminated PEM block is an error" {
         fixtures.key_capacity_time,
     ));
 }
+
+// #172 — a client can print who it connected to. The chain is already
+// verified by the handshake; this only decodes it for display, and every byte
+// of the text came from the peer.
+test "peer identity: a verified chain decodes to a subject and SANs" {
+    const io = testIo();
+    const fds = try socketPair();
+    defer _ = std.c.close(fds[0]);
+
+    var sctx: ServerCtx = .{ .fd = fds[1], .steps = &.{.drain} };
+    const server = try spawnServer(&sctx);
+
+    var conn: IntrospectingClient = undefined;
+    try conn.connect(io, streamFor(fds[0]), .{
+        .host = test_host,
+        .verify = .insecure,
+    });
+    defer conn.deinit();
+
+    const chain = conn.info().peer_chain;
+    try testing.expect(chain.len >= 1);
+    const leaf = try tls_core.Certificate.parse(.{ .buffer = chain[0], .index = 0 });
+
+    var subject: [128]u8 = undefined;
+    var subject_len: usize = 0;
+    var attributes = leaf.subjectAttributes();
+    while (try attributes.next()) |entry| {
+        if ((entry.attribute orelse continue) != .commonName) continue;
+        var writer: Io.Writer = .fixed(subject[subject_len..]);
+        try entry.value.write(&writer);
+        subject_len += writer.buffered().len;
+    }
+    try testing.expectEqualStrings(test_host, subject[0..subject_len]);
+
+    var sans: [128]u8 = undefined;
+    var sans_len: usize = 0;
+    var names = try leaf.subjectAltNames();
+    while (try names.next()) |name| {
+        if (name.kind != .dNSName) continue;
+        if (sans_len != 0) {
+            @memcpy(sans[sans_len..][0..1], ",");
+            sans_len += 1;
+        }
+        @memcpy(sans[sans_len..][0..name.value.len], name.value);
+        sans_len += name.value.len;
+    }
+    try testing.expectEqualStrings(test_host, sans[0..sans_len]);
+
+    // The validity window is already decoded; only its rendering is the
+    // caller's business.
+    try testing.expect(leaf.validity.not_after > leaf.validity.not_before);
+
+    conn.close();
+    server.join();
+}

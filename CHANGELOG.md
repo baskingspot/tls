@@ -7,6 +7,14 @@ All notable changes to tls are recorded here. The format follows
 
 ### Added
 
+- A verified certificate's identity is readable without a second X.509 parser.
+  `Parsed.subjectAttributes()` and `issuerAttributes()` walk the distinguished
+  name as `NameEntry` values (modeled attribute or raw OID, plus the string
+  with its ASN.1 encoding), `Parsed.subjectAltNames()` walks the SANs as
+  `GeneralName` values, and `DirectoryString.write` renders one value into an
+  `Io.Writer`. Nothing allocates and nothing is decoded until it is rendered.
+  `write` transcodes BMPString and UniversalString, and escapes C0 controls,
+  DEL, and invalid UTF-8, because the text came from the peer (#172).
 - `tls.der.validCertificate` checks the DER envelope of a certificate without
   decoding its fields: one SEQUENCE that fills the buffer, three children, and a
   tbsCertificate with its mandatory fields. It exists so a caller can refuse
