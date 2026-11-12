@@ -108,7 +108,8 @@ pub const Verify = union(enum) {
     /// Load the OS trust store with `gpa` and verify the server certificate
     /// chain against it. The bundle is freed before `connect` returns, so a
     /// client opening many connections should build one bundle and pass
-    /// `.bundle` instead of rescanning the trust store per connection.
+    /// `.bundle` instead of rescanning the trust store per connection. A store
+    /// entry whose DER is malformed fails the load; it does not crash (#177).
     system_bundle: std.mem.Allocator,
     /// Verify against a caller-owned bundle (pin a root / custom store).
     bundle: *const std.crypto.Certificate.Bundle,
@@ -122,6 +123,21 @@ The allocator lives in the `.system_bundle` payload rather than in `connect`'s
 signature, because that is the only mode that needs one. `connect` is therefore
 `connect(io, sock, options)` with no phantom parameter and no "ignored otherwise"
 caveat.
+
+### Trust anchors
+
+`tls_std.trust_store` is the loader `.system_bundle` uses, and it is public for a
+caller that has its anchors somewhere else:
+
+- `loadSystem(bundle, gpa, io, now)` fills a bundle from the OS store.
+- `addCertsFromPemBytes(bundle, gpa, pem, now_sec)` adds every PEM block in a
+  buffer and returns how many anchors the bundle gained. No filesystem access.
+- `addCertsFromFile(bundle, gpa, io, dir, sub_path, now_sec)` is the same for one
+  file.
+
+Malformed DER is rejected before the standard library parses it. A truncated
+certificate in the store is a load error, not a crash: no part of the loader
+hands bytes to std's unchecked DER walk.
 
 ### Buffer configuration
 

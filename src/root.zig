@@ -9,6 +9,9 @@ pub const certificate = @import("certificate.zig");
 pub const Certificate = @import("certificate_parser.zig");
 pub const certificate_chain = @import("certificate_chain.zig");
 pub const CertificateChain = certificate_chain.CertificateChain;
+/// Bounds-checked DER envelope validation, for callers that hand
+/// certificates to std's `Certificate.Bundle`.
+pub const der = @import("der.zig");
 pub const capabilities = @import("capabilities.zig");
 /// RFC 8446 Appendix B.4
 pub const CipherSuite = @import("cipher_suite.zig").CipherSuite;

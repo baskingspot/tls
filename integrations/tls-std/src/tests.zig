@@ -2039,3 +2039,113 @@ test "client auth: undersized identity storage surfaces HandshakeBufferTooShort"
     try testing.expectEqual(@as(?anyerror, error.HandshakeBufferTooShort), sctx.err);
     try testing.expectEqual(@as(?[]const u8, null), sctx.identity());
 }
+
+// ───────────────────────────────
+// Trust anchors
+// ───────────────────────────────
+
+/// PEM-wrap one DER certificate the way a store file carries it: 64-column
+/// body, markers on their own lines (RFC 7468 §2).
+fn writePem(writer: *Io.Writer, der_bytes: []const u8) !void {
+    try writer.writeAll("-----BEGIN CERTIFICATE-----\n");
+    var encoded_buf: [4096]u8 = undefined;
+    const encoded = std.base64.standard.Encoder.encode(&encoded_buf, der_bytes);
+    var rest = encoded;
+    while (rest.len > 64) {
+        try writer.writeAll(rest[0..64]);
+        try writer.writeByte('\n');
+        rest = rest[64..];
+    }
+    try writer.writeAll(rest);
+    try writer.writeAll("\n-----END CERTIFICATE-----\n");
+}
+
+fn pemOf(out: []u8, der_bytes: []const u8) ![]const u8 {
+    var writer: Io.Writer = .fixed(out);
+    try writePem(&writer, der_bytes);
+    return writer.buffered();
+}
+
+// RFC 7468 §2, RFC 5280 §4.1 — a root read from a PEM file anchors a chain, so
+// `.system_bundle` and a caller-supplied store agree on what an anchor is.
+test "trust store: a PEM file of roots loads" {
+    const io = testIo();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var pem_buf: [8192]u8 = undefined;
+    const pem = try pemOf(&pem_buf, &fixtures.key_capacity_root_der);
+    try tmp.dir.writeFile(io, .{ .sub_path = "ca.pem", .data = pem });
+
+    var bundle: std.crypto.Certificate.Bundle = .empty;
+    defer bundle.deinit(testing.allocator);
+    try tls.trust_store.addCertsFromFile(
+        &bundle,
+        testing.allocator,
+        io,
+        tmp.dir,
+        "ca.pem",
+        fixtures.key_capacity_time,
+    );
+    try testing.expectEqual(@as(usize, 1), bundle.map.count());
+}
+
+// #177: the exact repro. It is well-formed DER, so a check on the outer TLV
+// alone passes it, and std's unchecked walk then indexes past the end. The
+// load must be an error.
+test "trust store: a truncated certificate is a load error, not a crash" {
+    const io = testIo();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var pem_buf: [128]u8 = undefined;
+    const pem = try pemOf(&pem_buf, &.{ 0x30, 0x03, 0x02, 0x01, 0x01 });
+    try tmp.dir.writeFile(io, .{ .sub_path = "broken.pem", .data = pem });
+
+    var bundle: std.crypto.Certificate.Bundle = .empty;
+    defer bundle.deinit(testing.allocator);
+    try testing.expectError(error.InvalidCertificateDer, tls.trust_store.addCertsFromFile(
+        &bundle,
+        testing.allocator,
+        io,
+        tmp.dir,
+        "broken.pem",
+        fixtures.key_capacity_time,
+    ));
+    try testing.expectEqual(@as(usize, 0), bundle.bytes.items.len);
+}
+
+// A directory can hold files that are not certificates. Adding nothing is the
+// answer; failing the whole store would make one stray README fatal.
+test "trust store: a file with no certificate markers adds nothing" {
+    const io = testIo();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "README", .data = "not a trust store\n" });
+
+    var bundle: std.crypto.Certificate.Bundle = .empty;
+    defer bundle.deinit(testing.allocator);
+    try tls.trust_store.addCertsFromFile(
+        &bundle,
+        testing.allocator,
+        io,
+        tmp.dir,
+        "README",
+        fixtures.key_capacity_time,
+    );
+    try testing.expectEqual(@as(usize, 0), bundle.map.count());
+}
+
+// A BEGIN with no END is a truncated file, which is a load error rather than a
+// silently shorter store.
+test "trust store: an unterminated PEM block is an error" {
+    var bundle: std.crypto.Certificate.Bundle = .empty;
+    defer bundle.deinit(testing.allocator);
+    try testing.expectError(error.MissingEndCertificateMarker, tls.trust_store.addCertsFromPemBytes(
+        &bundle,
+        testing.allocator,
+        "-----BEGIN CERTIFICATE-----\nMIIB\n",
+        fixtures.key_capacity_time,
+    ));
+}

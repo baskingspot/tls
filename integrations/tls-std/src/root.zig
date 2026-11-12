@@ -34,6 +34,9 @@ const posix = std.posix;
 const tls = @import("tls");
 /// Re-export tls so consumers of tls-std can reach the core if needed.
 pub const core = tls;
+/// Trust-anchor loading for the `.system_bundle` policy, and for a caller that
+/// wants to load anchors from its own PEM file or bytes.
+pub const trust_store = @import("trust_store.zig");
 const alert = tls.alert;
 const frame = tls.frame;
 // One classification of the ~90 core handshake errors, shared by every
@@ -54,7 +57,8 @@ pub const Verify = union(enum) {
     /// Load the OS trust store with `gpa` and verify the server certificate
     /// chain against it. The bundle is freed before `connect` returns, so a
     /// client opening many connections should build one bundle and pass
-    /// `.bundle` instead of rescanning the trust store per connection.
+    /// `.bundle` instead of rescanning the trust store per connection. A store
+    /// entry whose DER is malformed fails the load; it does not crash (#177).
     system_bundle: mem.Allocator,
     /// Verify against a caller-owned bundle (pin a root / custom store).
     /// Borrowed for the duration of the handshake.
@@ -1327,7 +1331,8 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
 
                     switch (options.verify) {
                         .system_bundle => |gpa| {
-                            bundle.rescan(gpa, io, Io.Timestamp.now(io, .real)) catch |err| {
+                            const now = Io.Timestamp.now(io, .real);
+                            trust_store.loadSystem(&bundle, gpa, io, now) catch |err| {
                                 return switch (err) {
                                     error.OutOfMemory => error.OutOfMemory,
                                     else => error.CertificateVerificationFailed,

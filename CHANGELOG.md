@@ -5,6 +5,23 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `tls.der.validCertificate` checks the DER envelope of a certificate without
+  decoding its fields: one SEQUENCE that fills the buffer, three children, and a
+  tbsCertificate with its mandatory fields. It exists so a caller can refuse
+  malformed DER before std's unchecked `der.Element.parse` walks it.
+- `tls_std.trust_store` loads trust anchors from PEM bytes, a file, or the OS
+  store, and rejects a block whose DER envelope is malformed.
+
+### Changed
+
+- `tls_std` with `Verify.system_bundle` reads the Linux trust store itself
+  instead of calling `Bundle.rescan`. A truncated certificate in `/etc/ssl/certs`
+  is now `error.CertificateVerificationFailed`; before this it panicked a Debug
+  or ReleaseSafe build and read out of bounds in ReleaseFast (#177). macOS still
+  rescans the keychain, whose binary store format std owns.
+
 ## [0.4.1] - 2026-11-12
 
 ### Changed
