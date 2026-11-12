@@ -5,6 +5,13 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-12
+
+### Changed
+
+- The `stdx` pin is v0.4.0, so one stdx instance serves every graph that also
+  holds stdx directly. Additive over 0.3.0: no API change for tls.
+
 ## [0.4.0] - 2026-11-11
 
 ### Removed

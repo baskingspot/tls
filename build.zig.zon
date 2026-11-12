@@ -1,14 +1,14 @@
 .{
     .name = .tls,
-    .version = "0.4.0",
+    .version = "0.4.1",
     .fingerprint = 0xacfd1db3288cfd9d,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Production: fixed-capacity containers and memory scans shared with
         // the rest of the baskingspot tree. Not lazy — the library imports it.
         .stdx = .{
-            .url = "https://baskingspot.dev/stdx/v0.3.0.tar.gz",
-            .hash = "stdx-0.3.0-CcWego4nDwC5PxPd4F-nlcOWXxAVCZ6MDI5f3YNVNSO7",
+            .url = "https://baskingspot.dev/stdx/v0.4.0.tar.gz",
+            .hash = "stdx-0.4.0-CcWeghttDwCzAvxm24NX7RL-Wb3ZSqZoHSJDNh6aFzuK",
         },
         // Development-only: the test runner, benchmarks, and comptime txtar
         // fixtures. Lazy so consumers of the library never fetch it.
