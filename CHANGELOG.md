@@ -16,6 +16,17 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- `alert.alertForError` answers every engine error with the alert RFC 8446 §6.2
+  defines for it, and `alert.alertForHandshakeError` replaces the old
+  fall-through with a switch that is exhaustive over the engine's error set: a
+  new error does not compile until someone decides what the peer is told. 27
+  errors that reached `internal_error` now say what actually happened —
+  `unexpected_message` for a HelloRetryRequest, a record with the wrong content
+  type, or a post-handshake flood; `decode_error` for a malformed ALPN entry;
+  `bad_certificate` for an oversized chain or a repeated extension;
+  `decrypt_error` for a certificate signature that did not verify. The rest are
+  ours by fault (buffer sizing, caller options, missing backend capability) and
+  stay `internal_error` deliberately, each with a reason at its arm (#171).
 - An address-literal `host_name` sends no SNI. `host_name` is both the SNI value
   and the certificate reference identity, and RFC 6066 §3 forbids a literal
   IPv4 or IPv6 address in the `server_name` extension. The extension is now

@@ -5,6 +5,7 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const testing = std.testing;
 const fuzz_compat = @import("fuzz_compat.zig");
+const HandshakeError = @import("errors.zig").HandshakeError;
 
 const frame = @import("frame.zig");
 
@@ -88,14 +89,38 @@ pub fn plaintextRecord(msg: *const [2]u8, out: []u8) error{BufferTooShort}![]u8 
     return out[0..total];
 }
 
+/// Map any error to the alert to send the peer, or null when nothing should be
+/// sent. Errors outside the engine's own set carry no protocol meaning, so
+/// they answer `internal_error`, which is what this returned for them before
+/// the closed-set mapping existed.
+///
+/// Prefer `alertForHandshakeError` where the type is already the engine's: the
+/// scan below is only here for callers holding `anyerror`.
+pub fn alertForError(err: anyerror) ?Description {
+    // The engine set is closed at compile time, so this walks exactly its
+    // members and hands each match to the exhaustive table. A name scan is the
+    // only way to bridge `anyerror` into a narrower set without an unsafe
+    // cast; it runs once per failed connection and never in a success path.
+    inline for (comptime compat.errorNames(HandshakeError)) |name| {
+        if (err == @field(HandshakeError, name))
+            return alertForHandshakeError(@field(HandshakeError, name));
+    }
+    return .internal_error;
+}
+
 /// Map a TLS engine error to the alert to send the peer, or null when nothing
 /// should be sent. RFC 8446 §6.2 — error alerts should be as specific as the
-/// protocol defines; unknown errors fall through to `internal_error`.
+/// protocol defines.
+///
+/// The switch is exhaustive over `HandshakeError`, with no `else` arm: a new
+/// engine error is a compile error here until someone decides what the peer is
+/// told about it. A silent fall-through to `internal_error` is exactly what
+/// this shape prevents (#171).
 ///
 /// `error.PeerAlert` is null: the peer already sent its own alert, and answering
 /// it with a second alert, let alone `internal_error`, blames the wrong side.
 /// RFC 8446 §6.2 says close without more data in that case.
-pub fn alertForError(err: anyerror) ?Description {
+pub fn alertForHandshakeError(err: HandshakeError) ?Description {
     return switch (err) {
         error.PeerAlert => null,
         error.AuthenticationFailed => .bad_record_mac,
@@ -106,6 +131,9 @@ pub fn alertForError(err: anyerror) ?Description {
         error.EarlyDataSkipLimitExceeded => .bad_record_mac,
         error.SignatureVerificationFailed,
         error.InvalidVerifyData,
+        // RFC 8446 §6.2 names this case: decrypt_error covers "a certificate
+        // signature that did not verify".
+        error.CertificateSignatureInvalid,
         => .decrypt_error,
         error.EmptyCertificateList,
         error.EmptyTicket,
@@ -150,7 +178,6 @@ pub fn alertForError(err: anyerror) ?Description {
         error.CertificatePublicKeyInvalid,
         error.CertificateSignatureAlgorithmMismatch,
         error.CertificateSignatureInvalidLength,
-        error.InvalidSignature,
         => .bad_certificate,
         error.MissingExtension,
         error.MissingSignatureAlgorithmsExtension,
@@ -179,6 +206,7 @@ pub fn alertForError(err: anyerror) ?Description {
         error.IdentityElement,
         error.MalformedKeyShare,
         error.UnofferedAlpnProtocol,
+        error.UnsupportedGroup,
         error.UnsupportedKeyShareGroup,
         error.UnsupportedSignatureScheme,
         error.SignatureSchemeNotOffered,
@@ -186,8 +214,80 @@ pub fn alertForError(err: anyerror) ?Description {
         error.InvalidHandshakeType,
         error.UnexpectedRecord,
         error.UnexpectedMessage,
+        // RFC 8446 §6.2 — unexpected_message covers "an unexpected handshake
+        // message ... or a record with an incorrect content type". These are
+        // all that, plus the flood bounds below, where the peer keeps sending
+        // a message the state had already finished with.
+        error.HelloRetryRequest,
+        error.NotHelloRetryRequest,
+        error.UnexpectedContentType,
+        error.TooManyKeyUpdates,
+        error.TooManyNewSessionTickets,
         => .unexpected_message,
-        else => .internal_error,
+        // RFC 8446 §6.2 decode_error — the peer's field was out of range. A
+        // server's ALPN extension carries exactly one protocol name (RFC 7301
+        // §3.1), so a zero-length name or a second entry is a decode failure.
+        // `EmptyAlpnProtocol` is raised on the encoder side too, for our own
+        // offered list; there is no peer to alert on that path.
+        error.EmptyAlpnProtocol,
+        error.TooManyAlpnProtocols,
+        => .decode_error,
+        error.CertificateChainTooLong,
+        error.CertificateHasDuplicateExtension,
+        => .bad_certificate,
+        // We understand the algorithm but not this parameterization of it,
+        // which is the same verdict as CertificateSignatureAlgorithmUnsupported.
+        error.CertificateSignatureUnsupportedBitCount,
+        error.CertificateSignatureNamedCurveUnsupported,
+        => .unsupported_certificate,
+
+        // Ours: the peer said nothing wrong.
+        // RFC 8446 §6.2 internal_error: "an internal error unrelated to
+        // the peer or the correctness of the protocol". These are
+        // deliberate, not fall-throughs: each has a reason below, and the
+        // switch has no `else`.
+        //
+        // A caller buffer that cannot hold what the peer sent is a sizing
+        // decision the caller made. The peer's chain is not corrupt because it
+        // is larger than our storage.
+        error.BufferTooShort,
+        error.HandshakeBufferTooShort,
+        error.ClientCertificateTooLarge,
+        => .internal_error,
+        // Our own encoding of caller-supplied configuration.
+        error.InvalidServerName,
+        error.ServerNameTooLong,
+        error.IdentityTooLong,
+        error.InvalidBinderLength,
+        error.TooManyAlpnBytes,
+        error.AlpnProtocolTooLong,
+        => .internal_error,
+        // Configuration the caller owes us, or a backend capability the build
+        // does not have.
+        error.MissingServerCredentials,
+        error.DeterministicNonceUnsupported,
+        error.InvalidHybridPolicy,
+        error.HybridGroupUnavailable,
+        error.MissingP384KeyPair,
+        => .internal_error,
+        // Our own storage, counters, and provider calls. Nothing here can be
+        // caused by a well-behaved peer's bytes; the list is the whole
+        // `classify` internal bucket, so it stays exhaustive as that grows.
+        error.AeadEncryptFailed,
+        error.AeadSetupFailed,
+        error.ExtensionSinkFull,
+        error.EarlyDataUnsupported,
+        error.ReservedExtension,
+        error.ExtensionTooLong,
+        error.KeyUpdateRequired,
+        error.LibcryptoFailed,
+        error.PendingKeyUpdateResponse,
+        error.PendingWrite,
+        error.PlaintextTooLarge,
+        error.RequestContextTooLong,
+        error.SequenceNumberOverflow,
+        error.SliceLengthMismatch,
+        => .internal_error,
     };
 }
 
@@ -251,7 +351,7 @@ test "fuzz: parse handles arbitrary input" {
 // certificate-related alerts for callers to send through the Sans-I/O API.
 test "alertForError: certificate failures map to certificate alerts" {
     const cases = [_]struct {
-        err: anyerror,
+        err: HandshakeError,
         description: Description,
     }{
         .{ .err = error.MissingTrustAnchor, .description = .unknown_ca },
@@ -295,7 +395,6 @@ test "alertForError: certificate failures map to certificate alerts" {
         .{ .err = error.CertificatePublicKeyInvalid, .description = .bad_certificate },
         .{ .err = error.CertificateSignatureAlgorithmMismatch, .description = .bad_certificate },
         .{ .err = error.CertificateSignatureInvalidLength, .description = .bad_certificate },
-        .{ .err = error.InvalidSignature, .description = .bad_certificate },
         .{ .err = error.ClientCertificateRequired, .description = .certificate_required },
     };
     for (cases) |case| try testing.expectEqual(case.description, alertForError(case.err).?);
@@ -306,7 +405,7 @@ test "alertForError: certificate failures map to certificate alerts" {
 // more specific alert when TLS 1.3 defines one.
 test "alertForError: parser and semantic failures map to protocol alerts" {
     const cases = [_]struct {
-        err: anyerror,
+        err: HandshakeError,
         description: Description,
     }{
         .{ .err = error.AuthenticationFailed, .description = .bad_record_mac },
@@ -354,14 +453,65 @@ test "alertForError: parser and semantic failures map to protocol alerts" {
     for (cases) |case| try testing.expectEqual(case.description, alertForError(case.err).?);
 }
 
+// RFC 8446 §6.2 — the errors that used to fall through to `internal_error`
+// now each name what the peer did. #171.
+test "alertForError: previously unnamed failures map by fault" {
+    const cases = [_]struct {
+        err: HandshakeError,
+        description: Description,
+    }{
+        // "An unexpected handshake message ... or a record with an incorrect
+        // content type was received."
+        .{ .err = error.HelloRetryRequest, .description = .unexpected_message },
+        .{ .err = error.NotHelloRetryRequest, .description = .unexpected_message },
+        .{ .err = error.UnexpectedContentType, .description = .unexpected_message },
+        .{ .err = error.TooManyKeyUpdates, .description = .unexpected_message },
+        .{ .err = error.TooManyNewSessionTickets, .description = .unexpected_message },
+        // "A message could not be decoded because some field was out of the
+        // specified range." One ALPN name per side, non-empty (RFC 7301 §3.1).
+        .{ .err = error.EmptyAlpnProtocol, .description = .decode_error },
+        .{ .err = error.TooManyAlpnProtocols, .description = .decode_error },
+        // "A certificate was corrupt": an oversized chain and a repeated
+        // extension both describe a certificate we refuse to accept.
+        .{ .err = error.CertificateChainTooLong, .description = .bad_certificate },
+        .{ .err = error.CertificateHasDuplicateExtension, .description = .bad_certificate },
+        // "A certificate signature that did not verify" is decrypt_error by
+        // name in §6.2, not bad_certificate.
+        .{ .err = error.CertificateSignatureInvalid, .description = .decrypt_error },
+        .{
+            .err = error.CertificateSignatureUnsupportedBitCount,
+            .description = .unsupported_certificate,
+        },
+        .{
+            .err = error.CertificateSignatureNamedCurveUnsupported,
+            .description = .unsupported_certificate,
+        },
+        // The server asked for a group we do not implement, which is the same
+        // inconsistency as UnsupportedKeyShareGroup.
+        .{ .err = error.UnsupportedGroup, .description = .illegal_parameter },
+        // Ours, deliberately: a short buffer, a caller's own option, or a
+        // backend capability the build does not have.
+        .{ .err = error.BufferTooShort, .description = .internal_error },
+        .{ .err = error.HandshakeBufferTooShort, .description = .internal_error },
+        .{ .err = error.ClientCertificateTooLarge, .description = .internal_error },
+        .{ .err = error.InvalidServerName, .description = .internal_error },
+        .{ .err = error.ServerNameTooLong, .description = .internal_error },
+        .{ .err = error.IdentityTooLong, .description = .internal_error },
+        .{ .err = error.InvalidBinderLength, .description = .internal_error },
+        .{ .err = error.TooManyAlpnBytes, .description = .internal_error },
+        .{ .err = error.AlpnProtocolTooLong, .description = .internal_error },
+        .{ .err = error.MissingServerCredentials, .description = .internal_error },
+        .{ .err = error.DeterministicNonceUnsupported, .description = .internal_error },
+        .{ .err = error.InvalidHybridPolicy, .description = .internal_error },
+        .{ .err = error.HybridGroupUnavailable, .description = .internal_error },
+        .{ .err = error.MissingP384KeyPair, .description = .internal_error },
+    };
+    for (cases) |case| try testing.expectEqual(case.description, alertForError(case.err).?);
+}
+
 // RFC 8446 §6 — provider failures are local errors, not peer input errors.
 test "alertForError: provider failure maps to internal_error" {
     try testing.expectEqual(.internal_error, alertForError(error.LibcryptoFailed).?);
-}
-
-// RFC 8446 §6 — unknown errors fall through to internal_error.
-test "alertForError: unknown error maps to internal_error" {
-    try testing.expectEqual(.internal_error, alertForError(error.SomeUnmappedError).?);
 }
 
 // RFC 8446 §6.2 — the peer already told us why it stopped. Sending our own

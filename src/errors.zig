@@ -273,81 +273,42 @@ test "classify: remaining buckets" {
 }
 
 // A new error must not ship without deciding what the peer is told about it.
-// That decision lives in `alert.alertForError`, which switches over `anyerror`
-// with an `else` arm, so an unlisted error silently becomes `internal_error`.
+// That decision lives in `alert.alertForHandshakeError`, whose switch is
+// exhaustive over this closed set with no `else` arm, so a new member does not
+// compile until it has its own arm and its own reason.
 //
-// This walks the closed error set at comptime, so adding a member fails the
-// test until it is either mapped to a specific alert, classified as ours (and
-// thus mapped to `internal_error`), or listed in `known_fallthrough` below.
-// The list is checked both ways: an entry that gains a real alert must be
-// removed, which keeps it from rotting into a comment.
+// This test pins the half the compiler cannot check: that the answer matches
+// who is at fault. Our own failures must not be reported as the peer's, and a
+// peer-caused failure must never be left in the generic bucket.
 //
 // `error.EarlyDataUnsupported` is why this exists: it was briefly classified
-// as `unexpected_message`, which would have told a peer its legal 0-RTT
-// handshake was a protocol violation.
-test "every handshake error has a deliberate peer-visible alert" {
+// `protocol` and therefore mapped to `unexpected_message`, which would have
+// told a peer its legal 0-RTT handshake was a protocol violation.
+test "every handshake error maps to an alert that matches the fault" {
     @setEvalBranchQuota(200_000);
-    // Peer-caused errors that have no specific alert yet and fall through to
-    // `internal_error`. Each is a mapping gap, not a lie about fault. Fixing
-    // one means removing its name here in the same change.
-    const known_fallthrough = [_][]const u8{
-        "TooManyAlpnBytes",
-        "EmptyAlpnProtocol",
-        "AlpnProtocolTooLong",
-        "BufferTooShort",
-        "DeterministicNonceUnsupported",
-        "HelloRetryRequest",
-        "InvalidHybridPolicy",
-        "HybridGroupUnavailable",
-        "MissingP384KeyPair",
-        "TooManyNewSessionTickets",
-        "UnsupportedGroup",
-        "MissingServerCredentials",
-        "UnexpectedContentType",
-        "CertificateChainTooLong",
-        "CertificateHasDuplicateExtension",
-        "CertificateSignatureInvalid",
-        "CertificateSignatureUnsupportedBitCount",
-        "CertificateSignatureNamedCurveUnsupported",
-        "ClientCertificateTooLarge",
-        "TooManyKeyUpdates",
-        "InvalidServerName",
-        "ServerNameTooLong",
-        "NotHelloRetryRequest",
-        "IdentityTooLong",
-        "InvalidBinderLength",
-        "HandshakeBufferTooShort",
-        "TooManyAlpnProtocols",
-    };
-
     const member_names = comptime compat.errorNames(HandshakeError);
     if (member_names.len == 0)
         @compileError("HandshakeError must be a closed error set");
     inline for (member_names) |member| {
         const err = @field(HandshakeError, member);
         const class = classify(err);
-        const description = alert.alertForError(err);
-        const listed = comptime blk: {
-            for (known_fallthrough) |name| {
-                if (std.mem.eql(u8, name, member)) break :blk true;
-            }
-            break :blk false;
+        const description = alert.alertForHandshakeError(err);
+        // Classes that describe our side of the connection: a local buffer, a
+        // caller's option, or credentials the caller owes us.
+        const ours = switch (class) {
+            .internal, .buffer, .options, .missing_credentials => true,
+            else => false,
         };
 
-        if (class == .internal) {
-            // Ours: the peer must not be blamed for it, and it must not be
-            // parked on the fall-through list.
-            try testing.expectEqual(alert.Description.internal_error, description.?);
-            try testing.expect(!listed);
-        } else if (description == null) {
+        if (description == null) {
             // Nothing to send: the peer already explained itself.
-            try testing.expect(!listed);
-        } else if (description.? == .internal_error) {
-            // Peer-caused with no specific alert yet: it has to be a known gap.
-            try testing.expect(listed);
-        } else {
-            // A real alert: the fall-through list must not still claim it.
-            try testing.expect(!listed);
+            try testing.expectEqual(HandshakeError.PeerAlert, err);
+        } else if (class == .internal) {
+            // Ours by classification: the peer must not be blamed for it.
+            try testing.expectEqual(alert.Description.internal_error, description.?);
+        } else if (!ours) {
+            // The peer caused it, so it gets a specific answer.
+            try testing.expect(description.? != .internal_error);
         }
     }
 }
