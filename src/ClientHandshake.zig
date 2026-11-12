@@ -19,6 +19,7 @@ const errors = @import("errors.zig");
 const stdx = @import("stdx");
 const buffer = stdx.buffer;
 const certificate = @import("certificate.zig");
+const Certificate = @import("certificate_parser.zig");
 const certificate_request = @import("certificate_request.zig");
 const client_hello = @import("client_hello.zig");
 const capabilities = @import("capabilities.zig");
@@ -233,8 +234,9 @@ pub const Config = struct {
     /// This ASCII name controls SNI and verification. A DNS name is checked
     /// against DNS-ID SAN entries, and the caller supplies A-labels after IDNA
     /// conversion. An IPv4 or IPv6 literal is checked against iPAddress SAN
-    /// entries instead (RFC 9525 §6.2.1). null disables both SNI and hostname
-    /// verification.
+    /// entries instead (RFC 9525 §6.2.1) and is not sent as SNI, because
+    /// RFC 6066 §3 forbids an address in HostName. null disables both SNI and
+    /// hostname verification.
     /// Caller-owned: like alpn_protocols, the slice must outlive the
     /// handshake. (The C ABI copies the name into handle-owned storage; see
     /// baskingspot_tls_client_init_insecure in include/baskingspot_tls.h.)
@@ -945,6 +947,19 @@ pub fn setCertificateChain(self: *ClientHandshake, chain: CertificateChain, sign
     self.client_credentials = .{ .chain = chain, .signer = signer };
 }
 
+/// The `server_name` value to put in a ClientHello, or null for none.
+///
+/// `host_name` is also the certificate reference identity, and an address
+/// literal is a legitimate one (RFC 9525 §6.2.1). It is not a legitimate
+/// HostName, though: RFC 6066 §3 forbids a literal IPv4 or IPv6 address in the
+/// server_name extension. So an address-literal host verifies against
+/// `iPAddress` SANs and sends no SNI, which is what every other TLS stack does.
+fn sniName(self: *const ClientHandshake) ?[]const u8 {
+    const host_name = self.policy.host_name orelse return null;
+    if (Certificate.Parsed.isAddressLiteral(host_name)) return null;
+    return host_name;
+}
+
 /// Begin the handshake: encode a ClientHello using the Config's `host_name`
 /// (for SNI) and `random`, frame it as a plaintext record into `out`, absorb
 /// it into the transcript, and advance start -> wait_sh. Returns the wire-ready
@@ -972,7 +987,7 @@ pub fn start(self: *ClientHandshake, out: []u8) StartError![]const u8 {
         self.keypairs.x25519.public_key,
         self.keypairs.p256.public_key,
         if (self.keypairs.p384) |keypair| keypair.public_key else null,
-        self.policy.host_name,
+        self.sniName(),
         self.alpn_protocols,
         self.hybrid.supported_groups,
         hybrid_share,
@@ -1029,7 +1044,7 @@ pub fn startWithPsk(
         self.keypairs.x25519.public_key,
         self.keypairs.p256.public_key,
         if (self.keypairs.p384) |keypair| keypair.public_key else null,
-        self.policy.host_name,
+        self.sniName(),
         self.alpn_protocols,
         self.hybrid.supported_groups,
         hybrid_share,
@@ -1678,7 +1693,7 @@ pub fn processHelloRetryRequest(
         if (self.keypairs.p384) |keypair| keypair.public_key else null,
         group,
         hrr.cookie,
-        self.policy.host_name,
+        self.sniName(),
         self.alpn_protocols,
         self.hybrid.supported_groups,
         hybrid_share,
@@ -4873,6 +4888,29 @@ test "handleRecord: KeyUpdate flood cap fires despite empty app-data interleavin
     try testing.expectEqual(error.TooManyKeyUpdates, result);
 }
 
+/// Whether the ClientHello record carries a server_name extension.
+fn hasServerNameExtension(record: []const u8) bool {
+    const readU16 = struct {
+        fn read(bytes: []const u8) u16 {
+            return mem.readInt(u16, bytes[0..2], .big);
+        }
+    }.read;
+    // Record header, handshake header, legacy_version, random.
+    var i: usize = frame.header_len + 4 + 2 + 32;
+    i += 1 + record[i]; // legacy_session_id
+    i += 2 + readU16(record[i..]); // cipher_suites
+    i += 1 + record[i]; // legacy_compression_methods
+    const end = i + 2 + readU16(record[i..]); // extensions
+    i += 2;
+    const sni_type: u16 = compat.enumToInt(extension_type.ExtensionType.server_name);
+    while (i < end) {
+        const value_len = readU16(record[i + 2 ..]);
+        if (readU16(record[i..]) == sni_type) return true;
+        i += 4 + value_len;
+    }
+    return false;
+}
+
 // RFC 8446 §4.1.2, §4.4.2.2 — Config.host_name is the single source for SNI
 // (server_name extension) and certificate SAN validation.
 test "start: uses Config host_name for SNI and policy" {
@@ -4884,8 +4922,35 @@ test "start: uses Config host_name for SNI and policy" {
     });
     defer hs.deinit();
     var out: [256]u8 = undefined;
-    _ = try hs.start(&out);
+    const record = try hs.start(&out);
     try testing.expectEqualStrings("example.com", hs.policy.host_name.?);
+    try testing.expect(hasServerNameExtension(record));
+}
+
+// RFC 6066 §3 — a literal IPv4 or IPv6 address is not a HostName. An
+// address-literal host still verifies, against iPAddress SANs (RFC 9525
+// §6.2.1), and puts nothing in the server_name extension.
+test "start: an address-literal host sends no SNI" {
+    const literals = [_][]const u8{
+        "127.0.0.1",
+        "::1",
+        "2001:db8::1",
+        "::ffff:127.0.0.1",
+    };
+    for (literals) |literal| {
+        var hs: ClientHandshake = .init(.{
+            .keypairs = try .init(rfc8448_client_keypair),
+            .host_name = literal,
+            .now_sec = 0,
+            .random = .{ .data = @splat(0xaa) },
+        });
+        defer hs.deinit();
+        var out: [512]u8 = undefined;
+        const record = try hs.start(&out);
+        try testing.expect(!hasServerNameExtension(record));
+        // Dropping SNI must not drop the check.
+        try testing.expectEqualStrings(literal, hs.policy.host_name.?);
+    }
 }
 
 // RFC 8446 §5 — the full driver path: pump real wire records through

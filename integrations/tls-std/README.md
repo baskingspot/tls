@@ -194,8 +194,9 @@ surprise).
 pub const Client = /* ClientWith(.{}) */ struct {
     pub const Options = struct {
         /// SNI + certificate identity to verify: a DNS name, or an IPv4 or
-        /// IPv6 address literal against iPAddress SANs. Required for real
-        /// verification; null disables BOTH SNI and hostname verification.
+        /// IPv6 address literal against iPAddress SANs. An address sends no
+        /// SNI. Required for real verification; null disables BOTH SNI and
+        /// hostname verification.
         host: ?[]const u8 = null,
         /// No default: a TLS client should not skip this by omission.
         verify: Verify,

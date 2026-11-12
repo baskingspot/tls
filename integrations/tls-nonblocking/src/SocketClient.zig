@@ -27,7 +27,8 @@ pub const Options = struct {
     /// Ignored when `ca_pem` is present.
     insecure_no_chain_anchor: bool = false,
     /// Name for SNI and hostname verification: a DNS name or an address
-    /// literal (RFC 9525 §6.2.1). Borrowed until `deinit`.
+    /// literal (RFC 9525 §6.2.1), which sends no SNI (RFC 6066 §3). Borrowed
+    /// until `deinit`.
     host_name: []const u8,
     /// Caller clock for certificate validity checks.
     now_sec: i64,

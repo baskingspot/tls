@@ -814,6 +814,16 @@ pub const Parsed = struct {
         }
     };
 
+    /// Whether `host` is an IPv4 or IPv6 literal rather than a DNS name.
+    /// An address verifies against iPAddress SANs and must not be sent as a
+    /// HostName in SNI (RFC 6066 §3).
+    pub fn isAddressLiteral(host: []const u8) bool {
+        return switch (ReferenceIdentity.fromText(host)) {
+            .ip4, .ip6 => true,
+            .dns => false,
+        };
+    }
+
     // RFC 9525 §6.3 — ASCII comparison follows caller-owned IDNA conversion.
     // A wildcard occupies the complete leftmost label.
     fn checkHostName(host_name: []const u8, dns_name: []const u8) bool {

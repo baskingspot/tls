@@ -482,9 +482,10 @@ const max_idle_records_per_refill = 64;
 /// Client connection options. See `Client.connect`.
 pub const ClientOptions = struct {
     /// SNI + certificate identity to verify: a DNS name, or an IPv4 or IPv6
-    /// address literal to check against iPAddress SANs (RFC 9525 §6.2.1).
-    /// Required for real verification; null disables BOTH SNI and hostname
-    /// verification (tls `host_name = null`).
+    /// address literal to check against iPAddress SANs (RFC 9525 §6.2.1). An
+    /// address literal sends no SNI, because RFC 6066 §3 forbids one in
+    /// HostName. Required for real verification; null disables BOTH SNI and
+    /// hostname verification (tls `host_name = null`).
     host: ?[]const u8 = null,
     /// Certificate verification policy. No default: a TLS client should not be
     /// able to skip this decision by omission.

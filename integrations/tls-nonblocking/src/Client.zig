@@ -22,7 +22,7 @@ pub const Options = struct {
     insecure_no_chain_anchor: bool = false,
     /// ASCII name for SNI and the identity check: a DNS name matches DNS-ID
     /// SANs, an IPv4 or IPv6 literal matches iPAddress SANs (RFC 9525
-    /// §6.2.1). null disables both.
+    /// §6.2.1) and sends no SNI (RFC 6066 §3). null disables both.
     host_name: ?[]const u8 = null,
     /// Current time in seconds since the Unix epoch, for validity checks.
     now_sec: i64 = 0,

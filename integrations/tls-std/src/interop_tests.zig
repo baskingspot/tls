@@ -76,7 +76,17 @@ fn requireOpenSsl() !void {
 }
 
 fn generateCertificate(cert_path: []const u8, key_path: []const u8) !void {
+    return generateCertificateWithSan(cert_path, key_path, "DNS:localhost");
+}
+
+fn generateCertificateWithSan(
+    cert_path: []const u8,
+    key_path: []const u8,
+    alt_name: []const u8,
+) !void {
     const io = testIo();
+    var addext_buf: [128]u8 = undefined;
+    const addext = try std.fmt.bufPrint(&addext_buf, "subjectAltName={s}", .{alt_name});
     var child = try std.process.spawn(io, .{
         .argv = &.{
             "openssl",                 "req",     "-x509",
@@ -84,7 +94,7 @@ fn generateCertificate(cert_path: []const u8, key_path: []const u8) !void {
             "ec_paramgen_curve:P-256", "-keyout", key_path,
             "-out",                    cert_path, "-days",
             "1",                       "-nodes",  "-subj",
-            "/CN=localhost",           "-addext", "subjectAltName=DNS:localhost",
+            "/CN=localhost",           "-addext", addext,
         },
         .stdout = .ignore,
         .stderr = .ignore,
@@ -518,6 +528,43 @@ test "tls_std.Client interoperates with openssl s_server" {
 
     try testing.expectEqualStrings(alpn, conn.selectedAlpn().?);
     try testing.expectEqual(tls_core.CipherSuite.aes_128_gcm_sha256, conn.info().cipher_suite);
+    try conn.writer().writeAll(request);
+    try conn.writer().flush();
+    const status_line = try conn.reader().takeDelimiterInclusive('\n');
+    try testing.expect(mem.startsWith(u8, status_line, "HTTP/1.0 200"));
+    conn.close();
+}
+
+// RFC 9525 §6.2.1, RFC 6066 §3 — an address-literal host verifies against an
+// iPAddress SAN, and the handshake completes with no SNI sent for the
+// reference identity.
+test "tls_std.Client verifies an address-literal host against an IP SAN" {
+    try requireOpenSsl();
+
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmpDirPath(allocator, &tmp);
+    const cert_path = try Io.Dir.path.join(allocator, &.{ dir, "cert.pem" });
+    const key_path = try Io.Dir.path.join(allocator, &.{ dir, "key.pem" });
+    try generateCertificateWithSan(cert_path, key_path, "IP:127.0.0.1");
+
+    const port = try availablePort();
+    var child = try startOpenSslServer(allocator, cert_path, key_path, port);
+    defer child.kill(testIo());
+
+    const sock = try connectWithRetry(port);
+    var conn: tls.Client = undefined;
+    try conn.connect(testIo(), sock, .{
+        .host = host,
+        .verify = .insecure,
+        .alpn = &.{alpn},
+    });
+    defer conn.deinit();
+
+    try testing.expectEqualStrings(alpn, conn.selectedAlpn().?);
     try conn.writer().writeAll(request);
     try conn.writer().flush();
     const status_line = try conn.reader().takeDelimiterInclusive('\n');

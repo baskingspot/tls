@@ -16,6 +16,11 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- An address-literal `host_name` sends no SNI. `host_name` is both the SNI value
+  and the certificate reference identity, and RFC 6066 §3 forbids a literal
+  IPv4 or IPv6 address in the `server_name` extension. The extension is now
+  omitted for an address, the way every other TLS stack does it; the
+  `iPAddress` SAN check still runs against the same `host_name` (#178).
 - `tls_std` reports why a certificate was refused instead of one opaque
   `CertificateVerificationFailed`: `CertificateExpired`, `CertificateNotYetValid`,
   `CertificateHostMismatch`, `CertificateIssuerNotFound`, and
