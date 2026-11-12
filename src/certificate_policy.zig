@@ -38,8 +38,10 @@ pub const Policy = struct {
     insecure_no_chain_anchor: bool,
     /// Current time in seconds since the Unix epoch, for validity checks.
     now_sec: i64,
-    /// This ASCII DNS reference identifies the expected DNS-ID SAN.
-    /// The caller owns IDNA conversion to A-labels. null disables the check.
+    /// This ASCII reference identifies the expected subjectAltName entry: a
+    /// DNS name matches DNS-ID, and an IPv4 or IPv6 literal matches iPAddress
+    /// (RFC 9525 §6.2.1). The caller owns IDNA conversion to A-labels. null
+    /// disables the check.
     /// ClientHandshake.Config.host_name supplies the default value.
     host_name: ?[]const u8,
     /// Enforce TLS 1.3 certificate residual policy for the leaf's intended use.

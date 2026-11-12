@@ -16,6 +16,13 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- Hostname verification accepts an address literal. `Policy.host_name` with an
+  IPv4 or IPv6 address is compared against `iPAddress` subjectAltName entries
+  instead of `dNSName` (RFC 9525 §6.2.1), in the four-octet and sixteen-octet
+  forms, with an IPv4-mapped address treated as its IPv4 address. A DNS
+  reference still matches `dNSName` only, and a wildcard still matches no
+  address. Before this, an address literal could only connect with
+  `host_name = null`, which disables the check (#176).
 - `tls_std` with `Verify.system_bundle` reads the Linux trust store itself
   instead of calling `Bundle.rescan`. A truncated certificate in `/etc/ssl/certs`
   is now `error.CertificateVerificationFailed`; before this it panicked a Debug

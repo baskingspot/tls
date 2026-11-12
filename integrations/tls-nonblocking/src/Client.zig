@@ -20,7 +20,9 @@ pub const Options = struct {
     ca: ?*const Certificate.Bundle = null,
     /// Test/demo opt-out from chain verification. Never set in production.
     insecure_no_chain_anchor: bool = false,
-    /// ASCII DNS name for SNI and the DNS-ID SAN check. null disables both.
+    /// ASCII name for SNI and the identity check: a DNS name matches DNS-ID
+    /// SANs, an IPv4 or IPv6 literal matches iPAddress SANs (RFC 9525
+    /// §6.2.1). null disables both.
     host_name: ?[]const u8 = null,
     /// Current time in seconds since the Unix epoch, for validity checks.
     now_sec: i64 = 0,

@@ -230,9 +230,11 @@ pub const Config = struct {
     /// X25519 and P-256 are present by default; P-384 is opt-in to avoid
     /// unconditional extra scalar generation and ClientHello bloat.
     keypairs: KeyPairs,
-    /// This ASCII DNS name controls SNI and verification against DNS-ID SAN entries.
-    /// The caller supplies A-labels after IDNA conversion.
-    /// null disables both SNI and hostname verification.
+    /// This ASCII name controls SNI and verification. A DNS name is checked
+    /// against DNS-ID SAN entries, and the caller supplies A-labels after IDNA
+    /// conversion. An IPv4 or IPv6 literal is checked against iPAddress SAN
+    /// entries instead (RFC 9525 §6.2.1). null disables both SNI and hostname
+    /// verification.
     /// Caller-owned: like alpn_protocols, the slice must outlive the
     /// handshake. (The C ABI copies the name into handle-owned storage; see
     /// baskingspot_tls_client_init_insecure in include/baskingspot_tls.h.)

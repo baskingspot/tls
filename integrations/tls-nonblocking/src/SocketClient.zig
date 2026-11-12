@@ -26,7 +26,8 @@ pub const Options = struct {
     /// Test-only chain-anchor opt-out. Hostname verification still runs.
     /// Ignored when `ca_pem` is present.
     insecure_no_chain_anchor: bool = false,
-    /// DNS name for SNI and hostname verification. Borrowed until `deinit`.
+    /// Name for SNI and hostname verification: a DNS name or an address
+    /// literal (RFC 9525 §6.2.1). Borrowed until `deinit`.
     host_name: []const u8,
     /// Caller clock for certificate validity checks.
     now_sec: i64,

@@ -12,6 +12,7 @@
 //! - DNS-fallback-to-CN for hostname and name-constraint checking (RFC 5280 §4.2.1.10).
 
 const std = @import("std");
+const stdx = @import("stdx");
 const compat = @import("compat.zig");
 const crypto = std.crypto;
 const mem = std.mem;
@@ -727,12 +728,16 @@ pub const Parsed = struct {
         CertificateFieldHasWrongDataType,
     };
 
-    /// The verifier compares an ASCII DNS reference against DNS-ID SAN entries.
-    /// Internationalized labels use caller-produced A-labels. Non-ASCII reference
-    /// names return CertificateHostMismatch. Non-ASCII DNS-ID entries do not match.
+    /// The verifier compares an ASCII reference identity against the subject
+    /// alternate names: a DNS name against DNS-ID entries, and an address
+    /// literal against iPAddress entries. Internationalized labels use
+    /// caller-produced A-labels. Non-ASCII reference names return
+    /// CertificateHostMismatch. Non-ASCII DNS-ID entries do not match.
     ///
     /// Callers own IDNA conversion and syntax checks for reference names.
-    /// This function does not validate Punycode or compare IP-ID entries.
+    /// This function does not validate Punycode.
+    ///
+    /// RFC 6125 §6.4.4, RFC 9525 §6.1, RFC 9525 §6.2.1.
     pub fn verifyHostName(parsed_subject: Parsed, host_name: []const u8) VerifyHostNameError!void {
         for (host_name) |byte| if (!std.ascii.isAscii(byte)) return error.CertificateHostMismatch;
         // RFC 6125 §6.4.4 and RFC 9525 §6.1 deprecate Common Name matching;
@@ -745,23 +750,69 @@ pub const Parsed = struct {
             general_names.identifier.tag != .sequence or
             general_names.identifier.pc != .constructed)
             return error.CertificateFieldHasWrongDataType;
+        // RFC 9525 §6.2.1 — the form of the reference identity decides which
+        // GeneralName type can match it. A DNS name matches dNSName only; an
+        // address literal matches iPAddress only. Neither crosses over.
+        const reference: ReferenceIdentity = .fromText(host_name);
         var name_i = general_names.slice.start;
         while (name_i < general_names.slice.end) {
             const general_name = try der.Element.parse(subject_alt_name, name_i);
             name_i = general_name.slice.end;
-            if (general_name.identifier.class == .context_specific) {
-                switch (compat.enumFromInt(GeneralNameTag, compat.enumToInt(general_name.identifier.tag))) {
-                    .dNSName => {
-                        const dns_name = subject_alt_name[general_name.slice.start..general_name.slice.end];
-                        if (checkHostName(host_name, dns_name)) return;
-                    },
-                    else => {},
-                }
+            if (general_name.identifier.class != .context_specific) continue;
+            const value = subject_alt_name[general_name.slice.start..general_name.slice.end];
+            switch (compat.enumFromInt(GeneralNameTag, compat.enumToInt(general_name.identifier.tag))) {
+                .dNSName => switch (reference) {
+                    .dns => |dns_name| if (checkHostName(dns_name, value)) return,
+                    .ip4, .ip6 => {},
+                },
+                .iPAddress => if (reference.matchesIpAddress(value)) return,
+                else => {},
             }
         }
 
         return error.CertificateHostMismatch;
     }
+
+    /// The reference identity a caller verifies against, in the form that
+    /// decides which subjectAltName entries can match it.
+    ///
+    /// RFC 9525 §6.2.1.
+    const ReferenceIdentity = union(enum) {
+        dns: []const u8,
+        ip4: [4]u8,
+        ip6: [16]u8,
+
+        /// RFC 4291 §2.2.3 — an IPv4-mapped address is the IPv4 address, so it
+        /// is compared as one. Text that parses as neither literal is a DNS
+        /// name, which is the only reason this cannot fail.
+        fn fromText(host_name: []const u8) ReferenceIdentity {
+            if (stdx.net.Ip4.parse(host_name)) |ip4| {
+                return .{ .ip4 = ip4.bytes };
+            } else |_| {}
+            if (stdx.net.Ip6Address.parse(host_name, 0)) |ip6| {
+                if (stdx.net.Ip4.fromIp6(ip6)) |ip4| return .{ .ip4 = ip4.bytes };
+                return .{ .ip6 = ip6.bytes };
+            } else |_| {}
+            return .{ .dns = host_name };
+        }
+
+        /// An iPAddress entry is the address in network byte order: four
+        /// octets for IPv4 and sixteen for IPv6. A DNS reference has no
+        /// iPAddress form, and an address has no dNSName form.
+        fn matchesIpAddress(self: ReferenceIdentity, san: []const u8) bool {
+            const ipv4_mapped_prefix = [12]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
+            return switch (self) {
+                .dns => false,
+                .ip4 => |octets| switch (san.len) {
+                    4 => mem.eql(u8, san, &octets),
+                    16 => mem.eql(u8, san[0..12], &ipv4_mapped_prefix) and
+                        mem.eql(u8, san[12..], &octets),
+                    else => false,
+                },
+                .ip6 => |octets| san.len == 16 and mem.eql(u8, san, &octets),
+            };
+        }
+    };
 
     // RFC 9525 §6.3 — ASCII comparison follows caller-owned IDNA conversion.
     // A wildcard occupies the complete leftmost label.
@@ -882,6 +933,122 @@ test "Parsed.verifyHostName rejects matching non-ASCII DNS identities" {
     );
     try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("bücher.example"));
     try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("xn--bcher-kva.example"));
+}
+
+// RFC 9525 §6.2.1 — a reference identity that is an IPv4 address is compared
+// against iPAddress entries, in the four-octet form.
+test "Parsed.verifyHostName matches an IPv4 reference against a four-octet SAN" {
+    const san = "\x30\x06\x87\x04\x7F\x00\x00\x01";
+    const parsed = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+    try parsed.verifyHostName("127.0.0.1");
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("127.0.0.2"));
+    // A dotted quad with leading zeros is not canonical text, so it is not the
+    // same reference identity.
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("127.000.000.001"));
+}
+
+// RFC 9525 §6.2.1 — an IPv6 reference identity is compared against the
+// sixteen-octet form.
+test "Parsed.verifyHostName matches an IPv6 reference against a sixteen-octet SAN" {
+    const san = "\x30\x12\x87\x10\x20\x01\x0d\xb8\x00\x00\x00\x00" ++
+        "\x00\x00\x00\x00\x00\x00\x00\x01";
+    const parsed = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+    try parsed.verifyHostName("2001:db8::1");
+    try parsed.verifyHostName("2001:0db8:0000:0000:0000:0000:0000:0001");
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("2001:db8::2"));
+}
+
+// RFC 4291 §2.2.3 — an IPv4-mapped address is the IPv4 address, so it matches
+// either SAN form, and an IPv4 reference matches a mapped SAN.
+test "Parsed.verifyHostName treats an IPv4-mapped address as its IPv4 address" {
+    const mapped = "\x30\x12\x87\x10\x00\x00\x00\x00\x00\x00\x00\x00" ++
+        "\x00\x00\xff\xff\x7F\x00\x00\x01";
+    const parsed_mapped = parsedForNameConstraintsTest(
+        mapped,
+        .empty,
+        .{ .start = 0, .end = mapped.len },
+        .empty,
+        false,
+    );
+    try parsed_mapped.verifyHostName("127.0.0.1");
+    try parsed_mapped.verifyHostName("::ffff:127.0.0.1");
+
+    const four_octet = "\x30\x06\x87\x04\x7F\x00\x00\x01";
+    const parsed_four = parsedForNameConstraintsTest(
+        four_octet,
+        .empty,
+        .{ .start = 0, .end = four_octet.len },
+        .empty,
+        false,
+    );
+    try parsed_four.verifyHostName("::ffff:127.0.0.1");
+}
+
+// RFC 9525 §6.2.1 — the two forms never cross-match: an address is not a
+// dNSName, and a DNS name is not an iPAddress.
+test "Parsed.verifyHostName never crosses address and DNS forms" {
+    const dns_san = "\x30\x0d\x82\x0bexample.com";
+    const parsed_dns = parsedForNameConstraintsTest(
+        dns_san,
+        .empty,
+        .{ .start = 0, .end = dns_san.len },
+        .empty,
+        false,
+    );
+    try testing.expectError(error.CertificateHostMismatch, parsed_dns.verifyHostName("127.0.0.1"));
+
+    const ip_san = "\x30\x06\x87\x04\x7F\x00\x00\x01";
+    const parsed_ip = parsedForNameConstraintsTest(
+        ip_san,
+        .empty,
+        .{ .start = 0, .end = ip_san.len },
+        .empty,
+        false,
+    );
+    try testing.expectError(error.CertificateHostMismatch, parsed_ip.verifyHostName("example.com"));
+}
+
+// RFC 6125 §6.4.3 — a wildcard is a DNS-ID pattern and matches no address,
+// however the address is spelled.
+test "Parsed.verifyHostName: a wildcard dNSName does not match an address" {
+    const san = "\x30\x09\x82\x07*.0.0.1";
+    const parsed = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("127.0.0.1"));
+}
+
+// RFC 9525 §6.2.1 — a certificate carrying both forms accepts the matching
+// entry and still rejects a reference that matches neither.
+test "Parsed.verifyHostName: both SAN forms, one match" {
+    const san = "\x30\x13\x82\x0bexample.com\x87\x04\x7F\x00\x00\x01";
+    const parsed = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+    try parsed.verifyHostName("example.com");
+    try parsed.verifyHostName("127.0.0.1");
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("example.org"));
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("127.0.0.2"));
 }
 
 // RFC 6125 §6.4.3 and CA/B Forum BR §3.2.2.6 — wildcard certificates must
