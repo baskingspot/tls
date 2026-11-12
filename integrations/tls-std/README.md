@@ -341,7 +341,12 @@ who is at fault and what a caller can do about it:
 
 ```zig
 pub const ConnectError = error{
-    CertificateVerificationFailed, // chain / hostname / validity / CertificateVerify
+    CertificateVerificationFailed, // a rejected certificate with no distinct action
+    CertificateExpired,            // past notAfter: renew it
+    CertificateNotYetValid,        // before notBefore: clocks disagree
+    CertificateHostMismatch,       // no SAN matches Options.host
+    CertificateIssuerNotFound,     // the chain never reaches the trust bundle
+    CertificateSignatureInvalid,   // a chain or CertificateVerify signature failed
     TlsDecryptError,               // Finished MAC or record AEAD tag failed
     TlsAlertReceived,              // peer aborted with a fatal alert
     HandshakeProtocolError,        // malformed, unexpected, or illegal peer message
@@ -354,12 +359,20 @@ pub const ConnectError = error{
   || std.Io.Cancelable || std.Io.UnexpectedError;
 
 pub const AcceptError = error{
-    MissingCredentials, ClientCertificateRejected, CertificateVerificationFailed,
+    MissingCredentials, ClientCertificateRejected,
+    CertificateVerificationFailed, CertificateExpired, CertificateNotYetValid,
+    CertificateIssuerNotFound, CertificateSignatureInvalid,
     TlsDecryptError, TlsAlertReceived, HandshakeProtocolError,
     UnsupportedCipherSuite, NoApplicationProtocol, RecordOverflow,
     HandshakeBufferTooShort, InvalidOptions, InternalError,
 } || /* same transport tail */;
 ```
+
+A failed certificate gets one of the `Certificate*` names rather than a single
+opaque error, because the corrective action differs: renew the certificate,
+dial the correct host, install the trust anchor. A cause with nothing different
+to do about it stays `CertificateVerificationFailed`. `AcceptError` has no
+hostname cause, because a server does not check a client against a name.
 
 The mapping goes through one `classify` table over the union of every core
 handshake error set, projected per role. The table is **exhaustive on purpose —

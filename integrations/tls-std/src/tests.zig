@@ -1530,7 +1530,8 @@ test "abortBeforeInit: peer sees EOF and deinit stays a no-op" {
 // A hostname the fixture certificate does not cover must fail verification even
 // with chain anchoring disabled, and the client must not report it as a generic
 // protocol error.
-test "connect: hostname mismatch surfaces as CertificateVerificationFailed" {
+// #173 — the refusal names the cause, so a CLI can print what to fix.
+test "connect: a hostname mismatch surfaces as CertificateHostMismatch" {
     const io = testIo();
     const fds = try socketPair();
     defer _ = std.c.close(fds[0]);
@@ -1540,7 +1541,7 @@ test "connect: hostname mismatch surfaces as CertificateVerificationFailed" {
 
     var conn: tls.Client = undefined;
     try testing.expectError(
-        error.CertificateVerificationFailed,
+        error.CertificateHostMismatch,
         conn.connect(io, streamFor(fds[0]), .{
             .host = "wrong.example.com",
             .verify = .insecure,

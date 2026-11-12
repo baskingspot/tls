@@ -16,6 +16,12 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- `tls_std` reports why a certificate was refused instead of one opaque
+  `CertificateVerificationFailed`: `CertificateExpired`, `CertificateNotYetValid`,
+  `CertificateHostMismatch`, `CertificateIssuerNotFound`, and
+  `CertificateSignatureInvalid`, on both `ConnectError` and `AcceptError`
+  (`AcceptError` has no hostname cause). A cause with no distinct corrective
+  action stays `CertificateVerificationFailed` (#173).
 - Hostname verification accepts an address literal. `Policy.host_name` with an
   IPv4 or IPv6 address is compared against `iPAddress` subjectAltName entries
   instead of `dNSName` (RFC 9525 §6.2.1), in the four-octet and sixteen-octet

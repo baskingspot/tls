@@ -157,9 +157,22 @@ pub const Config = struct {
 /// says who is at fault and what a caller can do about it; the mapping is
 /// `classify` below.
 pub const ConnectError = error{
-    /// The server certificate chain, hostname, validity window, or
-    /// CertificateVerify signature did not authenticate.
+    /// The server certificate failed verification for a reason with no more
+    /// specific error below. Malformed, unsupported, or policy-rejected.
     CertificateVerificationFailed,
+    /// The leaf or an intermediate is past its `notAfter`.
+    CertificateExpired,
+    /// The leaf or an intermediate has not reached its `notBefore`. The peer's
+    /// clock and yours disagree, or the certificate is not live yet.
+    CertificateNotYetValid,
+    /// No `dNSName` or `iPAddress` subjectAltName matched `Options.host`.
+    CertificateHostMismatch,
+    /// A certificate in the chain names an issuer that is not in the trust
+    /// bundle, so the chain does not reach a configured anchor.
+    CertificateIssuerNotFound,
+    /// A signature in the chain, or the CertificateVerify signature, did not
+    /// verify against the key that signed it.
+    CertificateSignatureInvalid,
     /// A Finished MAC or record AEAD tag failed to verify. The peer could not
     /// prove possession of the negotiated keys.
     TlsDecryptError,
@@ -191,8 +204,18 @@ pub const AcceptError = error{
     /// `Config.client_identity_storage` is `HandshakeBufferTooShort`, not
     /// this.
     ClientCertificateRejected,
-    /// The client certificate chain did not authenticate.
+    /// The client certificate failed verification for a reason with no more
+    /// specific error below.
     CertificateVerificationFailed,
+    /// The client certificate is past its `notAfter`.
+    CertificateExpired,
+    /// The client certificate has not reached its `notBefore`.
+    CertificateNotYetValid,
+    /// A certificate in the client's chain names an issuer that is not in the
+    /// trust bundle.
+    CertificateIssuerNotFound,
+    /// A signature in the client's chain did not verify.
+    CertificateSignatureInvalid,
     TlsDecryptError,
     TlsAlertReceived,
     HandshakeProtocolError,
@@ -338,6 +361,18 @@ fn mapClientHandshakeError(err: HandshakeError) ConnectError {
     // as `HandshakeBufferTooShort`.
     switch (err) {
         error.SignatureSchemeNotOffered, error.BufferTooShort => return error.InvalidOptions,
+        // A caller that reports why a connection was refused cannot recover
+        // the cause from one opaque error, and the corrective action differs
+        // per cause: renew the certificate, dial the right host, install the
+        // anchor (#173). Only causes a caller can act on get their own name;
+        // the rest stay in the bucket below.
+        error.CertificateExpired => return error.CertificateExpired,
+        error.CertificateNotYetValid => return error.CertificateNotYetValid,
+        error.CertificateHostMismatch => return error.CertificateHostMismatch,
+        error.CertificateIssuerNotFound,
+        error.MissingTrustAnchor,
+        => return error.CertificateIssuerNotFound,
+        error.CertificateSignatureInvalid => return error.CertificateSignatureInvalid,
         else => {},
     }
     return switch (classify(err)) {
@@ -397,6 +432,17 @@ fn mapWriteError(err: HandshakeError) error{ TlsProtocolError, InternalError } {
 }
 
 fn mapServerHandshakeError(err: HandshakeError) AcceptError {
+    switch (err) {
+        // Same split as the client side. There is no host-mismatch arm here:
+        // a server does not check a client's identity against a name.
+        error.CertificateExpired => return error.CertificateExpired,
+        error.CertificateNotYetValid => return error.CertificateNotYetValid,
+        error.CertificateIssuerNotFound,
+        error.MissingTrustAnchor,
+        => return error.CertificateIssuerNotFound,
+        error.CertificateSignatureInvalid => return error.CertificateSignatureInvalid,
+        else => {},
+    }
     return switch (classify(err)) {
         .certificate => error.CertificateVerificationFailed,
         .decrypt => error.TlsDecryptError,
@@ -1467,7 +1513,7 @@ pub const Server = ServerWith(.{});
 
 test "public error mapping: a cert failure never degrades to a protocol error" {
     try testing.expectEqual(
-        ConnectError.CertificateVerificationFailed,
+        ConnectError.CertificateExpired,
         mapClientHandshakeError(error.CertificateExpired),
     );
     try testing.expectEqual(
@@ -1492,6 +1538,56 @@ test "public error mapping: a cert failure never degrades to a protocol error" {
     try testing.expectEqual(
         AcceptError.MissingCredentials,
         mapServerHandshakeError(error.MissingServerCredentials),
+    );
+}
+
+// #173 — a refusal a caller can act on gets its own name: renew the
+// certificate, dial the right host, install the anchor. Everything else stays
+// in the bucket, because there is nothing different to do about it.
+test "public error mapping: certificate causes survive the projection" {
+    try testing.expectEqual(
+        ConnectError.CertificateNotYetValid,
+        mapClientHandshakeError(error.CertificateNotYetValid),
+    );
+    try testing.expectEqual(
+        ConnectError.CertificateHostMismatch,
+        mapClientHandshakeError(error.CertificateHostMismatch),
+    );
+    try testing.expectEqual(
+        ConnectError.CertificateIssuerNotFound,
+        mapClientHandshakeError(error.CertificateIssuerNotFound),
+    );
+    // A bundle with no matching anchor is the same failure by another name.
+    try testing.expectEqual(
+        ConnectError.CertificateIssuerNotFound,
+        mapClientHandshakeError(error.MissingTrustAnchor),
+    );
+    try testing.expectEqual(
+        ConnectError.CertificateSignatureInvalid,
+        mapClientHandshakeError(error.CertificateSignatureInvalid),
+    );
+    // No distinct action, so no distinct name.
+    try testing.expectEqual(
+        ConnectError.CertificateVerificationFailed,
+        mapClientHandshakeError(error.CertificateChainTooLong),
+    );
+    try testing.expectEqual(
+        ConnectError.CertificateVerificationFailed,
+        mapClientHandshakeError(error.CertificateUnsupportedCriticalExtension),
+    );
+
+    // The server keeps the same split, minus the hostname cause.
+    try testing.expectEqual(
+        AcceptError.CertificateExpired,
+        mapServerHandshakeError(error.CertificateExpired),
+    );
+    try testing.expectEqual(
+        AcceptError.CertificateIssuerNotFound,
+        mapServerHandshakeError(error.CertificateIssuerNotFound),
+    );
+    try testing.expectEqual(
+        AcceptError.CertificateVerificationFailed,
+        mapServerHandshakeError(error.CertificateChainTooLong),
     );
 }
 
