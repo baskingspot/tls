@@ -370,8 +370,9 @@ commits. The old estimate was a week because it counted nine sites.
 ## 7. What is already done
 
 - `1f411ce`: caller-supplied extensions on both handshakes and both
-  encoders, plus a required-extension rule that names the missing type. QUIC's
-  transport parameters need nothing more from tls.
+  encoders, plus a required-extension rule that names the missing type. That
+  covered the record engines only. The step core carries transport parameters
+  through `receiveExtensions`/`peerExtensions` and `sendExtensions` (#179).
 - Traffic-secret retention (`b2bd024`) gives a QUIC caller the secrets to derive
   its own packet keys.
 - Alert selection that does not blame the peer for our own failures (`52dc00f`).
