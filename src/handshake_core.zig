@@ -108,7 +108,8 @@ const NewSessionTicket = @import("NewSessionTicket.zig");
 const certificate_request = @import("certificate_request.zig");
 const client_hello = @import("client_hello.zig");
 const kex = @import("kex.zig");
-const Random = @import("root.zig").Random;
+const root = @import("root.zig");
+const Random = root.Random;
 const KeyPairs = @import("handshake_key_pairs.zig").KeyPairs;
 const hkdf = @import("hkdf.zig");
 const CertificateChain = @import("certificate_chain.zig").CertificateChain;
@@ -2657,6 +2658,12 @@ test "server: hybrid offers and short storage are named errors" {
         error.PeerShareStorageTooSmall,
         small.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256),
     );
+}
+
+// The keypair type the core's entry points take has a public name, so a
+// consumer can build one and call `useKeypairs` and `startEncoded`.
+test "core: KeyPairs is exported from the package root" {
+    try testing.expect(root.KeyPairs == KeyPairs);
 }
 
 test "core: client and server complete a handshake with each other" {

@@ -31,6 +31,9 @@ All notable changes to tls are recorded here. The format follows
   client that allows nothing still refuses an unexpected extension with
   `error.UnsupportedExtension`; a server ignores an unlisted one. A listed type
   with no free slot is `error.ExtensionSinkFull`.
+- `tls.KeyPairs` is exported. `handshake_core.Client.useKeypairs`, `startEncoded`,
+  and `Server.useKeypairs` take it, and before this it had no public name, so a
+  consumer could not call them.
 - `handshake_core.Server.applicationSecrets()` returns the application traffic
   secrets once `sendFlight` has derived them, and null before. A QUIC server
   needs them to protect 1-RTT packets (RFC 9001 §4.1.1).
