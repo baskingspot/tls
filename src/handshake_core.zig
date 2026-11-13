@@ -199,6 +199,12 @@ pub const Client = struct {
     /// parser uses to reject anything the peer was not entitled to send.
     /// RFC 8446 §4.2.
     offered: extension_type.OfferedExtensions,
+    /// Extension types the caller allows in EncryptedExtensions, borrowed. Only
+    /// `.extension_type` is read. Set by `receiveExtensions`.
+    allowed_extensions: []const extension_type.ExtraExtension,
+    /// Caller-owned slots for the allowed extensions the server sent. The
+    /// stored `data` borrows the EncryptedExtensions message.
+    extension_sink: extension_type.ExtensionSink,
     /// Client credentials, used only when the server sent a CertificateRequest.
     credentials: ?Credentials,
     /// True once the server asked for a client certificate; the flight then
@@ -298,6 +304,8 @@ pub const Client = struct {
             .credentials = null,
             .received_certificate_request = false,
             .offered = .empty,
+            .allowed_extensions = &.{},
+            .extension_sink = .init(&.{}),
             .leaf_pub_key = undefined,
             .leaf_pub_key_len = 0,
             .last_alert = null,
@@ -325,6 +333,31 @@ pub const Client = struct {
         self.suite.secureZero();
         self.queue.clear();
         self.* = undefined;
+    }
+
+    /// Allow the server to send these extension types in EncryptedExtensions and
+    /// keep their bytes in `slots`. Call before EncryptedExtensions arrives.
+    /// Only `.extension_type` of `allowed` is read, and `allowed` is borrowed.
+    /// An allowed type the server sends is kept, in wire order. Any other
+    /// extension the engine does not handle is `error.UnsupportedExtension`,
+    /// and a type that finds no free slot is `error.ExtensionSinkFull`.
+    ///
+    /// QUIC's transport parameters (0x0039) arrive this way. RFC 9001 §8.2.
+    pub fn receiveExtensions(
+        self: *Client,
+        allowed: []const extension_type.ExtraExtension,
+        slots: []extension_type.ExtraExtension,
+    ) void {
+        self.allowed_extensions = allowed;
+        self.extension_sink = .init(slots);
+    }
+
+    /// The allowed extensions the server sent, in wire order. Empty before
+    /// EncryptedExtensions. The `data` slices borrow that message, and the core
+    /// copies nothing: a caller that keeps them copies them before the next
+    /// call into the core.
+    pub fn peerExtensions(self: *const Client) []const extension_type.ExtraExtension {
+        return self.extension_sink.slice();
     }
 
     /// Advertise RFC 10024 hybrid groups, and optionally send an initial share.
@@ -490,6 +523,8 @@ pub const Client = struct {
                 if (msg_type != .encrypted_extensions) return error.UnexpectedMessage;
                 const ee = try encrypted_extensions.parse(msg, self.alpn, .{
                     .offered_extensions = self.offered,
+                    .allowed_extensions = self.allowed_extensions,
+                    .received = &self.extension_sink,
                 });
                 self.selected_alpn = ee.alpn_protocol;
                 self.suite.update(msg);
@@ -2047,6 +2082,57 @@ test "core client: the flight is refused at the wrong level" {
 // the flight verifies in order, the client Finished is the recorded one, the
 // application secrets are the recorded ones, and the levels move to
 // `.application` before `done`.
+fn clientAwaitingEncryptedExtensions(slots: []level.Output) !Client {
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client: Client = .init(slots, policy);
+    errdefer client.deinit();
+    try client.start(&rfc8448_client_hello);
+    _ = client.next().?;
+    try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    return client;
+}
+
+// RFC 9001 §8.2 — a QUIC server sends quic_transport_parameters (0x0039) in
+// EncryptedExtensions. The client keeps the bytes verbatim for a type it
+// allowed, and RFC 8446 §4.2 still refuses any other the engine does not
+// handle.
+test "core client: an allowed EncryptedExtensions extension is read, any other refused" {
+    const sent = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{ 0x01, 0x02, 0x03 } },
+    };
+    var ee_buf: [64]u8 = undefined;
+    const ee = try encrypted_extensions.encodeWithExtensions(&ee_buf, null, false, &sent);
+
+    var slots: [16]level.Output = undefined;
+    var client = try clientAwaitingEncryptedExtensions(&slots);
+    defer client.deinit();
+    try testing.expectEqual(@as(usize, 0), client.peerExtensions().len);
+    const allowed = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{} },
+    };
+    var received: [2]extension_type.ExtraExtension = undefined;
+    client.receiveExtensions(&allowed, &received);
+    try client.provideHandshake(.handshake, ee);
+    try testing.expectEqual(@as(usize, 1), client.peerExtensions().len);
+    try testing.expectEqual(@as(u16, 0x0039), client.peerExtensions()[0].extension_type);
+    try testing.expectEqualSlices(u8, &.{ 0x01, 0x02, 0x03 }, client.peerExtensions()[0].data);
+
+    // Not allowed: the same extension, with no list.
+    var slots_b: [16]level.Output = undefined;
+    var refused = try clientAwaitingEncryptedExtensions(&slots_b);
+    defer refused.deinit();
+    try testing.expectError(error.UnsupportedExtension, refused.provideHandshake(.handshake, ee));
+
+    // Allowed, with no slot to put it in: the caller's sizing error.
+    var slots_c: [16]level.Output = undefined;
+    var full = try clientAwaitingEncryptedExtensions(&slots_c);
+    defer full.deinit();
+    full.receiveExtensions(&allowed, &.{});
+    try testing.expectError(error.ExtensionSinkFull, full.provideHandshake(.handshake, ee));
+}
+
 test "core client: RFC 8448 §3 full replay closes the gate" {
     const rfc8448_client_finished = [_]u8{
         0x14, 0x00, 0x00, 0x20, 0xa8, 0xec, 0x43, 0x6d,
