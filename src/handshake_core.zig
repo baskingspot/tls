@@ -1297,6 +1297,15 @@ pub const Server = struct {
     peer_share_storage: []u8,
     peer_shares: [3]PeerShare,
     peer_share_count: u8,
+    /// Extension types the caller wants from the ClientHello, borrowed. Only
+    /// `.extension_type` is read. Set by `receiveExtensions`.
+    allowed_extensions: []const extension_type.ExtraExtension,
+    /// Caller-owned slots for the allowed extensions the client sent. The
+    /// stored `data` borrows the ClientHello message.
+    extension_sink: extension_type.ExtensionSink,
+    /// Extensions this server sends in EncryptedExtensions, borrowed. Set by
+    /// `sendExtensions`.
+    send_extensions: []const extension_type.ExtraExtension,
 
     pub fn init(slots: []level.Output) Server {
         return .{
@@ -1314,6 +1323,9 @@ pub const Server = struct {
             .peer_share_storage = &.{},
             .peer_shares = undefined,
             .peer_share_count = 0,
+            .allowed_extensions = &.{},
+            .extension_sink = .init(&.{}),
+            .send_extensions = &.{},
             .early_secret = undefined,
             .early_len = 0,
             .early_accepted = false,
@@ -1331,6 +1343,38 @@ pub const Server = struct {
     /// `error.PeerShareStorageTooSmall` rather than truncate silently.
     pub fn usePeerShareStorage(self: *Server, storage: []u8) void {
         self.peer_share_storage = storage;
+    }
+
+    /// Ask for these extension types from the ClientHello and keep their bytes
+    /// in `slots`. Call before `provideClientHello`. Only `.extension_type` of
+    /// `allowed` is read, and `allowed` is borrowed. An extension the client
+    /// sends that is not listed is ignored, as RFC 8446 §4.1.2 requires. A
+    /// listed one that finds no free slot is `error.ExtensionSinkFull`.
+    ///
+    /// QUIC's transport parameters (0x0039) arrive this way. RFC 9001 §8.2.
+    pub fn receiveExtensions(
+        self: *Server,
+        allowed: []const extension_type.ExtraExtension,
+        slots: []extension_type.ExtraExtension,
+    ) void {
+        self.allowed_extensions = allowed;
+        self.extension_sink = .init(slots);
+    }
+
+    /// The allowed extensions the client sent, in wire order. Empty before
+    /// `provideClientHello`. The `data` slices borrow the ClientHello, and the
+    /// core copies nothing: a caller that keeps them copies them before the
+    /// next call into the core.
+    pub fn peerExtensions(self: *const Server) []const extension_type.ExtraExtension {
+        return self.extension_sink.slice();
+    }
+
+    /// Send these extensions in EncryptedExtensions after the ones the engine
+    /// writes itself. Call before `sendFlight`. The list is borrowed until then,
+    /// and `sendFlight` refuses a reserved or repeated type. A QUIC server sends
+    /// its transport parameters (0x0039) this way. RFC 9001 §8.2.
+    pub fn sendExtensions(self: *Server, extras: []const extension_type.ExtraExtension) void {
+        self.send_extensions = extras;
     }
 
     pub fn deinit(self: *Server) void {
@@ -1396,8 +1440,16 @@ pub const Server = struct {
         };
         self.suite.update(client_hello_msg);
         self.ch1_hash = self.transcriptHash();
-        const parsed = client_hello.parse(client_hello_msg) catch
-            return error.UnexpectedMessage;
+        // A second ClientHello (after a HelloRetryRequest) replaces the first's
+        // extensions rather than adding to them.
+        self.extension_sink.len = 0;
+        const parsed = client_hello.parseWithExtensions(client_hello_msg, .{
+            .allowed_extensions = self.allowed_extensions,
+            .received = &self.extension_sink,
+        }) catch |err| switch (err) {
+            error.ExtensionSinkFull => return error.ExtensionSinkFull,
+            else => return error.UnexpectedMessage,
+        };
         try self.retainPeerShares(parsed);
         try self.selectAlpnParsed(parsed);
         self.state = .ch_absorbed;
@@ -1809,10 +1861,12 @@ pub const Server = struct {
         // Each message gets its own bytes in `out`: the queue borrows, so they
         // cannot share a start offset.
         var pos: usize = 0;
-        const ee = try encrypted_extensions.encode(
+        try extension_type.validateExtraExtensions(self.send_extensions);
+        const ee = try encrypted_extensions.encodeWithExtensions(
             out[pos..],
             alpn orelse self.selected_alpn,
             false,
+            self.send_extensions,
         );
         try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = ee } });
         pos += ee.len;
@@ -1928,7 +1982,9 @@ pub const Server = struct {
         creds: Credentials,
         alpn: ?[]const u8,
     ) usize {
-        const ee = encrypted_extensions.encodedLen(alpn orelse self.selected_alpn, false);
+        var ee = encrypted_extensions.encodedLen(alpn orelse self.selected_alpn, false);
+        // Each extension is a type, a length, and its data (RFC 8446 §4.2).
+        for (self.send_extensions) |extra| ee += 4 + extra.data.len;
         const cr: usize = if (self.client_policy != null)
             certificate_request.encodedLen(backend.capabilities.certificate_verify_schemes)
         else
@@ -2695,6 +2751,209 @@ test "core: client and server complete a handshake with each other" {
     try testing.expect(!std.mem.eql(u8, &server_app.client, &handshake_secrets.client));
     try testing.expect(!std.mem.eql(u8, &server_app.server, &handshake_secrets.server));
     try testing.expect(!std.mem.eql(u8, &server_app.client, &server_app.server));
+}
+
+// RFC 9001 §8.2 — QUIC carries its transport parameters in a TLS extension
+// (0x0039) in both directions, and RFC 9001 §4.1.1 has each side protect 1-RTT
+// packets with the application secrets. Core to core, with real key agreement:
+// each role sends an opaque value, reads the other's verbatim, and both derive
+// the same application secrets, which are not the handshake secrets.
+test "core: both roles carry 0x0039 and agree on application secrets" {
+    const client_bytes = [_]u8{ 0xc1, 0xc2, 0xc3 };
+    const server_bytes = [_]u8{ 0x51, 0x52 };
+    const client_extras = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &client_bytes },
+    };
+    const server_extras = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &server_bytes },
+    };
+    // Only the type is read from an allow list; the data is ignored.
+    const allowed = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{} },
+    };
+
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+    var client_received: [4]extension_type.ExtraExtension = undefined;
+    client.receiveExtensions(&allowed, &client_received);
+
+    var ch_buf: [2048]u8 = undefined;
+    const ch = try client.startEncoded(
+        &ch_buf,
+        .init(@splat(0x81)),
+        client_keys,
+        "quic.test",
+        &.{},
+        &client_extras,
+    );
+    _ = client.next().?;
+
+    var share_storage: [peer_share_storage_len]u8 = undefined;
+    var server_out: [16]level.Output = undefined;
+    var server: Server = .init(&server_out);
+    defer server.deinit();
+    var server_received: [4]extension_type.ExtraExtension = undefined;
+    server.receiveExtensions(&allowed, &server_received);
+    server.sendExtensions(&server_extras);
+    server.useKeypairs(server_keys);
+    server.usePeerShareStorage(&share_storage);
+    try testing.expectEqual(@as(usize, 0), server.peerExtensions().len);
+    try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+
+    // The server read the client's bytes, verbatim.
+    try testing.expectEqual(@as(usize, 1), server.peerExtensions().len);
+    try testing.expectEqual(@as(u16, 0x0039), server.peerExtensions()[0].extension_type);
+    try testing.expectEqualSlices(u8, &client_bytes, server.peerExtensions()[0].data);
+
+    const key_share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0x82),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    try server.provideServerHello(.plaintext, sh);
+    while (server.next()) |_| {}
+
+    var key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer key.deinit();
+    const creds: Credentials = .{
+        .chain = .{ .single = &fixtures.server_ecdsa_cert_der },
+        .signer = key.signer(),
+    };
+    // The flight bound counts the extensions the server will send.
+    var bare_slots: [1]level.Output = undefined;
+    var bare: Server = .init(&bare_slots);
+    defer bare.deinit();
+    try testing.expectEqual(
+        bare.flightBufferLen(creds, null) + 4 + server_bytes.len,
+        server.flightBufferLen(creds, null),
+    );
+    var flight_buf: [2048]u8 = undefined;
+    try server.sendFlight(creds, null, &flight_buf);
+
+    try client.provide(.plaintext, sh);
+    var flight: [8][]const u8 = undefined;
+    var flight_len: usize = 0;
+    while (server.next()) |out| switch (out) {
+        .message => |m| {
+            flight[flight_len] = m.bytes;
+            flight_len += 1;
+        },
+        else => {},
+    };
+    try testing.expectEqual(@as(usize, 4), flight_len);
+    try testing.expectEqual(@as(usize, 0), client.peerExtensions().len);
+    for (flight[0..flight_len]) |m| try client.provideHandshake(.handshake, m);
+
+    // The client read the server's bytes, verbatim.
+    try testing.expectEqual(@as(usize, 1), client.peerExtensions().len);
+    try testing.expectEqual(@as(u16, 0x0039), client.peerExtensions()[0].extension_type);
+    try testing.expectEqualSlices(u8, &server_bytes, client.peerExtensions()[0].data);
+
+    var fin_buf: [128]u8 = undefined;
+    const fin = try client.sendClientFinished(&fin_buf);
+    try server.provideClientFlight(.handshake, fin);
+    try testing.expectEqual(Server.State.connected, server.state);
+
+    const client_app = client.applicationSecrets().?;
+    const server_app = server.applicationSecrets().?;
+    const handshake_secrets = server.handshakeSecrets().?;
+    try testing.expectEqual(client_app.len, server_app.len);
+    try testing.expectEqualSlices(u8, &client_app.client, &server_app.client);
+    try testing.expectEqualSlices(u8, &client_app.server, &server_app.server);
+    try testing.expect(!std.mem.eql(u8, &server_app.client, &handshake_secrets.client));
+    try testing.expect(!std.mem.eql(u8, &server_app.server, &handshake_secrets.server));
+
+    // RFC 8446 §4.2 — a client that allowed nothing refuses the same
+    // EncryptedExtensions. The same keys and random give it the same
+    // ClientHello, so the server's flight is the one it would have seen.
+    var denied_slots: [16]level.Output = undefined;
+    var denied: Client = .init(&denied_slots, policy);
+    defer denied.deinit();
+    _ = try denied.startEncoded(
+        &ch_buf,
+        .init(@splat(0x81)),
+        client_keys,
+        "quic.test",
+        &.{},
+        &client_extras,
+    );
+    _ = denied.next().?;
+    try denied.provide(.plaintext, sh);
+    try testing.expectError(
+        error.UnsupportedExtension,
+        denied.provideHandshake(.handshake, flight[0]),
+    );
+}
+
+// RFC 8446 §4.1.2 — the server ignores a ClientHello extension nobody asked
+// for. RFC 8446 §4.2 — it never writes one type twice, and a listed type with no
+// slot is the caller's sizing error.
+test "server: extension misuse is refused, an unlisted extension ignored" {
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    const sent = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{0x01} },
+    };
+    var client_slots: [16]level.Output = undefined;
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    var client: Client = .init(&client_slots, policy);
+    defer client.deinit();
+    var ch_buf: [2048]u8 = undefined;
+    const ch = try client.startEncoded(&ch_buf, .zero, client_keys, null, &.{}, &sent);
+
+    // Unlisted: the handshake proceeds and nothing is kept.
+    var slots_a: [16]level.Output = undefined;
+    var ignoring: Server = .init(&slots_a);
+    defer ignoring.deinit();
+    try ignoring.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+    try testing.expectEqual(@as(usize, 0), ignoring.peerExtensions().len);
+
+    // Listed, no slot to keep it in.
+    const allowed = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{} },
+    };
+    var slots_b: [16]level.Output = undefined;
+    var full: Server = .init(&slots_b);
+    defer full.deinit();
+    full.receiveExtensions(&allowed, &.{});
+    try testing.expectError(
+        error.ExtensionSinkFull,
+        full.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256),
+    );
+
+    // Sending the same type twice would put a repeated extension on the wire.
+    var slots_c: [16]level.Output = undefined;
+    var repeating: Server = .init(&slots_c);
+    defer repeating.deinit();
+    try repeating.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+    const twice = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = "a" },
+        .{ .extension_type = 0x0039, .data = "b" },
+    };
+    repeating.sendExtensions(&twice);
+    repeating.state = .server_hello_queued;
+    var key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer key.deinit();
+    var flight_buf: [2048]u8 = undefined;
+    try testing.expectError(error.DuplicateExtension, repeating.sendFlight(
+        .{ .chain = .{ .single = &fixtures.server_ecdsa_cert_der }, .signer = key.signer() },
+        null,
+        &flight_buf,
+    ));
 }
 
 // Mutual authentication, core to core: the server asks for a certificate, the
