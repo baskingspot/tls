@@ -85,6 +85,9 @@ All notable changes to tls are recorded here. The format follows
   transcript through the server Finished, as RFC 8446 §7.1 requires. A client
   that sent a Certificate and CertificateVerify hashed those in as well, and so
   disagreed with its server on every 1-RTT key.
+- `handshake_core.Client.applicationSecrets()` returns null until
+  `sendClientFinished` has derived them. Before this it copied uninitialized
+  bytes, and a caller could install 1-RTT keys from them.
 
 ## [0.4.1] - 2026-11-12
 
