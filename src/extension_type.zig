@@ -21,6 +21,28 @@ pub const ExtraExtension = struct {
     data: []const u8,
 };
 
+/// Caller-owned slots for the extensions a peer sent. A parser appends what the
+/// caller allowed, in wire order; the `data` slices borrow the parsed message.
+pub const ExtensionSink = struct {
+    items: []ExtraExtension,
+    len: usize,
+
+    pub fn init(items: []ExtraExtension) ExtensionSink {
+        return .{ .items = items, .len = 0 };
+    }
+
+    pub fn append(self: *ExtensionSink, extra: ExtraExtension) bool {
+        if (self.len == self.items.len) return false;
+        self.items[self.len] = extra;
+        self.len += 1;
+        return true;
+    }
+
+    pub fn slice(self: *const ExtensionSink) []const ExtraExtension {
+        return self.items[0..self.len];
+    }
+};
+
 /// Extensions the ClientHello and EncryptedExtensions encoders emit themselves.
 /// A caller-supplied extension may not collide with one of these, and
 /// `pre_shared_key` must stay last (RFC 8446 §4.2.11).
@@ -88,6 +110,20 @@ test "validateExtraExtensions: reserved, duplicate, and oversized are refused" {
     };
     try validateExtraExtensions(&ok);
     try testing.expectEqual(@as(usize, 4 + 6 + 4), try extraExtensionsLen(&ok));
+}
+
+// RFC 8446 §4.2 — a sink keeps the allowed extensions in wire order and says
+// so when the caller's slots run out, rather than dropping one silently.
+test "ExtensionSink: appends in order and refuses past its slots" {
+    var slots: [2]ExtraExtension = undefined;
+    var sink: ExtensionSink = .init(&slots);
+    try testing.expectEqual(@as(usize, 0), sink.slice().len);
+    try testing.expect(sink.append(.{ .extension_type = 0x0039, .data = "a" }));
+    try testing.expect(sink.append(.{ .extension_type = 0x4469, .data = "b" }));
+    try testing.expect(!sink.append(.{ .extension_type = 0x4470, .data = "c" }));
+    try testing.expectEqual(@as(usize, 2), sink.slice().len);
+    try testing.expectEqual(@as(u16, 0x0039), sink.slice()[0].extension_type);
+    try testing.expectEqual(@as(u16, 0x4469), sink.slice()[1].extension_type);
 }
 
 pub const OfferedExtension = enum {
