@@ -21,6 +21,26 @@ All notable changes to tls are recorded here. The format follows
   malformed DER before std's unchecked `der.Element.parse` walks it.
 - `tls_std.trust_store` loads trust anchors from PEM bytes, a file, or the OS
   store, and rejects a block whose DER envelope is malformed.
+- `handshake_core` carries QUIC transport parameters (RFC 9001 §8.2) in both
+  directions. `Client.receiveExtensions(allowed, slots)` and
+  `Server.receiveExtensions(allowed, slots)` name the extension types to keep
+  and the caller-owned slots to keep them in, and `peerExtensions()` returns what
+  the peer sent, in wire order. The bytes borrow the peer's message, so copy them
+  before the next call into the core. `Server.sendExtensions(extras)` adds the
+  server's own to EncryptedExtensions, and `flightBufferLen` counts them. A
+  client that allows nothing still refuses an unexpected extension with
+  `error.UnsupportedExtension`; a server ignores an unlisted one. A listed type
+  with no free slot is `error.ExtensionSinkFull`.
+- `tls.KeyPairs` is exported. `handshake_core.Client.useKeypairs`, `startEncoded`,
+  and `Server.useKeypairs` take it, and before this it had no public name, so a
+  consumer could not call them.
+- `handshake_core.Server.applicationSecrets()` returns the application traffic
+  secrets once `sendFlight` has derived them, and null before. A QUIC server
+  needs them to protect 1-RTT packets (RFC 9001 §4.1.1).
+- `client_hello.parseWithExtensions(msg, ParseOptions)` keeps the extensions the
+  caller allows in `Parsed.extensions`. `parse` is unchanged.
+  `extension_type.ExtensionSink` is the sink type; `encrypted_extensions.ExtensionSink`
+  stays as an alias.
 
 ### Changed
 
@@ -58,6 +78,16 @@ All notable changes to tls are recorded here. The format follows
   is now `error.CertificateVerificationFailed`; before this it panicked a Debug
   or ReleaseSafe build and read out of bounds in ReleaseFast (#177). macOS still
   rescans the keychain, whose binary store format std owns.
+
+### Fixed
+
+- `handshake_core.Client` derives its application traffic secrets over the
+  transcript through the server Finished, as RFC 8446 §7.1 requires. A client
+  that sent a Certificate and CertificateVerify hashed those in as well, and so
+  disagreed with its server on every 1-RTT key.
+- `handshake_core.Client.applicationSecrets()` returns null until
+  `sendClientFinished` has derived them. Before this it copied uninitialized
+  bytes, and a caller could install 1-RTT keys from them.
 
 ## [0.4.1] - 2026-11-12
 

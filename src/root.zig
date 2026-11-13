@@ -30,6 +30,9 @@ pub const frame = @import("frame.zig");
 pub const hkdf = @import("hkdf.zig");
 pub const io = @import("io.zig");
 pub const kex = @import("kex.zig");
+/// Caller-owned ephemeral keypairs. `handshake_core.Client.useKeypairs`,
+/// `startEncoded`, and `handshake_core.Server.useKeypairs` take this type.
+pub const KeyPairs = @import("handshake_key_pairs.zig").KeyPairs;
 pub const ktls = @import("ktls.zig");
 pub const level = @import("level.zig");
 pub const handshake_core = @import("handshake_core.zig");

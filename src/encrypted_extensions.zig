@@ -34,25 +34,7 @@ pub const Options = struct {
 };
 
 /// Caller-owned slots for the allowed extensions the peer sent.
-pub const ExtensionSink = struct {
-    items: []extension_type.ExtraExtension,
-    len: usize,
-
-    pub fn init(items: []extension_type.ExtraExtension) ExtensionSink {
-        return .{ .items = items, .len = 0 };
-    }
-
-    pub fn append(self: *ExtensionSink, extra: extension_type.ExtraExtension) bool {
-        if (self.len == self.items.len) return false;
-        self.items[self.len] = extra;
-        self.len += 1;
-        return true;
-    }
-
-    pub fn slice(self: *const ExtensionSink) []const extension_type.ExtraExtension {
-        return self.items[0..self.len];
-    }
-};
+pub const ExtensionSink = extension_type.ExtensionSink;
 
 pub const ParseError = error{
     UnexpectedEof,
