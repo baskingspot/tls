@@ -1054,7 +1054,11 @@ pub const Client = struct {
     }
 
     /// The application traffic secrets, once the client Finished has been sent.
+    /// Null before that: the arm holds no valid bytes until
+    /// `sendClientFinished` derives them, and a caller must not install 1-RTT
+    /// keys from uninitialized memory.
     pub fn applicationSecrets(self: *const Client) ?HandshakeSecrets {
+        if (self.state != .connected) return null;
         return switch (self.suite) {
             .buffering => null,
             inline .sha256, .sha384 => |*arm| blk: {
@@ -2737,6 +2741,9 @@ test "core: client and server complete a handshake with each other" {
     try testing.expectEqual(@as(usize, 4), flight_messages);
     try testing.expectEqual(Client.State.server_finished_verified, client.state);
 
+    // Verifying the server Finished is not enough: the secrets are derived when
+    // the client sends its own, so the accessor is null until then.
+    try testing.expect(client.applicationSecrets() == null);
     var fin_buf: [128]u8 = undefined;
     const fin = try client.sendClientFinished(&fin_buf);
     try testing.expectEqual(@as(u8, compat.enumToInt(handshake.Type.finished)), fin[0]);
