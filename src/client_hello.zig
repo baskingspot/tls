@@ -1034,6 +1034,21 @@ pub const ParseError = error{
     MalformedKeyShare,
     UnsupportedSignatureScheme,
     IllegalParameter,
+    /// `ParseOptions.received` had no slot left.
+    ExtensionSinkFull,
+};
+
+/// What `parseWithExtensions` hands back beyond the extensions the engine
+/// understands.
+// ast-grep-ignore: public-struct-field-default -- options bag: call sites override one knob
+pub const ParseOptions = struct {
+    /// Extension types the caller wants the bytes for. The engine ignores any
+    /// other type it does not handle, as RFC 8446 §4.1.2 requires; only the
+    /// types listed here are kept. Only `.extension_type` is read.
+    allowed_extensions: []const extension_type.ExtraExtension = &.{},
+    /// Caller storage for the allowed extensions the client sent. Slices in the
+    /// result borrow the input message.
+    received: ?*extension_type.ExtensionSink = null,
 };
 
 pub const Parsed = struct {
@@ -1063,6 +1078,9 @@ pub const Parsed = struct {
     /// Whether the client offered the early_data extension (0-RTT).
     /// RFC 8446 §4.2.10.
     offered_early_data: bool,
+    /// The allowed extensions the client sent, in wire order, borrowed from the
+    /// ClientHello. Empty unless `ParseOptions.received` was supplied.
+    extensions: []const extension_type.ExtraExtension,
 
     /// A ClientHello with the given cipher-suite vector and every optional
     /// extension absent.
@@ -1083,6 +1101,7 @@ pub const Parsed = struct {
             .binders_offset = 0,
             .psk_key_exchange_modes = null,
             .offered_early_data = false,
+            .extensions = &.{},
         };
     }
 
@@ -1446,6 +1465,13 @@ fn encodeInternal(
 }
 
 pub fn parse(msg: []const u8) ParseError!Parsed {
+    return parseWithExtensions(msg, .{});
+}
+
+/// `parse`, and keep the bytes of every extension in `opts.allowed_extensions`
+/// that the engine does not handle itself. A protocol built on TLS reads its
+/// own extension this way (QUIC's transport parameters, RFC 9001 §8.2).
+pub fn parseWithExtensions(msg: []const u8, opts: ParseOptions) ParseError!Parsed {
     if (msg.len < handshake_header_len + 2 + 32 + 1 + 2 + 1 + 2) return error.UnexpectedEof;
     var r: wire.Reader = .init(msg);
     const handshake_type = r.assumeRead(handshake.Type);
@@ -1568,9 +1594,20 @@ pub fn parse(msg: []const u8) ParseError!Parsed {
                 const ext_offset = @intFromPtr(ext.ptr) - @intFromPtr(msg.ptr);
                 parsed.binders_offset = ext_offset + 2 + identities_len;
             },
-            else => {},
+            // RFC 8446 §4.1.2 — an unrecognized extension is ignored, unless
+            // the caller listed the type and asked to receive it verbatim.
+            else => if (opts.received) |sink| {
+                const value = compat.enumToInt(ext_type);
+                for (opts.allowed_extensions) |candidate| {
+                    if (candidate.extension_type != value) continue;
+                    if (!sink.append(.{ .extension_type = value, .data = ext }))
+                        return error.ExtensionSinkFull;
+                    break;
+                }
+            },
         }
     }
+    if (opts.received) |sink| parsed.extensions = sink.slice();
     if (r.end != extensions_end) return error.InvalidExtensionLength;
     if (!got_supported_versions) return error.UnsupportedTlsVersion;
     if (!got_supported_groups or !got_signature_algorithms or !got_key_share)
@@ -3222,6 +3259,58 @@ test "encodeWithHybridGroupsAndExtensions: extras are framed and parse back" {
     }));
     // And the document still parses as a ClientHello.
     _ = try parse(msg);
+}
+
+// RFC 9001 §8.2, RFC 8446 §4.1.2 — a listed extension comes back verbatim and in
+// wire order, an unlisted one is still ignored, and `parse` keeps none.
+test "parseWithExtensions: a listed extension is kept, an unlisted one ignored" {
+    var buf: [1024]u8 = undefined;
+    const keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x34)));
+    const p256_keypair: p256.KeyPair = try .generateDeterministic(.init(@splat(0x56)));
+    const sent = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{ 0xde, 0xad, 0xbe, 0xef } },
+        .{ .extension_type = 0x4469, .data = &.{0x01} },
+    };
+    const msg = try encodeWithHybridGroupsAndExtensions(
+        &buf,
+        .zero,
+        keypair.public_key,
+        p256_keypair.public_key,
+        null,
+        null,
+        &.{},
+        &.{},
+        null,
+        &sent,
+    );
+
+    const allowed = [_]extension_type.ExtraExtension{
+        .{ .extension_type = 0x0039, .data = &.{} },
+    };
+    var slots: [2]extension_type.ExtraExtension = undefined;
+    var sink: extension_type.ExtensionSink = .init(&slots);
+    const parsed = try parseWithExtensions(msg, .{
+        .allowed_extensions = &allowed,
+        .received = &sink,
+    });
+    try testing.expectEqual(@as(usize, 1), parsed.extensions.len);
+    try testing.expectEqual(@as(u16, 0x0039), parsed.extensions[0].extension_type);
+    try testing.expectEqualSlices(u8, &.{ 0xde, 0xad, 0xbe, 0xef }, parsed.extensions[0].data);
+
+    // The bytes borrow the message rather than copy it.
+    const data_at = @intFromPtr(parsed.extensions[0].data.ptr);
+    try testing.expect(data_at >= @intFromPtr(msg.ptr));
+    try testing.expect(data_at < @intFromPtr(msg.ptr) + msg.len);
+
+    try testing.expectEqual(@as(usize, 0), (try parse(msg)).extensions.len);
+
+    // A listed type with no slot left is the caller's sizing error, not a drop.
+    var no_slots: [0]extension_type.ExtraExtension = undefined;
+    var full: extension_type.ExtensionSink = .init(&no_slots);
+    try testing.expectError(error.ExtensionSinkFull, parseWithExtensions(msg, .{
+        .allowed_extensions = &allowed,
+        .received = &full,
+    }));
 }
 
 // A caller-supplied extension may not shadow one the engine emits, and the PSK
