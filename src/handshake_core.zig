@@ -1701,6 +1701,56 @@ pub const Server = struct {
         return copyHandshakeSecrets(&self.suite);
     }
 
+    /// The application traffic secrets, once `sendFlight` has derived them over
+    /// the transcript through the server Finished. Null before that: the arm
+    /// holds no valid bytes yet, and a QUIC server must not protect a 1-RTT
+    /// packet with them. RFC 8446 §7.1, RFC 9001 §4.1.1.
+    pub fn applicationSecrets(self: *const Server) ?HandshakeSecrets {
+        switch (self.state) {
+            .wait_client_hello, .ch_absorbed, .server_hello_queued => return null,
+            .flight_sent,
+            .wait_client_certificate,
+            .wait_client_verify,
+            .wait_client_finished,
+            .connected,
+            => {},
+        }
+        return switch (self.suite) {
+            .buffering => null,
+            inline .sha256, .sha384 => |*arm| blk: {
+                var secrets: HandshakeSecrets = .{
+                    .len = @TypeOf(arm.*).Hkdf.prk_len,
+                    .client = @splat(0),
+                    .server = @splat(0),
+                };
+                @memcpy(secrets.client[0..secrets.len], arm.client_app_secret.data[0..secrets.len]);
+                @memcpy(secrets.server[0..secrets.len], arm.server_app_secret.data[0..secrets.len]);
+                break :blk secrets;
+            },
+        };
+    }
+
+    /// RFC 8446 §7.1 - application traffic secrets, over the transcript through
+    /// the server Finished. The client derives the same pair from the same hash
+    /// when it sends its own Finished.
+    fn deriveApplicationSecrets(self: *Server, transcript_hash: []const u8) Error!void {
+        switch (self.suite) {
+            .buffering => return error.UnexpectedMessage,
+            inline .sha256, .sha384 => |*arm| {
+                const H = @TypeOf(arm.*).Hkdf;
+                var th_bytes: [H.prk_len]u8 = undefined;
+                @memcpy(&th_bytes, transcript_hash[0..H.prk_len]);
+                const th: H.TranscriptHash = .init(th_bytes);
+                var master = H.masterSecret(arm.handshake_secret);
+                defer master.secureZero();
+                var master_key: H.Keyed = .init(&master.data);
+                defer master_key.secureZero();
+                arm.client_app_secret = H.deriveSecretKeyed(&master_key, "c ap traffic", &th);
+                arm.server_app_secret = H.deriveSecretKeyed(&master_key, "s ap traffic", &th);
+            },
+        }
+    }
+
     /// Compose the authenticated server flight as four bare messages at
     /// `.handshake`: EncryptedExtensions, Certificate, CertificateVerify, and
     /// Finished. One `message` output per message, in wire order, because a
@@ -1779,6 +1829,8 @@ pub const Server = struct {
         };
         try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = fin } });
         self.suite.update(fin);
+        const app_th = self.transcriptHash();
+        try self.deriveApplicationSecrets(app_th.slice());
         self.state = .flight_sent;
     }
 
@@ -2498,12 +2550,16 @@ test "core: client and server complete a handshake with each other" {
     // Drain the ServerHello and its level events; the flight is next.
     while (server.next()) |_| {}
 
+    // The application secrets hang off the transcript through the server
+    // Finished, so the server has none before it sends that flight.
+    try testing.expect(server.applicationSecrets() == null);
     var flight_buf: [2048]u8 = undefined;
     try server.sendFlight(
         .{ .chain = .{ .single = &ecdsa_cert }, .signer = signer },
         null,
         &flight_buf,
     );
+    try testing.expect(server.applicationSecrets() != null);
 
     var policy: certificate.Policy = .init;
     policy.now_sec = 0;
@@ -2531,6 +2587,24 @@ test "core: client and server complete a handshake with each other" {
     var fin_buf: [128]u8 = undefined;
     const fin = try client.sendClientFinished(&fin_buf);
     try testing.expectEqual(@as(u8, compat.enumToInt(handshake.Type.finished)), fin[0]);
+
+    // The server verifies the client Finished under the key it derived.
+    try server.provideClientFlight(.handshake, fin);
+    try testing.expectEqual(Server.State.connected, server.state);
+
+    // RFC 8446 §7.1, RFC 9001 §4.1.1 — both roles derive the same application
+    // traffic secrets in both directions, over the same transcript. The
+    // handshake secrets come from an earlier transcript, so a core that handed
+    // back those would not pass the last two checks.
+    const client_app = client.applicationSecrets().?;
+    const server_app = server.applicationSecrets().?;
+    const handshake_secrets = server.handshakeSecrets().?;
+    try testing.expectEqual(client_app.len, server_app.len);
+    try testing.expectEqualSlices(u8, &client_app.client, &server_app.client);
+    try testing.expectEqualSlices(u8, &client_app.server, &server_app.server);
+    try testing.expect(!std.mem.eql(u8, &server_app.client, &handshake_secrets.client));
+    try testing.expect(!std.mem.eql(u8, &server_app.server, &handshake_secrets.server));
+    try testing.expect(!std.mem.eql(u8, &server_app.client, &server_app.server));
 }
 
 // Mutual authentication, core to core: the server asks for a certificate, the
