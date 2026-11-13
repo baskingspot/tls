@@ -761,6 +761,10 @@ pub const Client = struct {
     /// until the caller drains it.
     pub fn sendClientFinished(self: *Client, out: []u8) Error![]const u8 {
         if (self.state != .server_finished_verified) return error.UnexpectedMessage;
+        // RFC 8446 §7.1 - the application secrets cover the transcript through
+        // the server Finished. Take it before the client's own Certificate and
+        // CertificateVerify enter the hash; the Finished MAC covers those.
+        const app_th = self.transcriptHash();
         var pos: usize = 0;
 
         // RFC 8446 §4.4.2, §4.4.3 - when the server asked for a certificate,
@@ -824,7 +828,7 @@ pub const Client = struct {
                 );
             },
         };
-        try self.deriveApplicationSecrets(th.slice());
+        try self.deriveApplicationSecrets(app_th.slice());
         self.suite.update(msg);
         self.deriveResumptionMaster();
 
@@ -2693,6 +2697,14 @@ test "core: client authentication completes both ways" {
     };
     try testing.expectEqual(@as(usize, 3), count);
     try testing.expectEqual(Server.State.connected, server.state);
+
+    // RFC 8446 §7.1 — the application secrets cover the transcript through the
+    // server Finished, not the client's Certificate and CertificateVerify, so
+    // a client that authenticates still agrees with its server.
+    const client_app = client.applicationSecrets().?;
+    const server_app = server.applicationSecrets().?;
+    try testing.expectEqualSlices(u8, &client_app.client, &server_app.client);
+    try testing.expectEqualSlices(u8, &client_app.server, &server_app.server);
 }
 
 // RFC 8448 §4, the resumption secret: after the client Finished, the core's
