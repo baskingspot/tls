@@ -736,8 +736,11 @@ pub const Parsed = struct {
     pub fn verifyHostName(parsed_subject: Parsed, host_name: []const u8) VerifyHostNameError!void {
         for (host_name) |byte| if (!std.ascii.isAscii(byte)) return error.CertificateHostMismatch;
         // RFC 6125 §6.4.4 and RFC 9525 §6.1 deprecate Common Name matching;
-        // DNS-ID subjectAltName is authoritative.
+        // subjectAltName is authoritative. An address literal matches an
+        // iPAddress SAN by its network-order bytes.
         const subject_alt_name = parsed_subject.subjectAltName();
+        var ip_buffer: [16]u8 = undefined;
+        const host_ip = hostIpBytes(host_name, &ip_buffer);
         if (subject_alt_name.len == 0) return error.CertificateHostMismatch;
 
         const general_names = try der.Element.parse(subject_alt_name, 0);
@@ -755,12 +758,34 @@ pub const Parsed = struct {
                         const dns_name = subject_alt_name[general_name.slice.start..general_name.slice.end];
                         if (checkHostName(host_name, dns_name)) return;
                     },
+                    .iPAddress => {
+                        if (host_ip) |expected| {
+                            const san_ip = subject_alt_name[general_name.slice.start..general_name.slice.end];
+                            if (mem.eql(u8, san_ip, expected)) return;
+                        }
+                    },
                     else => {},
                 }
             }
         }
 
         return error.CertificateHostMismatch;
+    }
+
+    /// Parse `host_name` as an IPv4 or IPv6 literal. A DNS name returns null.
+    /// The bytes are network order, matching an iPAddress SAN.
+    fn hostIpBytes(host_name: []const u8, buffer: *[16]u8) ?[]const u8 {
+        const address = std.Io.net.IpAddress.parse(host_name, 0) catch return null;
+        return switch (address) {
+            .ip4 => |ip| blk: {
+                @memcpy(buffer[0..4], &ip.bytes);
+                break :blk buffer[0..4];
+            },
+            .ip6 => |ip| blk: {
+                @memcpy(buffer[0..16], &ip.bytes);
+                break :blk buffer[0..16];
+            },
+        };
     }
 
     // RFC 9525 §6.3 — ASCII comparison follows caller-owned IDNA conversion.
@@ -812,6 +837,37 @@ test "Parsed.verifyHostName rejects universal tag 2 as dNSName" {
     );
 
     try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("victim.com"));
+}
+
+// RFC 5280 §4.2.1.6 and RFC 9525 §6.2.1 — an address literal matches an
+// iPAddress SAN by its four or sixteen network-order bytes.
+test "Parsed.verifyHostName accepts an IPv4 iPAddress SAN" {
+    const san = "\x30\x06\x87\x04\x7f\x00\x00\x01";
+    const parsed = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+
+    try parsed.verifyHostName("127.0.0.1");
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("127.0.0.2"));
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("localhost"));
+}
+
+test "Parsed.verifyHostName accepts an IPv6 iPAddress SAN" {
+    const san = "\x30\x12\x87\x10" ++ "\x00" ** 15 ++ "\x01";
+    const parsed = parsedForNameConstraintsTest(
+        san,
+        .empty,
+        .{ .start = 0, .end = san.len },
+        .empty,
+        false,
+    );
+
+    try parsed.verifyHostName("::1");
+    try testing.expectError(error.CertificateHostMismatch, parsed.verifyHostName("::2"));
 }
 
 // RFC 6125 §6.4.4 and RFC 9525 §6.1 — DNS-ID SANs, not the deprecated
