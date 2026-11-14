@@ -38,6 +38,22 @@ pub const Options = struct {
     /// Absolute monotonic deadline for read waits, including the handshake.
     /// Null waits indefinitely. This does not bound socket writes.
     deadline_ns: ?i96 = null,
+    /// Consulted between handshake steps, and at least every 100 ms while a
+    /// handshake read waits, where the runtime can bound a socket read. On
+    /// Zig 0.16 it runs between steps only, so a read already waiting returns
+    /// when the peer answers or the deadline passes. Returning true abandons
+    /// the handshake with `error.Canceled`; the socket stays caller-owned and
+    /// the handshake state is released like any other failed `init`.
+    cancel: ?Cancel = null,
+
+    /// A caller's cancellation hook. It runs on the task that drives the
+    /// handshake, never concurrently with the TLS state, and is cleared when
+    /// the handshake ends.
+    pub const Cancel = struct {
+        context: *anyopaque,
+        /// True abandons the handshake.
+        shouldCancel: *const fn (context: *anyopaque) bool,
+    };
 };
 
 pub const TransportReadError = net.Stream.Reader.Error;
@@ -71,6 +87,8 @@ life: Life = .empty,
 input: Io.Reader = undefined,
 output: Io.Writer = undefined,
 deadline_ns: ?i96 = null,
+/// Defaulted so a client built by hand cannot carry an undefined hook.
+cancel: ?Options.Cancel = null,
 expired_flag: bool = false,
 read_error: ?ReadError = null,
 write_error: ?WriteError = null,
@@ -92,6 +110,7 @@ pub fn init(
         .allocator = allocator,
         .socket = socket,
         .deadline_ns = options.deadline_ns,
+        .cancel = options.cancel,
         .pinned = self,
     };
     errdefer self.deinit();
@@ -293,7 +312,15 @@ fn nextApplication(self: *SocketClient) ReadError!?[]const u8 {
 }
 
 fn handshake(self: *SocketClient) ReadError!void {
+    // The hook exists for the handshake. A live connection has no one to
+    // consult it, and leaving it set would slice every read for nothing.
+    defer self.cancel = null;
     while (true) {
+        // A black-holed handshake is one blocking read, so the read itself is
+        // bounded by `cancel_poll_ns` below and this check runs between steps.
+        if (self.cancel) |cancel| {
+            if (cancel.shouldCancel(cancel.context)) return error.Canceled;
+        }
         switch (try self.step()) {
             .handshake_complete => return,
             // Handshake completion must precede application data. Reject an
@@ -387,13 +414,31 @@ fn makeWriteProgress(self: *SocketClient) WriteError!void {
     if (event == .need_output) try self.flushSend();
 }
 
+/// A read that returns when its deadline passes, or one that returns every
+/// `cancel_poll_ns` so the caller's cancel hook can run and the read can be
+/// retried. Only a real deadline sets `expired_flag`.
+const ReadBound = enum { deadline, cancel_poll };
+
+/// A polled read needs a wait with a timeout. Zig 0.16 has no socket operation
+/// in `Io.Operation`, so there is nothing to slice with; the hook is then
+/// consulted between handshake steps only, and a read already waiting returns
+/// when the peer answers or the deadline passes.
+pub const polled_cancel = @hasField(Io.Operation, "net_read");
+
+/// How long one handshake read may wait before the cancel hook is consulted
+/// again.
+const cancel_poll_ns: i96 = 100 * std.time.ns_per_ms;
+
 fn readSocket(self: *SocketClient) ReadError!ReceiveResult {
     const buffer = self.client.receiveBuffer();
     if (buffer.len == 0) {
         try self.flushSend();
         return .retry;
     }
-    if (self.deadline_ns) |deadline| return self.readSocketDeadline(buffer, deadline);
+    if (self.cancel != null and polled_cancel) {
+        return self.readSocketDeadline(buffer, self.deadline_ns, .cancel_poll);
+    }
+    if (self.deadline_ns) |deadline| return self.readSocketDeadline(buffer, deadline, .deadline);
 
     const read = try transportRead(self.io, self.socket.socket.handle, buffer);
     if (read == 0) return .eof;
@@ -404,12 +449,24 @@ fn readSocket(self: *SocketClient) ReadError!ReceiveResult {
 fn readSocketDeadline(
     self: *SocketClient,
     buffer: []u8,
-    deadline: i96,
+    deadline: ?i96,
+    bound: ReadBound,
 ) ReadError!ReceiveResult {
     const now = Io.Clock.awake.now(self.io).nanoseconds;
-    if (now >= deadline) return self.deadlineExpired();
+    if (deadline) |at| {
+        if (now >= at) return self.deadlineExpired();
+    }
+    // A cancel poll waits at most one slice, and never past the real deadline.
+    const wait_ns: i96 = switch (bound) {
+        .deadline => deadline orelse std.math.maxInt(i96),
+        .cancel_poll => blk: {
+            const slice = now + cancel_poll_ns;
+            const at = deadline orelse break :blk slice;
+            break :blk @min(at, slice);
+        },
+    };
     const give_up: Io.Clock.Timestamp = Io.Timestamp
-        .fromNanoseconds(deadline)
+        .fromNanoseconds(wait_ns)
         .withClock(Io.Clock.awake);
 
     // Zig 0.16 has no portable vectored net_read operation in Io.Batch. Keep
@@ -444,20 +501,24 @@ fn readSocketDeadline(
                 else => unreachable,
             }
         }
-        if (wait_error) |err| return self.deadlineWaitError(err);
+        if (wait_error) |err| return switch (err) {
+            // A poll timeout is not an expiry: the handshake loop returns to
+            // its cancel check and reads again.
+            error.Timeout => self.timeoutResult(bound),
+            error.Canceled => error.Canceled,
+            error.ConcurrencyUnavailable => error.DeadlineUnsupported,
+        };
         return error.NoReadCompletion;
     }
     return error.DeadlineUnsupported;
 }
 
-fn deadlineWaitError(
-    self: *SocketClient,
-    err: Io.Batch.AwaitConcurrentError,
-) ReadError {
-    return switch (err) {
-        error.Timeout => self.deadlineExpired(),
-        error.Canceled => error.Canceled,
-        error.ConcurrencyUnavailable => error.DeadlineUnsupported,
+/// What a wait's timeout means. A cancel poll timeout is a retry, not an
+/// expiry: only a real deadline sets `expired_flag`.
+fn timeoutResult(self: *SocketClient, bound: ReadBound) ReadError!ReceiveResult {
+    return switch (bound) {
+        .deadline => self.deadlineExpired(),
+        .cancel_poll => .retry,
     };
 }
 
@@ -541,18 +602,14 @@ fn copyInto(iovecs: [][]u8, bytes: []const u8) usize {
     return copied;
 }
 
-// An Io cancellation reports why it stopped. It is not evidence that time ran
-// out, and a caller uses the distinction to choose retry versus a new deadline.
-test "deadline wait: only timeout sets the expired side channel" {
+// A cancel poll timeout asks the next loop iteration to try again. It is not
+// evidence that time ran out, and only a real deadline sets the side channel.
+test "deadline wait: a cancel poll timeout is a retry and does not expire" {
     var client: SocketClient = undefined;
     client.expired_flag = false;
-    try testing.expect(client.deadlineWaitError(error.Canceled) == error.Canceled);
+    try testing.expectEqual(ReceiveResult.retry, try client.timeoutResult(.cancel_poll));
     try testing.expect(!client.expired());
-    try testing.expect(
-        client.deadlineWaitError(error.ConcurrencyUnavailable) == error.DeadlineUnsupported,
-    );
-    try testing.expect(!client.expired());
-    try testing.expect(client.deadlineWaitError(error.Timeout) == error.TimedOut);
+    try testing.expectError(error.TimedOut, client.timeoutResult(.deadline));
     try testing.expect(client.expired());
     client.setDeadline(null);
     try testing.expect(!client.expired());
@@ -560,6 +617,9 @@ test "deadline wait: only timeout sets the expired side channel" {
 
 test "unexpected application data cannot spin the eager handshake" {
     var client: SocketClient = undefined;
+    // The rest of this client is undefined on purpose; the handshake reads the
+    // cancel hook before its first step.
+    client.cancel = null;
     try client.client.init(&.{}, .{
         .keypairs = try .init(.generate()),
         .host_name = null,
@@ -616,7 +676,11 @@ test "deadline batches reap pending reads and preserve completions that race can
             }, .{ .record = &client.record, .out = &client.out });
             defer client.client.deinit();
             const before = client.client.receiveBuffer().len;
-            const result = client.readSocketDeadline(client.client.receiveBuffer(), 12345);
+            const result = client.readSocketDeadline(
+                client.client.receiveBuffer(),
+                12345,
+                .deadline,
+            );
             switch (scenario) {
                 .timeout => try testing.expectError(error.TimedOut, result),
                 .canceled, .canceled_race => try testing.expectError(error.Canceled, result),

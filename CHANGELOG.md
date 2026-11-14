@@ -7,6 +7,16 @@ All notable changes to tls are recorded here. The format follows
 
 ### Added
 
+- `tls_nonblocking.SocketClient.Options.cancel` runs a caller hook at the top
+  of each handshake step and at least every 100 ms while a handshake read
+  waits. Returning true ends `init` with `error.Canceled`, so a dialer can
+  abandon a black-holed handshake instead of waiting for the read deadline. The
+  hook is cleared when the handshake ends, so a live connection never slices a
+  read it cannot cancel. A poll timeout retries the read and does not set
+  `expired()`; only a real deadline does. On Zig 0.16 the runtime cannot bound
+  a socket read, so the hook runs between steps only and `deadline_ns` keeps
+  its meaning. The socket stays caller-owned, and a failed `init` is still safe
+  to `deinit`.
 - A verified certificate's identity is readable without a second X.509 parser.
   `Parsed.subjectAttributes()` and `issuerAttributes()` walk the distinguished
   name as `NameEntry` values (modeled attribute or raw OID, plus the string

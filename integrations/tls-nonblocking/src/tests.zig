@@ -1,6 +1,7 @@
 //! Public API tests over a byte stream with deterministic fragmentation.
 const std = @import("std");
 const testing = std.testing;
+const Io = std.Io;
 const tls = @import("tls");
 const transport = @import("tls_nonblocking");
 const Server = transport.Server;
@@ -329,6 +330,142 @@ test "handshake: ClientHello header and body reassemble across records" {
     try pair.finishHandshake(1, null);
     try testing.expect(pair.server.isConnected());
 }
+
+// A dialer that wants to stop must not wait out a black-holed handshake.
+test "handshake: a cancel hook ends a read that never completes" {
+    // A read in progress can only be cut where the runtime can bound a socket
+    // read.
+    if (comptime !SocketClient.polled_cancel) return error.SkipZigTest;
+
+    const io = testing.io;
+    var address: Io.net.IpAddress = try .parseLiteral("127.0.0.1:0");
+    var listener = try address.listen(io, .{ .mode = .stream, .reuse_address = true });
+    defer listener.deinit(io);
+    address.setPort(listener.socket.address.getPort());
+
+    // The listener never accepts, so the kernel completes the TCP connect and
+    // the client's only read waits for a ServerHello that never comes. With no
+    // deadline, only the cancel hook can end it.
+    const stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+
+    var state: CancelState = .{ .io = io, .after_ns = 200 * std.time.ns_per_ms };
+    state.start = Io.Clock.awake.now(io).nanoseconds;
+    var client: SocketClient = undefined;
+    try testing.expectError(error.Canceled, client.init(testing.allocator, io, stream, .{
+        .host_name = "127.0.0.1",
+        .now_sec = 1_798_761_600,
+        .insecure_no_chain_anchor = true,
+        .cancel = .{ .context = &state, .shouldCancel = CancelState.shouldCancel },
+    }));
+    try testing.expect(client.cancel == null);
+    client.deinit();
+
+    const elapsed = Io.Clock.awake.now(io).nanoseconds - state.start;
+    try testing.expect(elapsed < 500 * std.time.ns_per_ms);
+    // At least one poll happened after the read began; without it the read
+    // would have run to the deadline or forever.
+    try testing.expect(state.calls >= 2);
+}
+
+test "handshake: a real deadline still expires while the cancel hook polls" {
+    if (comptime !SocketClient.polled_cancel) return error.SkipZigTest;
+
+    const io = testing.io;
+    var address: Io.net.IpAddress = try .parseLiteral("127.0.0.1:0");
+    var listener = try address.listen(io, .{ .mode = .stream, .reuse_address = true });
+    defer listener.deinit(io);
+    address.setPort(listener.socket.address.getPort());
+
+    const stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+
+    var state: CancelState = .{ .io = io, .after_ns = std.math.maxInt(i96) };
+    state.start = Io.Clock.awake.now(io).nanoseconds;
+    var client: SocketClient = undefined;
+    try testing.expectError(error.TimedOut, client.init(testing.allocator, io, stream, .{
+        .host_name = "127.0.0.1",
+        .now_sec = 1_798_761_600,
+        .insecure_no_chain_anchor = true,
+        .deadline_ns = state.start + 300 * std.time.ns_per_ms,
+        .cancel = .{ .context = &state, .shouldCancel = CancelState.shouldCancel },
+    }));
+    defer client.deinit();
+    try testing.expect(client.expired());
+    // The polls ran, and the deadline still ended the handshake.
+    try testing.expect(state.calls >= 2);
+
+    const elapsed = Io.Clock.awake.now(io).nanoseconds - state.start;
+    try testing.expect(elapsed >= 300 * std.time.ns_per_ms);
+    try testing.expect(elapsed < 800 * std.time.ns_per_ms);
+}
+
+test "handshake: a runtime without polled reads keeps an expired deadline" {
+    if (comptime SocketClient.polled_cancel) return error.SkipZigTest;
+
+    const io = testing.io;
+    var address: Io.net.IpAddress = try .parseLiteral("127.0.0.1:0");
+    var listener = try address.listen(io, .{ .mode = .stream, .reuse_address = true });
+    defer listener.deinit(io);
+    address.setPort(listener.socket.address.getPort());
+
+    const stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+
+    // Setting the hook must not shadow the deadline on a runtime that cannot
+    // bound a socket read. An already-expired deadline still reports itself.
+    var state: CancelState = .{ .io = io, .after_ns = std.math.maxInt(i96) };
+    state.start = Io.Clock.awake.now(io).nanoseconds;
+    var client: SocketClient = undefined;
+    try testing.expectError(error.TimedOut, client.init(testing.allocator, io, stream, .{
+        .host_name = "127.0.0.1",
+        .now_sec = 1_798_761_600,
+        .insecure_no_chain_anchor = true,
+        .deadline_ns = state.start - 1,
+        .cancel = .{ .context = &state, .shouldCancel = CancelState.shouldCancel },
+    }));
+    defer client.deinit();
+    try testing.expect(client.expired());
+}
+
+test "handshake: a cancel hook that says stop before any I/O never writes" {
+    const io = testing.io;
+    var address: Io.net.IpAddress = try .parseLiteral("127.0.0.1:0");
+    var listener = try address.listen(io, .{ .mode = .stream, .reuse_address = true });
+    defer listener.deinit(io);
+    address.setPort(listener.socket.address.getPort());
+
+    const stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+
+    var state: CancelState = .{ .io = io, .after_ns = 0 };
+    state.start = Io.Clock.awake.now(io).nanoseconds;
+    var client: SocketClient = undefined;
+    try testing.expectError(error.Canceled, client.init(testing.allocator, io, stream, .{
+        .host_name = "127.0.0.1",
+        .now_sec = 1_798_761_600,
+        .insecure_no_chain_anchor = true,
+        .cancel = .{ .context = &state, .shouldCancel = CancelState.shouldCancel },
+    }));
+    // The handshake clears the hook: nothing after it consults the pointer.
+    try testing.expect(client.cancel == null);
+    client.deinit();
+    try testing.expectEqual(@as(usize, 1), state.calls);
+}
+
+const CancelState = struct {
+    io: Io,
+    start: i96 = 0,
+    after_ns: i96,
+    calls: usize = 0,
+
+    fn shouldCancel(context: *anyopaque) bool {
+        const self: *CancelState = @ptrCast(@alignCast(context));
+        self.calls += 1;
+        const now = Io.Clock.awake.now(self.io).nanoseconds;
+        return now - self.start >= self.after_ns;
+    }
+};
 
 // RFC 7301 §3.2. ALPN rejection and absence are distinct negotiation results.
 test "ALPN: reject disjoint lists, expose absence for the caller to reject" {
@@ -663,7 +800,7 @@ fn derSequence(out: []u8, parts: []const []const u8) ![]const u8 {
     var length: usize = 0;
     for (parts) |part| length += part.len;
     std.debug.assert(length <= std.math.maxInt(u16));
-    var writer: std.Io.Writer = .fixed(out);
+    var writer: Io.Writer = .fixed(out);
     try writer.writeByte(0x30);
     if (length < 0x80) {
         try writer.writeByte(@intCast(length));
