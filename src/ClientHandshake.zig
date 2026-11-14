@@ -943,6 +943,18 @@ pub fn setCertificateChain(self: *ClientHandshake, chain: CertificateChain, sign
     self.client_credentials = .{ .chain = chain, .signer = signer };
 }
 
+/// RFC 6066 §3 forbids an IP literal in server_name. Keep the address for
+/// certificate verification, but omit the SNI extension.
+fn sniName(host_name: ?[]const u8) ?[]const u8 {
+    const name = host_name orelse return null;
+    const literal = if (name.len >= 2 and name[0] == '[' and name[name.len - 1] == ']')
+        name[1 .. name.len - 1]
+    else
+        name;
+    if (std.Io.net.IpAddress.parse(literal, 0)) |_| return null else |_| {}
+    return name;
+}
+
 /// Begin the handshake: encode a ClientHello using the Config's `host_name`
 /// (for SNI) and `random`, frame it as a plaintext record into `out`, absorb
 /// it into the transcript, and advance start -> wait_sh. Returns the wire-ready
@@ -970,7 +982,7 @@ pub fn start(self: *ClientHandshake, out: []u8) StartError![]const u8 {
         self.keypairs.x25519.public_key,
         self.keypairs.p256.public_key,
         if (self.keypairs.p384) |keypair| keypair.public_key else null,
-        self.policy.host_name,
+        sniName(self.policy.host_name),
         self.alpn_protocols,
         self.hybrid.supported_groups,
         hybrid_share,
@@ -1027,7 +1039,7 @@ pub fn startWithPsk(
         self.keypairs.x25519.public_key,
         self.keypairs.p256.public_key,
         if (self.keypairs.p384) |keypair| keypair.public_key else null,
-        self.policy.host_name,
+        sniName(self.policy.host_name),
         self.alpn_protocols,
         self.hybrid.supported_groups,
         hybrid_share,
@@ -1676,7 +1688,7 @@ pub fn processHelloRetryRequest(
         if (self.keypairs.p384) |keypair| keypair.public_key else null,
         group,
         hrr.cookie,
-        self.policy.host_name,
+        sniName(self.policy.host_name),
         self.alpn_protocols,
         self.hybrid.supported_groups,
         hybrid_share,
@@ -4884,6 +4896,21 @@ test "start: uses Config host_name for SNI and policy" {
     var out: [256]u8 = undefined;
     _ = try hs.start(&out);
     try testing.expectEqualStrings("example.com", hs.policy.host_name.?);
+}
+
+test "start: omits SNI for an IP literal host name" {
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try .init(rfc8448_client_keypair),
+        .host_name = "10.96.0.1",
+        .now_sec = 0,
+        .random = .{ .data = @splat(0xaa) },
+    });
+    defer hs.deinit();
+    var out: [1024]u8 = undefined;
+    const record = try hs.start(&out);
+    const parsed = try client_hello.parse(record[frame.header_len..]);
+    try testing.expectEqual(@as(?[]const u8, null), parsed.server_name);
+    try testing.expectEqualStrings("10.96.0.1", hs.policy.host_name.?);
 }
 
 // RFC 8446 §5 — the full driver path: pump real wire records through
