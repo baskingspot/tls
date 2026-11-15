@@ -360,7 +360,7 @@ fn mtlsServerExchange(ctx: *MtlsServerCtx) !void {
     const sock = try ctx.listener.accept(io);
 
     var conn: IdentityServer = undefined;
-    var scratch: tls.HandshakeScratch = .init;
+    var scratch: tls.Server.Scratch = .init;
     try conn.accept(io, sock, .{
         .cert_chain = &.{server_cert_der},
         .signer = key.signer(),
@@ -399,7 +399,7 @@ fn serverExchange(ctx: *ServerCtx) !void {
     const sock = try ctx.listener.accept(io);
 
     var conn: tls.Server = undefined;
-    var scratch: tls.HandshakeScratch = .init;
+    var scratch: tls.Server.Scratch = .init;
     try conn.accept(io, sock, .{
         .cert_chain = &.{server_cert_der},
         .signer = key.signer(),

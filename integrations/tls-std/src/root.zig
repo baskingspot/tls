@@ -124,6 +124,9 @@ pub const Config = struct {
     /// certificate chains, fragmented ClientHello). `null` uses the core's
     /// recommended size for the role. Too small surfaces as
     /// `error.HandshakeBufferTooShort`.
+    ///
+    /// On a server this sizes the worker's `Scratch`, not the connection: the
+    /// buffer is gone once the handshake finishes (#169).
     reassembly_storage: ?usize = null,
     /// Decrypted-plaintext look-ahead for the read side. This is the reader's
     /// buffer capacity, so it bounds `Io.Reader.peek(n)`, `takeInt`, and
@@ -544,24 +547,33 @@ pub const ServerOptions = struct {
     }
 };
 
-/// Per-worker scratch space for the server handshake engine.
+/// Per-worker scratch space for the server handshake: the engine and the
+/// ClientHello reassembly buffer, neither of which a finished connection needs.
 ///
-/// A finished server connection keeps the compact `EstablishedSession`, not the
-/// handshake engine, so a slot table of thousands of idle connections carries
-/// one engine per worker instead of one per slot (#169). Declare it once beside
-/// the accept loop:
+/// A slot table of thousands of idle connections carries one of these per
+/// worker instead of one per slot (#169). Declare it once beside the accept
+/// loop, sized by the connection type it serves:
 ///
-///     var scratch: tls_std.HandshakeScratch = .init;
+///     var scratch: tls.Server.Scratch = .init;
 ///     try conn.accept(io, sock, options, &scratch);
 ///
 /// A worker runs one handshake at a time, which is what a blocking accept loop
-/// already does. `accept` reinitializes the engine on entry and leaves it
-/// consumed on exit, so the same scratch serves connection after connection.
-pub const HandshakeScratch = struct {
-    hs: tls.ServerHandshake = undefined,
+/// already does. `accept` reinitializes both buffers on entry and leaves the
+/// engine consumed on exit, so the same scratch serves connection after
+/// connection.
+pub fn HandshakeScratch(comptime reassembly_storage: usize) type {
+    return struct {
+        const Self = @This();
 
-    pub const init: HandshakeScratch = .{};
-};
+        hs: tls.ServerHandshake = undefined,
+        /// Handshake-message reassembly for the handshake that is running now.
+        /// Sized by `Config.reassembly_storage` on the connection it serves;
+        /// nothing reads it once the connection is established.
+        reassembly: tls.Array(reassembly_storage) = .empty,
+
+        pub const init: Self = .{};
+    };
+}
 
 /// The engine a `tls_std` server connection drives.
 ///
@@ -802,7 +814,10 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
     };
 
     const RecordStorage = tls.Array(config.record_storage);
-    const Reassembly = tls.Array(config.reassembly_storage orelse Hs.Storage.capacity);
+    // The reassembly size the role needs. A server's lives in the worker's
+    // `Scratch`; a client's stays in the connection, which handshakes once.
+    const reassembly_storage = config.reassembly_storage orelse Hs.Storage.capacity;
+    const Reassembly = if (role == .client) tls.Array(reassembly_storage) else void;
     const ReadStorage = tls.Array(config.read_buffer);
     const WriteStorage = tls.Array(config.write_buffer);
 
@@ -845,6 +860,8 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
 
         pub const Handshake = Hs;
         pub const Options = if (role == .client) ClientOptions else ServerOptions;
+        /// The worker scratch a `Server.accept` call needs. One per worker.
+        pub const Scratch = if (role == .server) HandshakeScratch(reassembly_storage) else void;
         /// The `Config` this Stream type was instantiated with.
         pub const buffers = config;
 
@@ -854,7 +871,7 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
         storage: RecordStorage,
         rb: RecordBuffer,
         out: Hs.OutBuffer,
-        reassembly: Reassembly = .empty,
+        reassembly: Reassembly = if (role == .client) .empty else {},
         read_storage: ReadStorage = .empty,
         write_storage: WriteStorage = .empty,
         peer_chain_storage: PeerChainStorage = if (retain_peer_chain) .empty else {},
@@ -1228,7 +1245,8 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
             s.sock.close(s.io);
             s.storage.secureZero();
             s.out.secureZero();
-            s.reassembly.secureZero();
+            // A server's reassembly buffer lives in the worker's scratch.
+            if (role == .client) s.reassembly.secureZero();
             s.read_storage.secureZero();
             s.write_storage.secureZero();
             if (retain_peer_chain) s.peer_chain_storage.secureZero();
@@ -1505,7 +1523,12 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
         fn finishInit(s: *Self) void {
             s.pinned = s;
             s.rb = .init(&s.storage.data);
-            s.hs.useHandshakeBuffer(&s.reassembly.data);
+            switch (role) {
+                .client => s.hs.useHandshakeBuffer(&s.reassembly.data),
+                // The server's reassembly buffer belongs to the worker
+                // scratch; `accept` lends it before finishInit runs.
+                .server => {},
+            }
             if (retain_peer_chain) s.hs.usePeerCertificateBuffer(&s.peer_chain_storage.data);
             if (retain_client_identity)
                 s.hs.useClientCertificateBuffer(&s.client_identity_storage.data);
@@ -1632,7 +1655,7 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
             io: Io,
             sock: net.Stream,
             options: Options,
-            scratch: *HandshakeScratch,
+            scratch: *Scratch,
         ) AcceptError!void {
             switch (role) {
                 .server => {
@@ -1678,13 +1701,16 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
                             .random = random,
                         },
                     );
-                    // The scratch owns the engine for this connection: the
-                    // Stream points at it and never deinits it, so this one
-                    // defer covers every path below, successful or not. After
-                    // extraction the engine is an empty husk whose deinit only
-                    // wipes the duplicate secret bytes it still holds.
+                    // The scratch owns the engine and the reassembly buffer
+                    // for this connection: the Stream points at them and never
+                    // deinits them, so this one defer covers every path below,
+                    // successful or not. After extraction the engine is an
+                    // empty husk whose deinit only wipes the duplicate secret
+                    // bytes it still holds.
+                    defer scratch.reassembly.secureZero();
                     defer scratch.hs.deinit();
 
+                    scratch.hs.useHandshakeBuffer(&scratch.reassembly.data);
                     s.* = .init(io, sock, .{ .handshaking = &scratch.hs });
                     s.finishInit();
                     errdefer s.deinit();
@@ -1898,20 +1924,19 @@ test "Config: buffer sizing is the whole story of the Stream footprint" {
     try testing.expect(@sizeOf(Server) <= 135_360);
 
     // #169 — a finished server connection carries the compact session, not the
-    // handshake engine. Adding the engine back must still fit the ceiling the
-    // slot used to have, which is what proves it is no longer in the slot. The
-    // engine lives in the worker's `HandshakeScratch` instead, one per worker
-    // rather than one per connection.
-    try testing.expect(
-        @sizeOf(Server) + (@sizeOf(tls.ServerHandshake) - @sizeOf(ServerEngine)) <= 135_360,
-    );
-    try testing.expect(@sizeOf(ServerEngine) < @sizeOf(tls.ServerHandshake));
-    // The engine (or the session that replaces it) is no longer per-connection
-    // state: a slot pays for whichever arm it holds, not for both.
-    // 116,536 against 135,184 before the swap: 18,648 bytes per connection,
-    // and handoff holds 10k of them (#169). The remaining engine-sized cost is
-    // the reassembly buffer, which is stage 2.
-    try testing.expect(@sizeOf(Server) <= 116_600);
+    // handshake engine or its ClientHello reassembly. Both live in the
+    // worker's `Scratch` now, so the slot pays for the session (856 bytes)
+    // instead of the engine (19,528) and its reassembly (32,772).
+    //
+    // 83,768 today. 135,184 before #169, then 116,536 when the engine moved,
+    // now 83,768: 51,416 bytes fewer per connection, ~514 MB across handoff's
+    // 10k.
+    try testing.expect(@sizeOf(Server) <= 83_800);
+    // Slot plus scratch must not exceed what one slot used to cost, or the
+    // buffer did not move out so much as get duplicated.
+    try testing.expect(@sizeOf(Server) + @sizeOf(Server.Scratch) <= 136_200);
+    // One scratch per worker, and it is the engine plus the reassembly.
+    try testing.expect(@sizeOf(Server.Scratch) >= @sizeOf(tls.ServerHandshake));
     try testing.expect(@sizeOf(ServerEngine) < @sizeOf(tls.ServerHandshake) / 8);
 
     // Retaining the peer chain for `info()` costs exactly one handshake-sized

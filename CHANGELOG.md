@@ -60,13 +60,13 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
-- `tls_std.Server.accept` takes a `*HandshakeScratch`, one per worker, and the
-  finished connection holds the established session instead of the handshake
-  engine. With default buffers a `tls.Server` is 116,536 bytes rather than
-  135,184, and the ~19 KiB engine is per worker instead of per connection: a
-  server holding 10,000 idle connections saves about 186 MB of address space.
-  Declare `var scratch: tls_std.HandshakeScratch = .init;` beside the accept
-  loop and pass `&scratch`. The client is unchanged (#169).
+- `tls_std.Server.accept` takes a `*Scratch`, one per worker, and the finished
+  connection holds the established session instead of the handshake engine and
+  its ClientHello reassembly buffer. With default buffers a `tls.Server` is
+  83,768 bytes rather than 135,184: 51,416 fewer per connection, about 514 MB
+  across 10,000 idle connections. Declare `var scratch: tls_std.Server.Scratch
+  = .init;` beside the accept loop and pass `&scratch`. `Config.reassembly_storage`
+  now sizes that scratch on a server. The client is unchanged (#169).
 - `alert.alertForError` answers every engine error with the alert RFC 8446 §6.2
   defines for it, and `alert.alertForHandshakeError` replaces the old
   fall-through with a switch that is exhaustive over the engine's error set: a

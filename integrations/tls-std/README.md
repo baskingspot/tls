@@ -599,7 +599,7 @@ pub fn serveOne(io: std.Io, listener: *std.Io.net.Server,
 
     // One per worker, not per connection: the handshake engine lives here so a
     // finished connection does not carry it (#169).
-    var scratch: tls.HandshakeScratch = .init;
+    var scratch: tls.Server.Scratch = .init;
 
     var conn: tls.Server = undefined;
     try conn.accept(io, sock, .{
@@ -619,19 +619,21 @@ pub fn serveOne(io: std.Io, listener: *std.Io.net.Server,
 }
 ```
 
-`accept` initializes the handshake engine inside `scratch`, drives the
-handshake there, and replaces it with the 856-byte established session before it
-returns. So a finished `tls.Server` is 116,536 bytes with the default buffers
-instead of 135,184, and the ~19 KiB handshake engine is one per worker rather
-than one per connection. A server holding 10,000 idle connections saves about
-186 MB of address space.
+`accept` builds the handshake engine and the ClientHello reassembly buffer
+inside `scratch`, drives the handshake there, and replaces the engine with the
+856-byte established session before it returns. A finished `tls.Server` is
+83,768 bytes with the default buffers instead of 135,184: 51,416 fewer per
+connection, about 514 MB across 10,000 idle connections. The engine and its
+reassembly are one per worker, not one per connection.
 
 Declare the scratch beside the accept loop and keep it for the worker's life.
 A worker handshakes one connection at a time, which a blocking accept loop
-already does; `accept` reinitializes the engine on entry, so the same scratch
-serves every connection. What the scratch no longer does is keep the
-ClientHello reassembly buffer, which is still per-connection; pooling it is the
-second half of #169.
+already does; `accept` reinitializes both buffers on entry, so the same scratch
+serves every connection.
+
+`Config.reassembly_storage` sizes that scratch buffer on a server, not anything
+in the connection. A client still carries its reassembly in the connection,
+which handshakes once.
 
 ### Composing with a hypothetical `http.zig`
 

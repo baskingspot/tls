@@ -140,7 +140,7 @@ const ServerCtx = struct {
     err: ?anyerror = null,
     done: Gate = .{},
     /// Share the worker scratch across sequential connections (#169).
-    scratch: ?*tls.HandshakeScratch = null,
+    scratch: ?*tls.Server.Scratch = null,
 
     fn fail(ctx: *ServerCtx, err: anyerror) void {
         ctx.err = err;
@@ -161,7 +161,7 @@ fn serverRun(ctx: *ServerCtx) void {
     defer key.deinit();
 
     var conn: tls.Server = undefined;
-    var own_scratch: tls.HandshakeScratch = .init;
+    var own_scratch: tls.Server.Scratch = .init;
     const scratch = ctx.scratch orelse &own_scratch;
     conn.accept(io, streamFor(ctx.fd), .{
         .cert_chain = &.{test_cert_der},
@@ -359,7 +359,7 @@ fn authServerExchange(comptime Server: type, ctx: *AuthServerCtx) !void {
     defer key.deinit();
 
     var conn: Server = undefined;
-    var scratch: tls.HandshakeScratch = .init;
+    var scratch: tls.Server.Scratch = .init;
     conn.accept(io, streamFor(ctx.fd), .{
         .cert_chain = &.{test_cert_der},
         .signer = key.signer(),
@@ -641,7 +641,7 @@ fn keyUpdateServerExchange(ctx: *KeyUpdateServerCtx) !void {
     defer key.deinit();
 
     var conn: tls.Server = undefined;
-    var scratch: tls.HandshakeScratch = .init;
+    var scratch: tls.Server.Scratch = .init;
     try conn.accept(io, streamFor(ctx.fd), .{
         .cert_chain = &.{test_cert_der},
         .signer = key.signer(),
@@ -1483,7 +1483,7 @@ test "accept: empty cert_chain fails and cleans up after itself" {
     defer key.deinit();
 
     var conn: tls.Server = undefined;
-    var scratch: tls.HandshakeScratch = .init;
+    var scratch: tls.Server.Scratch = .init;
     try testing.expectError(error.MissingCredentials, conn.accept(io, streamFor(fds[1]), .{
         .cert_chain = &.{},
         .signer = key.signer(),
@@ -1852,7 +1852,7 @@ test "accept: a header-only failure ends the handshake without waiting for a bod
     defer key.deinit();
 
     var conn: tls.Server = undefined;
-    var scratch: tls.HandshakeScratch = .init;
+    var scratch: tls.Server.Scratch = .init;
     const result = conn.accept(io, streamFor(fds[0]), .{
         .cert_chain = &.{test_cert_der},
         .signer = key.signer(),
@@ -2219,7 +2219,7 @@ test "peer identity: a verified chain decodes to a subject and SANs" {
 // one scratch for every connection it ever handshakes.
 test "scratch: one worker scratch serves sequential handshakes" {
     const io = testIo();
-    var scratch: tls.HandshakeScratch = .init;
+    var scratch: tls.Server.Scratch = .init;
 
     for (0..2) |_| {
         const fds = try socketPair();
@@ -2241,5 +2241,74 @@ test "scratch: one worker scratch serves sequential handshakes" {
         conn.close();
         server.join();
         try testing.expectEqual(@as(?anyerror, null), sctx.err);
+    }
+}
+
+// RFC 8446 §5.1 — one handshake message may span several records. The server's
+// ClientHello reassembly buffer lives in the worker scratch now (#169), so this
+// pins that `accept` really lends it: without the lend, a fragmented
+// ClientHello fails with HandshakeBufferTooShort.
+test "scratch: the reassembly buffer reassembles a split ClientHello" {
+    const fds = try socketPair();
+    defer _ = std.c.close(fds[0]);
+
+    var sctx: ServerCtx = .{ .fd = fds[1], .steps = &.{.drain} };
+    const server = try spawnServer(&sctx);
+
+    var keypairs: tls_core.ClientHandshake.KeyPairs = try .init(.generate());
+    defer keypairs.secureZero();
+    var hs: tls_core.ClientHandshake = .init(.{
+        .keypairs = keypairs,
+        .host_name = test_host,
+        .now_sec = 0,
+        .random = .{ .data = @splat(0x11) },
+    });
+    defer hs.deinit();
+
+    // One ClientHello handshake message, framed by the core into one record.
+    var out: [8192]u8 = undefined;
+    const record = try hs.start(&out);
+    const hello = record[frame.header_len..];
+
+    // Send it as two records, splitting the handshake message in half, which
+    // is legal fragmentation and leaves the server to put it back together.
+    const split = hello.len / 2;
+    var rec_a: [8192]u8 = undefined;
+    var rec_b: [8192]u8 = undefined;
+    @memcpy(rec_a[frame.header_len..][0..split], hello[0..split]);
+    @memcpy(rec_b[frame.header_len..][0 .. hello.len - split], hello[split..]);
+    frame.Header.init(.handshake, @intCast(split)).write(rec_a[0..frame.header_len]);
+    frame.Header.init(.handshake, @intCast(hello.len - split)).write(rec_b[0..frame.header_len]);
+
+    try writeFully(fds[0], rec_a[0 .. frame.header_len + split]);
+    try writeFully(fds[0], rec_b[0 .. frame.header_len + hello.len - split]);
+
+    // Reassembly worked if the server moved on to its own flight. A server that
+    // could not put the ClientHello back together answers with an alert or
+    // nothing at all, so the ServerHello is the proof.
+    var reply: [4096]u8 = undefined;
+    const n = try readSome(fds[0], &reply);
+    _ = std.c.close(fds[0]);
+    try testing.expect(n > frame.header_len);
+    // frame.ContentType.handshake. Written out because a 0.17 `zig fmt` rewrites
+    // `@intFromEnum` into a builtin 0.16 cannot parse.
+    try testing.expectEqual(@as(u8, 0x16), reply[0]);
+    try testing.expectEqual(@as(u8, 0x02), reply[frame.header_len]); // ServerHello
+
+    server.join();
+}
+
+fn readSome(fd: posix.fd_t, out: []u8) !usize {
+    const n = std.c.read(fd, out.ptr, out.len);
+    if (n <= 0) return error.ReadFailed;
+    return @intCast(n);
+}
+
+fn writeFully(fd: posix.fd_t, bytes: []const u8) !void {
+    var rest = bytes;
+    while (rest.len != 0) {
+        const n = std.c.write(fd, rest.ptr, rest.len);
+        if (n <= 0) return error.WriteZero;
+        rest = rest[@intCast(n)..];
     }
 }
