@@ -5,6 +5,8 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-15
+
 ### Added
 
 - `handshake_core.Server.selectedGroup()` returns the key-share group to answer
