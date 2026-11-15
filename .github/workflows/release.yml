@@ -37,6 +37,6 @@ jobs:
     needs: archive-size
     permissions:
       contents: write
-    uses: baskingspot/gh-actions/.github/workflows/release-library.yml@a26279caa6babcb0b548e6c55ced2aac9ee9a5b9 # v0.12.1
+    uses: baskingspot/gh-actions/.github/workflows/release-library.yml@659eb9c9a704cb8d5512565eac7f771a6b3325e6 # v0.12.2
     with:
       version: ${{ inputs.version }}
