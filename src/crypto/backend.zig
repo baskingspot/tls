@@ -354,9 +354,7 @@ pub const sign = struct {
     pub inline fn supportsDeterministicNonce() bool {
         return sign_impl.supports_deterministic_nonce;
     }
-    pub const EcCurve = sign_impl.EcCurve;
     pub const pkey = sign_impl.pkey;
-
     pub inline fn privateKeyFromDer(der: []const u8) Error!*pkey {
         return sign_impl.privateKeyFromDer(der);
     }
@@ -382,14 +380,6 @@ pub const sign = struct {
         return sign_impl.privateKeyFromP256Scalar(scalar);
     }
 
-    pub inline fn ecPublicKeyFromSec1(comptime curve: EcCurve, pub_key: []const u8) Error!*pkey {
-        return sign_impl.ecPublicKeyFromSec1(curve, pub_key);
-    }
-
-    pub inline fn rsaPublicKeyFromDer(pub_key: []const u8) Error!*pkey {
-        return sign_impl.rsaPublicKeyFromDer(pub_key);
-    }
-
     pub inline fn freeKey(key: *pkey) void {
         sign_impl.freeKey(key);
     }
@@ -402,16 +392,6 @@ pub const sign = struct {
         nonce_mode: NonceMode,
     ) SignError![]const u8 {
         return sign_impl.signatureSign(key, scheme, msg, out, nonce_mode);
-    }
-
-    pub inline fn verify(
-        key: *pkey,
-        scheme: SignatureScheme,
-        context: []const u8,
-        transcript_hash: []const u8,
-        sig: []const u8,
-    ) Error!void {
-        return sign_impl.signatureVerify(key, scheme, context, transcript_hash, sig);
     }
 };
 

@@ -3130,7 +3130,9 @@ pub const rsa = struct {
     const Modulus = std.crypto.ff.Modulus(max_modulus_bits);
     const Fe = Modulus.Fe;
 
-    /// RFC 3447 8.1 RSASSA-PSS
+    /// RFC 3447 8.1 RSASSA-PSS. CertificateVerify is its only caller inside tls
+    /// (#183): chain verification below uses PKCS#1 v1.5, so no handshake here
+    /// reached this path until CertificateVerify moved off EVP.
     pub const PSSSignature = struct {
         pub fn fromBytes(comptime modulus_len: usize, msg: []const u8) [modulus_len]u8 {
             var result: [modulus_len]u8 = @splat(0);
@@ -3160,7 +3162,23 @@ pub const rsa = struct {
             const mod_bits = public_key.n.bits();
             const em_dec = try encrypt(modulus_len, sig, public_key);
 
-            try EMSA_PSS_VERIFY(msg, &em_dec, mod_bits - 1, Hash.digest_length, Hash);
+            // RFC 8017 §8.1.2 step 2c — EM = I2OSP(m, emLen) with
+            // emLen = ceil((modBits - 1) / 8). emLen equals modulus_len unless
+            // modBits ≡ 1 (mod 8), which for a full-width modulus means a
+            // leading octet of 0x01; then the leading octet of m must be zero
+            // and I2OSP drops it. Slice
+            // here so EMSA-PSS-VERIFY gets exactly emLen octets: the modulus
+            // is the peer's choice, so a valid key whose leading octet is 0x01
+            // must not abort the process on a precondition assert.
+            const em_bit = mod_bits - 1;
+            const em_len = ((em_bit - 1) / 8) + 1;
+            if (em_len > modulus_len) return error.InvalidSignature;
+            for (em_dec[0 .. modulus_len - em_len]) |octet| {
+                if (octet != 0) return error.InvalidSignature;
+            }
+            const em = em_dec[modulus_len - em_len ..];
+
+            try EMSA_PSS_VERIFY(msg, em, em_bit, Hash.digest_length, Hash);
         }
 
         fn EMSA_PSS_VERIFY(msg: []const []const u8, em: []const u8, emBit: usize, sLen: usize, comptime Hash: type) VerifyError!void {
@@ -3241,11 +3259,19 @@ pub const rsa = struct {
             //      zero or if the octet at position emLen - hLen - sLen - 1 (the
             //      leftmost position is "position 1") does not have hexadecimal
             //      value 0x01, output "inconsistent" and stop.
-            if (dbMask[mgf_len - sLen - 2] != 0x00) {
-                return error.InvalidSignature;
+            //
+            // Every padding octet is checked, not just the one beside the
+            // 0x01. A one-octet check leaves the rest of PS unconstrained, and
+            // a small public exponent turns that slack into a signature
+            // forgery rather than a padding quibble. This fork added the full
+            // check when #183 made the verifier reachable from the handshake;
+            // std's copy still has the one-octet form.
+            const ps_len = mgf_len - sLen - 1;
+            for (dbMask[0..ps_len]) |octet| {
+                if (octet != 0) return error.InvalidSignature;
             }
 
-            if (dbMask[mgf_len - sLen - 1] != 0x01) {
+            if (dbMask[ps_len] != 0x01) {
                 return error.InvalidSignature;
             }
 
@@ -3425,8 +3451,16 @@ pub const rsa = struct {
             // unlikely that exponents larger than 32 bits are being used for anything
             // Windows commonly does.
             // [1] https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/ns-wincrypt-rsapubkey
-            if (pub_bytes.len > 4) return error.CertificatePublicKeyInvalid;
-            const _e = Fe.fromBytes(_n, pub_bytes, .big) catch return error.CertificatePublicKeyInvalid;
+            //
+            // The cap is on the value, not the encoding: RFC 8017 §A.1.2 encodes
+            // a positive INTEGER whose high bit is set with a leading 0x00, so
+            // e = 0x80000001 arrives as five octets and is still a 32-bit
+            // exponent. Drop the sign octets before the width check.
+            var e_offset: usize = 0;
+            while (e_offset < pub_bytes.len and pub_bytes[e_offset] == 0) : (e_offset += 1) {}
+            const e_bytes = pub_bytes[e_offset..];
+            if (e_bytes.len == 0 or e_bytes.len > 4) return error.CertificatePublicKeyInvalid;
+            const _e = Fe.fromBytes(_n, e_bytes, .big) catch return error.CertificatePublicKeyInvalid;
             if (!_e.isOdd()) return error.CertificatePublicKeyInvalid;
             const e_v = _e.toPrimitive(u32) catch return error.CertificatePublicKeyInvalid;
             if (e_v < 2) return error.CertificatePublicKeyInvalid;
@@ -3446,6 +3480,12 @@ pub const rsa = struct {
             if (modulus_elem.identifier.tag != .integer) return error.CertificateFieldHasWrongDataType;
             const exponent_elem = try der.Element.parse(pub_key, modulus_elem.slice.end);
             if (exponent_elem.identifier.tag != .integer) return error.CertificateFieldHasWrongDataType;
+            // The RSAPublicKey must be the whole input: RFC 8017 §A.1.1 defines
+            // it as exactly one SEQUENCE of two INTEGERs, and a caller that
+            // hands us more (or a shorter sequence than its wrapper claimed)
+            // is not describing one key.
+            if (exponent_elem.slice.end != pub_key.len or pub_key_seq.slice.end != pub_key.len)
+                return error.CertificateFieldHasWrongDataType;
             // Skip over meaningless zeroes in the modulus.
             const modulus_raw = pub_key[modulus_elem.slice.start..modulus_elem.slice.end];
             const modulus_offset = for (modulus_raw, 0..) |byte, i| {
@@ -3457,6 +3497,67 @@ pub const rsa = struct {
             };
         }
     };
+
+    // RFC 8017 §9.1.2 step 10 — every one of the emLen-hLen-sLen-2 leftmost
+    // DB octets must be zero, not only the one beside the 0x01 separator. A
+    // verifier that checks one octet leaves the rest of PS unconstrained, and
+    // with a small public exponent that is a forgery rather than a padding
+    // quibble: the attacker fixes the constrained tail of the encoding, then
+    // takes an integer cube root of EM + k*n. This builds a well-formed EM,
+    // requires it to verify, flips one PS octet far from the separator, and
+    // requires rejection. No private key is involved.
+    test "rsa.PSSSignature: a non-zero PS octet is rejected (RFC 8017 §9.1.2 step 10)" {
+        const Sha256 = std.crypto.hash.sha2.Sha256;
+        const em_len = 128;
+        // emBits = 8*emLen makes step 6's leftmost-bit mask a no-op, so step
+        // 10 is the only check under test.
+        const em_bit = em_len * 8;
+        const msg = "pss padding octet test";
+
+        var m_hash: [32]u8 = undefined;
+        Sha256.hash(msg, &m_hash, .{});
+
+        var h: [32]u8 = undefined;
+        {
+            const salt: [32]u8 = @splat(0x5a);
+            var hasher: Sha256 = .init(.{});
+            hasher.update(&@as([8]u8, @splat(0)));
+            hasher.update(&m_hash);
+            hasher.update(&salt);
+            hasher.final(&h);
+        }
+
+        const mgf_len = em_len - 32 - 1;
+        const ps_len = mgf_len - 32 - 1;
+        var db: [mgf_len]u8 = @splat(0);
+        db[ps_len] = 0x01;
+        const salt: [32]u8 = @splat(0x5a);
+        @memcpy(db[mgf_len - 32 ..], &salt);
+
+        // MGF1 fills whole hash blocks, so the output buffer is rounded up.
+        var mask_buf: [128]u8 = undefined;
+        const mask_out = mask_buf[0 .. ((mgf_len - 1) / 32 + 1) * 32];
+        const mask = try rsa.PSSSignature.MGF1(Sha256, mask_out, &h, mgf_len);
+
+        var em: [em_len]u8 = undefined;
+        for (0..mgf_len) |i| em[i] = db[i] ^ mask[i];
+        @memcpy(em[mgf_len..][0..32], &h);
+        em[em_len - 1] = 0xbc;
+
+        const parts = [_][]const u8{msg};
+        try rsa.PSSSignature.EMSA_PSS_VERIFY(&parts, &em, em_bit, 32, Sha256);
+
+        // Every padding octet matters, so flip each one in turn. A one-octet
+        // check sees only the last of the `ps_len` flips.
+        for (0..ps_len) |i| {
+            em[i] ^= 0xff;
+            try testing.expectError(
+                error.InvalidSignature,
+                rsa.PSSSignature.EMSA_PSS_VERIFY(&parts, &em, em_bit, 32, Sha256),
+            );
+            em[i] ^= 0xff;
+        }
+    }
 
     const EncryptError = error{MessageTooLong};
 

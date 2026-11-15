@@ -5,6 +5,29 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- CertificateVerify verification runs in-tree for every scheme tls accepts:
+  ECDSA on `std.crypto` and RSA-PSS on the in-tree RSA module. A peer can no
+  longer reach the libcrypto backend through a signature, and
+  `certificate.VerifyError` no longer carries `LibcryptoFailed`. Two limits
+  move with it: an RSA leaf key must have a 128, 256, 384, or 512-octet modulus
+  (1024, 2048, 3072, or 4096 bits; before, any key from 1024 to 8192 bits was
+  accepted), and an RSAPublicKey with trailing bytes is rejected by the shared
+  parser.
+
+### Fixed
+
+- RSA-PSS verification now derives EM per RFC 8017 §8.1.2 step 2c and checks
+  the whole padding run per §9.1.2 step 10. The in-tree verifier checked one
+  octet of that run, which weakens the encoding check, and it aborted a Debug
+  or ReleaseSafe build when a modulus has a leading octet of 0x01 (its bit
+  length is one more than a multiple of eight). No handshake in an earlier tag
+  reached this verifier, because CertificateVerify
+  used the backend and chain verification only ever used PKCS#1 v1.5. Direct
+  callers of the public `tls.Certificate.rsa.PSSSignature.verify` in v0.4.2
+  were exposed (#183).
+
 ## [0.4.2] - 2026-11-15
 
 ### Added

@@ -67,7 +67,9 @@ pub const capabilities = struct {
     };
 };
 
-/// FIPS 140-3 narrowed capability table. `-Dcrypto-fips=true` selects this
+/// FIPS 140-3 narrowed capability table. Signature verification is outside the
+/// validated module: certificate-chain and CertificateVerify signatures verify
+/// in-tree (#183). `-Dcrypto-fips=true` selects this
 /// table when AWS-LC headers are active. The caller is responsible for ensuring
 /// the linked AWS-LC libcrypto is actually a FIPS-validated build. No runtime
 /// provider probing is performed by tls.
@@ -391,7 +393,6 @@ pub const SignatureError = compat.SignatureError;
 pub const SignError = compat.SignError;
 pub const NonceMode = compat.NonceMode;
 pub const supports_deterministic_nonce = compat.supports_deterministic_nonce;
-pub const EcCurve = compat.EcCurve;
 
 pub inline fn privateKeyFromDer(der: []const u8) SignatureError!*pkey {
     return compat.privateKeyFromDer(der);
@@ -418,17 +419,6 @@ pub inline fn privateKeyFromP256Scalar(scalar: *const [32]u8) SignatureError!*pk
     return compat.privateKeyFromP256Scalar(scalar);
 }
 
-pub inline fn ecPublicKeyFromSec1(
-    comptime curve: EcCurve,
-    pub_key: []const u8,
-) SignatureError!*pkey {
-    return compat.ecPublicKeyFromSec1(curve, pub_key);
-}
-
-pub inline fn rsaPublicKeyFromDer(pub_key: []const u8) SignatureError!*pkey {
-    return compat.rsaPublicKeyFromDer(pub_key);
-}
-
 pub inline fn signatureSign(
     key: *pkey,
     scheme: SignatureScheme,
@@ -437,14 +427,4 @@ pub inline fn signatureSign(
     nonce_mode: NonceMode,
 ) SignError![]const u8 {
     return compat.signatureSign(key, scheme, msg, out, nonce_mode);
-}
-
-pub inline fn signatureVerify(
-    key: *pkey,
-    scheme: SignatureScheme,
-    context: []const u8,
-    transcript_hash: []const u8,
-    sig: []const u8,
-) SignatureError!void {
-    return compat.signatureVerify(key, scheme, context, transcript_hash, sig);
 }

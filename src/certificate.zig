@@ -4,6 +4,8 @@
 const std = @import("std");
 const Io = std.Io;
 const Sha256 = std.crypto.hash.sha2.Sha256;
+const Sha384 = std.crypto.hash.sha2.Sha384;
+const Sha512 = std.crypto.hash.sha2.Sha512;
 const testing = std.testing;
 const mem = std.mem;
 const fixtures = @import("fixtures");
@@ -16,7 +18,6 @@ const certificate_policy = @import("certificate_policy.zig");
 pub const LeafUsage = certificate_policy.LeafUsage;
 pub const Policy = certificate_policy.Policy;
 pub const PolicyError = certificate_policy.PolicyError;
-const backend = @import("crypto/backend.zig");
 const Certificate = @import("certificate_parser.zig");
 const extension_type = @import("extension_type.zig");
 const ExtensionType = extension_type.ExtensionType;
@@ -520,19 +521,91 @@ fn verifyIssuerNameConstraints(
     }
 }
 
-fn publicKeyFromCertificateBits(
+/// Verify a signature over the CertificateVerify signed content.
+///
+/// `pub_key` is the leaf certificate's SubjectPublicKey bits: a SEC1 point for
+/// ECDSA, an RSAPublicKey for RSA. Every scheme tls accepts for CertificateVerify
+/// verifies here, on in-tree primitives rather than the crypto backend:
+/// std.crypto for ECDSA, and the RSA module in `certificate_parser.zig` for
+/// RSASSA-PSS. That module's PSS verifier had no caller before this path, so
+/// #183 is where it starts to run. No libcrypto call is reachable from here,
+/// so a peer cannot exercise the C backend through a signature. RFC 8446 §4.4.3.
+fn verifySignedContent(
     scheme: SignatureScheme,
     pub_key: []const u8,
-) VerifyError!*backend.sign.pkey {
+    signed_content: []const u8,
+    sig: []const u8,
+) VerifyError!void {
+    const P256 = std.crypto.ecc.P256;
+    const P384 = std.crypto.ecc.P384;
     return switch (scheme) {
-        .ecdsa_secp256r1_sha256 => backend.sign.ecPublicKeyFromSec1(.secp256r1, pub_key),
-        .ecdsa_secp384r1_sha384 => backend.sign.ecPublicKeyFromSec1(.secp384r1, pub_key),
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
-        => backend.sign.rsaPublicKeyFromDer(pub_key),
+        .ecdsa_secp256r1_sha256 => verifyEcdsa(P256, Sha256, pub_key, signed_content, sig),
+        .ecdsa_secp384r1_sha384 => verifyEcdsa(P384, Sha384, pub_key, signed_content, sig),
+        .rsa_pss_rsae_sha256 => verifyRsaPss(Sha256, pub_key, signed_content, sig),
+        .rsa_pss_rsae_sha384 => verifyRsaPss(Sha384, pub_key, signed_content, sig),
+        .rsa_pss_rsae_sha512 => verifyRsaPss(Sha512, pub_key, signed_content, sig),
         else => error.UnsupportedSignatureScheme,
     };
+}
+
+/// RFC 8446 §4.2.3 — ECDSA over the curve the scheme names. The key is the
+/// certificate's SEC1 point. A point that does not decode on the named curve
+/// is an invalid encoding; a well-formed key with a bad signature is a
+/// verification failure. Chain verification answers `CertificateSignatureInvalid`
+/// for both; this path keeps them apart because the handshake reports
+/// `decode_error` for the first and `decrypt_error` for the second.
+///
+/// The key is decoded before the signature, so a peer that sends garbage for
+/// both gets the key verdict, as the deleted EVP path did and as
+/// `verifyRsaPss` does.
+fn verifyEcdsa(
+    comptime Curve: type,
+    comptime Hash: type,
+    pub_key: []const u8,
+    signed_content: []const u8,
+    sig: []const u8,
+) VerifyError!void {
+    const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(Curve, Hash);
+    const key = Ecdsa.PublicKey.fromSec1(pub_key) catch
+        return error.InvalidEncoding;
+    const signature = Ecdsa.Signature.fromDer(sig) catch
+        return error.SignatureVerificationFailed;
+    signature.verify(signed_content, key) catch return error.SignatureVerificationFailed;
+}
+
+/// RFC 8446 §4.2.3 — rsa_pss_rsae_* is RSASSA-PSS with MGF1 over the same
+/// hash and a salt length equal to the digest length; `Certificate.rsa`
+/// enforces the salt length by construction.
+///
+/// The modulus floor is 1024 bits, the policy this path applied before it moved
+/// off libcrypto. Chain verification keeps its lower 512-bit floor for legacy
+/// issuer keys, which is why the two paths do not share a loader.
+fn verifyRsaPss(
+    comptime Hash: type,
+    pub_key: []const u8,
+    signed_content: []const u8,
+    sig: []const u8,
+) VerifyError!void {
+    const components = Certificate.rsa.PublicKey.parseDer(pub_key) catch
+        return error.InvalidEncoding;
+    const modulus = components.modulus;
+    switch (modulus.len) {
+        inline 128, 256, 384, 512 => |modulus_len| {
+            const key = Certificate.rsa.PublicKey.fromBytes(components.exponent, modulus) catch
+                return error.InvalidEncoding;
+            // #157 — e = 1 makes the public operation the identity, so every
+            // well-formed PSS encoding would verify with no private key.
+            // fromBytes rejects it along with even and over-wide exponents.
+            // The floor is checked before the signature so a degenerate key
+            // is reported as a bad key, not as a bad signature.
+            if (key.n.bits() < 1024) return error.InvalidEncoding;
+            if (sig.len != modulus_len) return error.SignatureVerificationFailed;
+            const pss = Certificate.rsa.PSSSignature;
+            pss.verify(modulus_len, sig[0..modulus_len].*, signed_content, key, Hash) catch
+                return error.SignatureVerificationFailed;
+        },
+        else => return error.InvalidEncoding,
+    }
 }
 
 pub const server_certificate_verify_context =
@@ -569,7 +642,6 @@ pub const VerifyError = error{
     InvalidEncoding,
     InvalidEnumTag,
     InvalidHandshakeType,
-    LibcryptoFailed,
     SignatureVerificationFailed,
     UnexpectedEof,
     UnsupportedSignatureScheme,
@@ -636,7 +708,7 @@ fn certificateVerifyScheme(msg: []const u8) VerifyError!SignatureScheme {
 }
 
 fn verifySignature(
-    context: []const u8,
+    comptime context: []const u8,
     msg: []const u8,
     pub_key: []const u8,
     transcript_hash: []const u8,
@@ -650,10 +722,20 @@ fn verifySignature(
     if (r.remaining().len < sig_len) return error.UnexpectedEof;
     const sig = r.assumeReadSlice(sig_len);
 
-    const key = try publicKeyFromCertificateBits(scheme, pub_key);
-    defer backend.sign.freeKey(key);
+    // RFC 8446 §4.4.3 — the signed content is the context string followed by
+    // the transcript hash, with no separator and no length prefix. 64 octets
+    // covers the largest transcript hash any TLS 1.3 suite uses.
+    var signed_content: [context.len + 64]u8 = undefined;
+    if (transcript_hash.len > signed_content.len - context.len) return error.BufferTooShort;
+    @memcpy(signed_content[0..context.len], context);
+    @memcpy(signed_content[context.len..][0..transcript_hash.len], transcript_hash);
 
-    try backend.sign.verify(key, scheme, context, transcript_hash, sig);
+    try verifySignedContent(
+        scheme,
+        pub_key,
+        signed_content[0 .. context.len + transcript_hash.len],
+        sig,
+    );
 }
 
 // Fixtures generated with: scripts/gen-fixtures.sh
@@ -2391,9 +2473,9 @@ test "verifySignature: client CV rejects scheme absent from offered list" {
 // baskingspot/tls#157 / RFC 8446 §4.4.3 — an RSA leaf key with exponent 1
 // makes the public operation the identity, so any well-formed PSS encoding
 // verifies as a CertificateVerify signature without any private key. The key
-// loader must reject the degenerate key before EVP_DigestVerifyFinal, failing
-// closed with InvalidEncoding. The 1024-bit odd modulus satisfies the loader's
-// size policy, so the exponent check alone is what rejects this key.
+// loader must reject the degenerate key before the public operation runs,
+// failing closed with InvalidEncoding. The 1024-bit odd modulus satisfies the
+// loader's size policy, so the exponent check alone is what rejects this key.
 test "verifySignature: rejects RSA leaf key with exponent 1" {
     // RSAPublicKey (PKCS#1, RFC 8017 §A.1.1): n = 2^1023 + 1, e = 1.
     const e1_pub_key = stdx.fmt.comptimeHex(
@@ -2466,6 +2548,307 @@ test "verifySignature: wrong handshake type" {
     try testing.expectError(
         error.InvalidHandshakeType,
         verifyServerSignature(&cv_buf, pub_key, &test_transcript_hash),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Native CertificateVerify verification — key policy and Wycheproof vectors
+// ---------------------------------------------------------------------------
+//
+// These vectors used to run through EVP_DigestVerify* in the libcrypto
+// backend. #183 moved verification in-tree, so they now pin the shipped
+// verifier at the level it runs: `verifySignedContent` takes the raw signed
+// content (context string followed by the transcript hash).
+
+// Wycheproof v1 RSA-PSS 2048 public modulus
+// (rsa_pss_2048_sha256_mgf1_32_test.json), shared by the verify vectors and
+// the #157 key-parameter policy tests.
+const wycheproof_rsa_n_2048_hex =
+    "a2b451a07d0aa5f96e455671513550514a8a5b462ebef717" ++
+    "094fa1fee82224e637f9746d3f7cafd31878d80325b6ef5a1700f65903b469429" ++
+    "e89d6eac8845097b5ab393189db92512ed8a7711a1253facd20f79c15e8247f3" ++
+    "d3e42e46e48c98e254a2fe9765313a03eff8f17e1a029397a1fa26a8dce26f49" ++
+    "0ed81299615d9814c22da610428e09c7d9658594266f5c021d0fceca08d945a1" ++
+    "2be82de4d1ece6b4c03145b5d3495d4ed5411eb878daf05fd7afc3e09ada0f11" ++
+    "26422f590975a1969816f48698bcbba1b4d9cae79d460d8f9f85e7975005d9bc" ++
+    "22c4e5ac0f7c1a45d12569a62807d3b9a02e5a530e773066f453d1f5b4c2e9cf" ++
+    "7820283f742b9d5";
+
+fn comptimeHexByte(comptime v: u8) *const [2]u8 {
+    const digits = "0123456789abcdef";
+    return &.{ digits[v >> 4], digits[v & 0xf] };
+}
+
+fn comptimeDerLenHex(comptime len: u16) []const u8 {
+    if (len < 0x80) return comptimeHexByte(@intCast(len));
+    if (len < 0x100) return "81" ++ comptimeHexByte(@intCast(len));
+    return "82" ++ comptimeHexByte(@intCast(len >> 8)) ++ comptimeHexByte(@truncate(len));
+}
+
+// RFC 8017 §A.1.1 — RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent
+// INTEGER }. Builds PKCS#1 DER hex around a caller-chosen modulus and exponent
+// TLV so a test can vary one parameter at a time. It always emits the 0x00 sign
+// byte, so a test that cares about minimal DER must not use this helper.
+fn rsaPubKeyDerHex(comptime n_hex: []const u8, comptime e_tlv_hex: []const u8) []const u8 {
+    const n_tlv = "02" ++ comptimeDerLenHex(n_hex.len / 2 + 1) ++ "00" ++ n_hex;
+    return "30" ++ comptimeDerLenHex(n_tlv.len / 2 + e_tlv_hex.len / 2) ++ n_tlv ++ e_tlv_hex;
+}
+
+// Wycheproof v1 (google-wycheproof 0.9rc5) — RSA-PSS 2048 SHA-256/MGF1-SHA256
+// sLen=32, tcId 3, valid. Source: rsa_pss_2048_sha256_mgf1_32_test.json.
+// RFC 8446 §4.2.3 requires salt length equal to the digest length, which is
+// the sLen=32 this vector uses.
+test "verifySignedContent: Wycheproof RSA-PSS tcId 3" {
+    const pub_der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
+    const msg = stdx.fmt.comptimeHex("54657374"); // "Test"
+    const sig = stdx.fmt.comptimeHex(
+        "401eb03cdb47ca88033e3030f6bdecbac8f5c8fc1dd6a13d23d379ed9a2b3098" ++
+            "91d13d74fea9d21d159b9e6d8f37efa2489962e24555f56dd434ff1d31ce4f9f" ++
+            "5abd3f22cbea8b691d6a11e44efb83e2bca155e6a164325e0fde2a8865afd5c9" ++
+            "f51161a9d615f62af7ec2e31b3e5ab649c164490d31d88cfae35b84aea792569" ++
+            "0f929a144b6d2f48e8fb894a52deecd1b9a6496990c4ecf1588699a42cacd10c" ++
+            "53af350514e4291ea9a058e77f101e32c1c0cefa61d945f7bc931f8bd19e7ba3" ++
+            "169358a60e5a8b0123bc3199b9fdcafe8e519c41ba675491a27b85e44ef2d772" ++
+            "77c10fe107293c8290186913bc9a99b640d8da041b64f31eab1d35920985f4a5",
+    );
+
+    try verifySignedContent(.rsa_pss_rsae_sha256, &pub_der, &msg, &sig);
+}
+
+// Wycheproof v1 (google-wycheproof 0.9rc5) — RSA-PSS 2048 SHA-256/MGF1-SHA256
+// sLen=32, tcId 62, invalid (first byte of m_hash modified).
+// Source: rsa_pss_2048_sha256_mgf1_32_test.json. The signature is valid for a
+// different message hash, so verification must fail for this message.
+test "verifySignedContent: Wycheproof RSA-PSS tcId 62 invalid signature" {
+    const pub_der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
+    const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
+    const sig = stdx.fmt.comptimeHex(
+        "67d1d1c0a398148625317c3f5e44b738bdf461c27a59594b39ebb2aebef233c7" ++
+            "809379e54411411b82d2e7ac88f989b58373d532c758baea121878ce97594417" ++
+            "38d121881c1fa2d04421f02dd565b12770d844611ed1873a0b64d822709a6b78" ++
+            "d6d3892b294404bce6711001d6c3a54546c76a1d17819674b0be904497a233b4" ++
+            "66fe4becc832dee740f9ab79e5b9f5db0b0f9aac0084ba05cebf42303b5ca2ad" ++
+            "95e3d61b29ed6475545c02e93e7b0e118af92f5cddb1faeb2cbc23c9e69c120e" ++
+            "29df7fe31991e887b3b29e77688c60e80be65cccf3d7861a7a14c39e6a6e5645" ++
+            "568e2cc5e4a17b75db1dd415aadb45e112a9b582b2ff6e82a43d7a7347b7b56d",
+    );
+
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        verifySignedContent(.rsa_pss_rsae_sha256, &pub_der, &msg, &sig),
+    );
+}
+
+// RFC 8446 §4.4.3 / §C.3 — e = 1 makes the RSA public operation the identity,
+// so any well-formed PSS encoding would verify without a private key. The key
+// must be rejected before the signature is considered.
+test "verifySignedContent: RSA leaf key with exponent 1 is rejected" {
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "020101"));
+    const sig: [256]u8 = @splat(0x42);
+    try testing.expectError(
+        error.InvalidEncoding,
+        verifySignedContent(.rsa_pss_rsae_sha256, &der, "msg", &sig),
+    );
+}
+
+test "verifySignedContent: RSA key with even exponent is rejected" {
+    // e = 65536: parses, but even.
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010000"));
+    const sig: [256]u8 = @splat(0x42);
+    try testing.expectError(
+        error.InvalidEncoding,
+        verifySignedContent(.rsa_pss_rsae_sha256, &der, "msg", &sig),
+    );
+}
+
+test "verifySignedContent: RSA key with exponent wider than 32 bits is rejected" {
+    // e = 2^32 + 1: odd, but 33 bits. The 32-bit cap bounds the cost of the
+    // public operation for attacker-chosen keys (Windows CryptoAPI limit).
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "02050100000001"));
+    const sig: [256]u8 = @splat(0x42);
+    try testing.expectError(
+        error.InvalidEncoding,
+        verifySignedContent(.rsa_pss_rsae_sha256, &der, "msg", &sig),
+    );
+}
+
+test "verifySignedContent: RSA key with even modulus is rejected" {
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(
+        wycheproof_rsa_n_2048_hex[0..510] ++ "ce",
+        "0203010001",
+    ));
+    const sig: [256]u8 = @splat(0x42);
+    try testing.expectError(
+        error.InvalidEncoding,
+        verifySignedContent(.rsa_pss_rsae_sha256, &der, "msg", &sig),
+    );
+}
+
+test "verifySignedContent: RSA key with a 1023-bit modulus is rejected" {
+    // A 128-octet modulus whose leading octet is 0x7f has 1023 bits. It clears
+    // `rsa.PublicKey.fromBytes` (odd, >= 512 bits) and the modulus-length
+    // switch, so the 1024-bit leaf-key floor is the only check that can reject
+    // it. Every repo fixture and interop key is >= 2048 bits; the chain
+    // verifier keeps its lower 512-bit floor for legacy issuers.
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(
+        "7f" ++ compat.repeatString("00", 126) ++ "01",
+        "0203010001",
+    ));
+    const sig: [128]u8 = @splat(0x42);
+    try testing.expectError(
+        error.InvalidEncoding,
+        verifySignedContent(.rsa_pss_rsae_sha256, &der, "msg", &sig),
+    );
+}
+
+test "verifySignedContent: RSA key with trailing bytes is rejected" {
+    // The whole SubjectPublicKey must be exactly one RSAPublicKey.
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
+    var buf: [der.len + 1]u8 = undefined;
+    @memcpy(buf[0..der.len], &der);
+    buf[der.len] = 0;
+    const sig: [256]u8 = @splat(0x42);
+    try testing.expectError(
+        error.InvalidEncoding,
+        verifySignedContent(.rsa_pss_rsae_sha256, &buf, "msg", &sig),
+    );
+}
+
+// RFC 8017 §A.1.2 — a positive INTEGER whose high bit is set carries a
+// leading 0x00 sign octet, so a 32-bit exponent such as 0x80000001 arrives as
+// five octets. The exponent cap is numeric, not an encoding length, and this
+// key must reach the signature check rather than being rejected.
+test "verifySignedContent: 32-bit exponent with a DER sign octet is accepted" {
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "02050080000001"));
+    const sig: [256]u8 = @splat(0x42);
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        verifySignedContent(.rsa_pss_rsae_sha256, &der, "msg", &sig),
+    );
+}
+
+// RFC 8446 §4.4.3 — a key that does not decode is reported as an invalid
+// encoding even when the signature is also malformed, so the peer is told
+// decode_error rather than decrypt_error.
+test "verifySignedContent: undecodable ECDSA key wins over undecodable signature" {
+    const bad_key: [3]u8 = @splat(0xff);
+    const bad_sig: [8]u8 = @splat(0xff);
+    try testing.expectError(
+        error.InvalidEncoding,
+        verifySignedContent(.ecdsa_secp256r1_sha256, &bad_key, "msg", &bad_sig),
+    );
+}
+
+// RFC 8017 §3.1 — e = 3 is a legal public exponent, so a key that carries it
+// must reach the signature check. Exponent 65537 acceptance is covered by
+// Wycheproof tcId 3, which verifies against a 65537 key.
+test "verifySignedContent: exponent-3 RSA key is accepted and fails on the signature" {
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "020103"));
+    const sig: [256]u8 = @splat(0x42);
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        verifySignedContent(.rsa_pss_rsae_sha256, &der, "msg", &sig),
+    );
+}
+
+// RFC 8017 §8.1.2 step 2c — when modBits ≡ 1 (mod 8), which for a full-width
+// modulus means a leading octet of 0x01, emLen is one less than the modulus
+// length and I2OSP must drop a zero octet. The modulus is the peer's choice, so
+// without that a 2041-bit leaf key panics a Debug or ReleaseSafe build from the
+// network.
+test "verifySignedContent: RSA-PSS rejects a short-leading-octet modulus without panicking" {
+    // 256-byte odd modulus with a 0x01 leading octet: 2041 bits, which clears
+    // the 1024-bit floor. The signature leads with 0x00 so the public
+    // operation yields an integer below the modulus and reaches EMSA-PSS.
+    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(
+        "01" ++ compat.repeatString("00", 254) ++ "01",
+        "0203010001",
+    ));
+    var sig: [256]u8 = @splat(0x42);
+    sig[0] = 0x00;
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        verifySignedContent(.rsa_pss_rsae_sha256, &der, "msg", &sig),
+    );
+}
+
+// Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-256 SHA-256 tcId 1,
+// valid (pseudorandom signature) over the empty message.
+// Source: ecdsa_secp256r1_sha256_test.json.
+test "verifySignedContent: Wycheproof ECDSA P-256 tcId 1" {
+    const pub_sec1: [65]u8 = stdx.fmt.comptimeHex(
+        "0404aaec73635726f213fb8a9e64da3b8632e41495a944d0045b522eba7240fad5" ++
+            "87d9315798aaa3a5ba01775787ced05eaaf7b4e09fc81d6d1aa546e8365d525d",
+    );
+    const sig = stdx.fmt.comptimeHex(
+        "3045022100b292a619339f6e567a305c951c0dcbcc42d16e47f219f9e98e76e09d" ++
+            "8770b34a02200177e60492c5a8242f76f07bfe3661bde59ec2a17ce5bd2dab2a" ++
+            "bebdf89a62e2",
+    );
+
+    try verifySignedContent(.ecdsa_secp256r1_sha256, &pub_sec1, "", &sig);
+}
+
+// Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-256 SHA-256 tcId 6,
+// invalid (ASN.1 encoding of s misses the required leading zero).
+// Source: ecdsa_secp256r1_sha256_test.json.
+test "verifySignedContent: Wycheproof ECDSA P-256 tcId 6 invalid signature" {
+    const pub_sec1: [65]u8 = stdx.fmt.comptimeHex(
+        "042927b10512bae3eddcfe467828128bad2903269919f7086069c8c4df6c73283" ++
+            "8c7787964eaac00e5921fb1498a60f4606766b3d9685001558d1a974e7341513e",
+    );
+    const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
+    const sig = stdx.fmt.comptimeHex(
+        "304402202ba3a8be6b94d5ec80a6d9d1190a436effe50d85a1eee859b8cc6af9" ++
+            "bd5c2e180220b329f479a2bbd0a5c384ee1493b1f5186a87139cac5df4087c13" ++
+            "4b49156847db",
+    );
+
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        verifySignedContent(.ecdsa_secp256r1_sha256, &pub_sec1, &msg, &sig),
+    );
+}
+
+// Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-384 SHA-384 tcId 1,
+// valid (pseudorandom signature) over the empty message.
+// Source: ecdsa_secp384r1_sha384_test.json.
+test "verifySignedContent: Wycheproof ECDSA P-384 tcId 1" {
+    const pub_sec1: [97]u8 = stdx.fmt.comptimeHex(
+        "0429bdb76d5fa741bfd70233cb3a66cc7d44beb3b0663d92a8136650478bcefb61" ++
+            "ef182e155a54345a5e8e5e88f064e5bc9a525ab7f764dad3dae1468c2b419f3b6" ++
+            "2b9ba917d5e8c4fb1ec47404a3fc76474b2713081be9db4c00e043ada9fc4a3",
+    );
+    const sig = stdx.fmt.comptimeHex(
+        "3064023032401249714e9091f05a5e109d5c1216fdc05e98614261aa0dbd9e9c" ++
+            "d4415dee29238afbd3b103c1e40ee5c9144aee0f02304326756fb2c4fd726360" ++
+            "dd6479b5849478c7a9d054a833a58c1631c33b63c3441336ddf2c7fe0ed129aa" ++
+            "e6d4ddfeb753",
+    );
+
+    try verifySignedContent(.ecdsa_secp384r1_sha384, &pub_sec1, "", &sig);
+}
+
+// Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-384 SHA-384 tcId 6,
+// invalid (ASN.1 encoding of s misses the required leading zero).
+// Source: ecdsa_secp384r1_sha384_test.json.
+test "verifySignedContent: Wycheproof ECDSA P-384 tcId 6 invalid signature" {
+    const pub_sec1: [97]u8 = stdx.fmt.comptimeHex(
+        "042da57dda1089276a543f9ffdac0bff0d976cad71eb7280e7d9bfd9fee4bdb2f2" ++
+            "0f47ff888274389772d98cc5752138aa4b6d054d69dcf3e25ec49df870715e34" ++
+            "883b1836197d76f8ad962e78f6571bbc7407b0d6091f9e4d88f014274406174f",
+    );
+    const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
+    const sig = stdx.fmt.comptimeHex(
+        "3064023012b30abef6b5476fe6b612ae557c0425661e26b44b1bfe19daf2ca28" ++
+            "e3113083ba8e4ae4cc45a0320abd3394f1c548d70230e7bf25603e2d07076ff" ++
+            "30b7a2abec473da8b11c572b35fc631991d5de62ddca7525aaba89325dfd04f" ++
+            "ecc47bff426f82",
+    );
+
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        verifySignedContent(.ecdsa_secp384r1_sha384, &pub_sec1, &msg, &sig),
     );
 }
 

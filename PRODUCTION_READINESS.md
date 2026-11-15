@@ -43,6 +43,14 @@ run. The engine itself, meaning parsing, framing, transcript, and record
 sequencing, allocates nothing. The backends allocate during setup and inside
 their own routines, and that is stated rather than hidden.
 
+Signature verification is not part of that seam. CertificateVerify and
+certificate-chain signatures both verify in-tree, with no backend call: ECDSA
+through `std.crypto`, RSA-PSS and RSA PKCS#1 v1.5 through the module in
+`certificate_parser.zig`, and Ed25519 chain signatures through `std.crypto`.
+CertificateVerify accepts ECDSA P-256/P-384 and RSA-PSS only; Ed25519 is a
+chain-signature scheme here. The backend covers AEAD, SHA-2, key exchange,
+ML-KEM, and signing (#183).
+
 ## How a claim gets proven
 
 A claim is proven when a command in this repository fails if the claim becomes
@@ -93,6 +101,12 @@ verifier that does not, and libssl's behavior without a trust store is opaque.
 The row is reported on its own.
 
 ## What is not proven
+
+- **FIPS builds verify signatures outside the module.** `-Dcrypto-fips=true`
+  narrows the advertised suites and schemes, and the linking application is
+  responsible for the linked libcrypto being in FIPS mode. Signature
+  verification, both certificate-chain and CertificateVerify, runs in-tree and
+  is therefore outside that boundary (#183).
 
 - **No external audit.** The security work here is an internal adversarial pass,
   not a third-party audit. Say so if you are evaluating it for a decision.

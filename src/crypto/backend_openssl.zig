@@ -56,6 +56,10 @@ pub const capabilities = struct {
 /// table when OpenSSL headers are active. The caller is responsible for ensuring
 /// the linked libcrypto is actually in FIPS mode (e.g. FIPS provider loaded).
 /// No runtime provider probing is performed by tls.
+///
+/// Signature verification is outside the validated module, so this table
+/// narrows the schemes but does not put verification inside the boundary:
+/// certificate-chain and CertificateVerify signatures verify in-tree (#183).
 pub const capabilities_fips = struct {
     // FIPS 140-3 does not approve ChaCha20-Poly1305 for TLS 1.3.
     pub const cipher_suites: []const CipherSuite = &.{
@@ -739,18 +743,6 @@ pub const NonceMode = enum {
 pub const supports_deterministic_nonce = !is_boringssl_family and
     @hasDecl(c, "OSSL_SIGNATURE_PARAM_NONCE_TYPE");
 
-pub const EcCurve = enum {
-    secp256r1,
-    secp384r1,
-
-    fn nid(comptime self: EcCurve) c_int {
-        return switch (self) {
-            .secp256r1 => c.NID_X9_62_prime256v1,
-            .secp384r1 => c.NID_secp384r1,
-        };
-    }
-};
-
 fn signatureDigest(scheme: SignatureScheme) SignatureError!*const c.EVP_MD {
     return switch (scheme) {
         .ecdsa_secp256r1_sha256, .rsa_pss_rsae_sha256 => c.EVP_sha256(),
@@ -888,65 +880,6 @@ pub fn privateKeyFromP256Scalar(scalar: *const [32]u8) SignatureError!*pkey {
     };
 }
 
-pub fn ecPublicKeyFromSec1(
-    comptime curve: EcCurve,
-    pub_key: []const u8,
-) SignatureError!*pkey {
-    errqEnter();
-    defer errqExit();
-    var ec: ?*c.EC_KEY = c.EC_KEY_new_by_curve_name(curve.nid()) orelse
-        return error.InvalidEncoding;
-    errdefer c.EC_KEY_free(ec);
-
-    var ptr: ?[*]const u8 = pub_key.ptr;
-    if (c.o2i_ECPublicKey(&ec, &ptr, @intCast(pub_key.len)) == null)
-        return error.InvalidEncoding;
-    if (c.EC_KEY_check_key(ec) != 1) return error.InvalidEncoding;
-
-    const key = c.EVP_PKEY_new() orelse return error.SignatureVerificationFailed;
-    errdefer c.EVP_PKEY_free(key);
-    if (c.EVP_PKEY_assign_EC_KEY(key, ec) != 1)
-        return error.SignatureVerificationFailed;
-    return key;
-}
-
-pub fn rsaPublicKeyFromDer(pub_key: []const u8) SignatureError!*pkey {
-    errqEnter();
-    defer errqExit();
-    var ptr: ?[*]const u8 = pub_key.ptr;
-    const rsa = c.d2i_RSAPublicKey(null, &ptr, @intCast(pub_key.len)) orelse
-        return error.InvalidEncoding;
-    errdefer c.RSA_free(rsa);
-    // The whole SubjectPublicKey must be one RSAPublicKey; no trailing bytes.
-    if (ptr.? != pub_key.ptr + pub_key.len) return error.InvalidEncoding;
-
-    // RFC 8446 §4.4.3 / §C.3 — CertificateVerify must prove possession of the
-    // leaf key, so the peer key must be a usable RSA key. Mirror the chain
-    // verifier's policy (certificate_parser.zig rsa.PublicKey.fromBytes): odd
-    // exponent >= 3 of at most 32 bits, odd modulus of a supported size.
-    // e = 1 turns the public operation into the identity, so any well-formed
-    // PSS encoding verifies; libcrypto's EVP verify path does not reject it
-    // (baskingspot/tls#157). The modulus floor is 1024 bits (every fixture
-    // and interop key is >= 2048; the chain verifier's 512-bit floor exists
-    // only to ratchet legacy issuer keys); the 8192-bit ceiling matches the
-    // 1024-byte leaf-key retention cap (ClientHandshake.max_leaf_pub_key).
-    var n: ?*const c.BIGNUM = null;
-    var e: ?*const c.BIGNUM = null;
-    c.RSA_get0_key(rsa, &n, &e, null);
-    const n_bits = c.BN_num_bits(n);
-    const e_bits = c.BN_num_bits(e);
-    if (c.BN_is_odd(e) != 1 or e_bits < 2 or e_bits > 32)
-        return error.InvalidEncoding;
-    if (c.BN_is_odd(n) != 1 or n_bits < 1024 or n_bits > 8192)
-        return error.InvalidEncoding;
-
-    const key = c.EVP_PKEY_new() orelse return error.SignatureVerificationFailed;
-    errdefer c.EVP_PKEY_free(key);
-    if (c.EVP_PKEY_assign_RSA(key, rsa) != 1)
-        return error.SignatureVerificationFailed;
-    return key;
-}
-
 // RFC 6979 deterministic ECDSA nonces (baskingspot/tls#82). The comptime
 // gate prunes the provider-parameter path when the headers lack the macro;
 // the per-key settable-params probe stays because compiled support does not
@@ -999,29 +932,4 @@ pub fn signatureSign(
     var len: usize = out.len;
     if (c.EVP_DigestSignFinal(ctx, out.ptr, &len) != 1) return error.LibcryptoFailed;
     return out[0..len];
-}
-
-pub fn signatureVerify(
-    key: *pkey,
-    scheme: SignatureScheme,
-    context: []const u8,
-    transcript_hash: []const u8,
-    sig: []const u8,
-) SignatureError!void {
-    errqEnter();
-    defer errqExit();
-    const md = try signatureDigest(scheme);
-    const ctx = c.EVP_MD_CTX_new() orelse return error.SignatureVerificationFailed;
-    defer c.EVP_MD_CTX_free(ctx);
-
-    var pctx: ?*c.EVP_PKEY_CTX = null;
-    if (c.EVP_DigestVerifyInit(ctx, &pctx, md, null, key) != 1)
-        return error.SignatureVerificationFailed;
-    configureRsaPss(pctx, scheme, md) catch return error.SignatureVerificationFailed;
-    if (c.EVP_DigestVerifyUpdate(ctx, context.ptr, context.len) != 1)
-        return error.SignatureVerificationFailed;
-    if (c.EVP_DigestVerifyUpdate(ctx, transcript_hash.ptr, transcript_hash.len) != 1)
-        return error.SignatureVerificationFailed;
-    if (c.EVP_DigestVerifyFinal(ctx, sig.ptr, sig.len) != 1)
-        return error.SignatureVerificationFailed;
 }

@@ -316,7 +316,8 @@ EVP/provider paths as no-allocation.
 
 The Sans-I/O boundary is preserved. The backend supplies provider-sensitive
 primitive operations: AEAD, classical key exchange, pure ML-KEM for ztls-owned
-RFC 10024 hybrid KEX, and signature verification/signing. Hashing/HMAC/HKDF may stay
+RFC 10024 hybrid KEX, and signing. Signature verification is in-tree for both
+certificate chains and CertificateVerify (#183). Hashing/HMAC/HKDF may stay
 on Zig stdlib unless measurement or provider-policy requirements justify a
 facade. The backend does not own sockets, BIOs, trust-store loading,
 certificate policy I/O, application buffers, or handshake state-machine

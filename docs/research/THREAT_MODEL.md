@@ -287,10 +287,17 @@ tls engine
         | primitive calls and backend-owned contexts
         v
 libcrypto-family backend
-  owns AEAD, X25519, signature verification, provider internals,
-  primitive side-channel posture, and backend allocation/zeroization behavior
+  owns AEAD, X25519, signing, provider internals, primitive side-channel
+  posture, and backend allocation/zeroization behavior
+
+in-tree verification
+  owns every signature this engine checks: certificate-chain signatures
+  (ECDSA, RSA PKCS#1 v1.5, Ed25519) and CertificateVerify (ECDSA, RSA-PSS),
+  with no call into the backend (#183)
 ```
 
 The boundary is narrow: the engine defends the TLS state machine and the record
 protocol over caller-provided buffers. Everything below the primitive API
-belongs to the backend, and everything around the engine belongs to the caller.
+belongs to the backend, except signature verification, which the engine does
+itself for both certificate chains and CertificateVerify. Everything around the
+engine belongs to the caller.

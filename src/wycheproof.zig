@@ -8,21 +8,19 @@ const tls = @import("root.zig");
 //
 // This file covers Wycheproof vectors for the public wrapper-level API
 // exposed by tls: x25519.sharedSecret and aead encrypt/decrypt. P-256/P-384
-// ECDH and signature verify (RSA-PSS, ECDSA) are covered facade-direct in
-// src/crypto/backend_primitive_tests.zig because:
-//   - tls.p256.sharedSecret is a thin wrapper over backend.p256 and could
-//     be tested here, but the facade-direct tests already exercise the same
-//     code path under both OpenSSL and AWS-LC lanes. Adding wrapper-level
-//     duplicates would not increase coverage.
-//   - tls.signature (PrivateKey) only exposes signing, not standalone
-//     verification. Signature verification is only reachable through the
-//     certificate verify path (certificate.zig), not as a standalone public
-//     API. Therefore facade-direct backend.sign.verify in
-//     backend_primitive_tests.zig is the correct test level for Wycheproof
-//     signature vectors.
+// ECDH is covered facade-direct in src/crypto/backend_primitive_tests.zig
+// because tls.p256.sharedSecret is a thin wrapper over backend.p256 and the
+// facade tests already exercise the same code path under both the OpenSSL and
+// AWS-LC lanes. Adding wrapper-level duplicates would not increase coverage.
+//
+// There is no standalone verifier on `tls.signature`: verification is reachable
+// through the certificate verify path, and since #183 it is native rather than
+// backend-dispatched. Its Wycheproof vectors (RSA-PSS, ECDSA P-256/P-384) live
+// in src/certificate.zig next to `verifySignedContent`, which is the function
+// they pin. `tls.Certificate.rsa` remains public API in its own right.
 //
 // No dead/empty wrapper tests are added here. See backend_primitive_tests.zig
-// for P-256/P-384 ECDH and RSA-PSS/ECDSA Wycheproof coverage.
+// for P-256/P-384 ECDH coverage and certificate.zig for signature verify.
 
 // Wycheproof v1 (google-wycheproof 0.9rc5) — X25519 tcId 1, normal case.
 test "Wycheproof: X25519 shared secret tcId 1" {

@@ -16,7 +16,7 @@ const testing = std.testing;
 const assert = std.debug.assert;
 
 const backend = @import("backend.zig");
-const root_compat = @import("../compat.zig");
+const certificate = @import("../certificate.zig");
 const Certificate = @import("../certificate_parser.zig");
 const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
@@ -654,97 +654,110 @@ test "backend.p384: Wycheproof tcId 1 shared secret" {
 // ---------------------------------------------------------------------------
 // Signature — direct backend.sign facade
 // ---------------------------------------------------------------------------
+//
+// Verification left this facade in #183: every scheme CertificateVerify
+// accepts verifies natively, so a peer cannot reach libcrypto through a
+// signature. The tests below sign with libcrypto and check the result through
+// the public CertificateVerify path, which is both the shipped verifier and a
+// differential between the C signer and the in-tree one.
 
 const rsa_pss_key_pem = @import("fixtures").rsa_pss_key_pem;
 
-fn rsaPssPublicKey() !*backend.sign.pkey {
+fn rsaPssPublicKeyBits() ![]const u8 {
     const parsed = try Certificate.parse(.{
         .buffer = &fixtures.rsa_pss_cert_der,
         .index = 0,
     });
-    return backend.sign.rsaPublicKeyFromDer(parsed.pubKey());
+    return parsed.pubKey();
 }
 
-// RFC 8446 §4.4.3 — CertificateVerify signs caller-assembled bytes; the backend
-// signs exactly the provided message and verifies `context || transcript_hash`.
-test "backend.sign: RSA-PSS SHA-256 sign/verify round-trip" {
+/// Build the CertificateVerify signed content for a transcript hash: the
+/// context string followed by the hash, with no separator. RFC 8446 §4.4.3.
+fn serverSignedContent(buf: []u8, transcript_hash: []const u8) []const u8 {
+    const context: []const u8 = certificate.server_certificate_verify_context;
+    const len = context.len + transcript_hash.len;
+    assert(buf.len >= len);
+    @memcpy(buf[0..context.len], context);
+    @memcpy(buf[context.len..len], transcript_hash);
+    return buf[0..len];
+}
+
+/// Encode a CertificateVerify message around `sig` and verify it the way a
+/// client verifies a server's proof of possession.
+fn verifyAsServerCertificateVerify(
+    sig: []const u8,
+    scheme: SignatureScheme,
+    pub_key: []const u8,
+    transcript_hash: []const u8,
+) !void {
+    var cv_buf: [640]u8 = undefined;
+    const cv = try certificate.encodeCertificateVerify(&cv_buf, scheme, sig);
+    try certificate.verifyServerSignature(cv, pub_key, transcript_hash);
+}
+
+// RFC 8446 §4.4.3 — CertificateVerify signs caller-assembled bytes; the
+// libcrypto signer and the native verifier must agree on that content.
+test "backend.sign: RSA-PSS SHA-256 signature verifies natively" {
     const private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
     defer backend.sign.freeKey(private_key);
-    const public_key = try rsaPssPublicKey();
-    defer backend.sign.freeKey(public_key);
+    const pub_key = try rsaPssPublicKeyBits();
 
-    const context = "TLS 1.3, client CertificateVerify";
     const transcript_hash: [32]u8 = @splat(0x42);
-    const msg = context ++ transcript_hash;
+    var content_buf: [160]u8 = undefined;
+    const content = serverSignedContent(&content_buf, &transcript_hash);
 
-    var sig_buf: [256]u8 = undefined;
-    const sig = try backend.sign.sign(private_key, .rsa_pss_rsae_sha256, msg, &sig_buf, .random);
-    try testing.expect(sig.len > 0);
-
-    try backend.sign.verify(
-        public_key,
-        .rsa_pss_rsae_sha256,
-        context,
-        &transcript_hash,
-        sig,
-    );
+    var sig_buf: [512]u8 = undefined;
+    const scheme: SignatureScheme = .rsa_pss_rsae_sha256;
+    const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
+    try verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash);
 }
 
 // RFC 8446 §4.4.3 — signature verification must reject a tampered signature.
-test "backend.sign: RSA-PSS SHA-256 rejects tampered signature" {
+test "backend.sign: RSA-PSS SHA-256 tampered signature is rejected natively" {
     const private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
     defer backend.sign.freeKey(private_key);
-    const public_key = try rsaPssPublicKey();
-    defer backend.sign.freeKey(public_key);
+    const pub_key = try rsaPssPublicKeyBits();
 
-    const context = "TLS 1.3, client CertificateVerify";
     const transcript_hash: [32]u8 = @splat(0x42);
-    const msg = context ++ transcript_hash;
+    var content_buf: [160]u8 = undefined;
+    const content = serverSignedContent(&content_buf, &transcript_hash);
 
-    var sig_buf: [256]u8 = undefined;
-    const sig = try backend.sign.sign(private_key, .rsa_pss_rsae_sha256, msg, &sig_buf, .random);
+    var sig_buf: [512]u8 = undefined;
+    const scheme: SignatureScheme = .rsa_pss_rsae_sha256;
+    const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
     sig_buf[sig.len - 1] ^= 0xff;
 
     try testing.expectError(
         error.SignatureVerificationFailed,
-        backend.sign.verify(public_key, .rsa_pss_rsae_sha256, context, &transcript_hash, sig),
+        verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash),
     );
 }
 
 // RFC 8446 §4.4.3 — RSA-PSS SHA-384 is advertised for CertificateVerify and
-// must round-trip through the backend facade under every provider lane.
-test "backend.sign: RSA-PSS SHA-384 sign/verify round-trip and tamper rejection" {
+// must round-trip through the signer and the native verifier.
+test "backend.sign: RSA-PSS SHA-384 signature verifies natively and tamper is rejected" {
     const private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
     defer backend.sign.freeKey(private_key);
-    const public_key = try rsaPssPublicKey();
-    defer backend.sign.freeKey(public_key);
+    const pub_key = try rsaPssPublicKeyBits();
 
-    const context = "TLS 1.3, client CertificateVerify";
     const transcript_hash: [48]u8 = @splat(0x24);
-    const msg = context ++ transcript_hash;
+    var content_buf: [160]u8 = undefined;
+    const content = serverSignedContent(&content_buf, &transcript_hash);
 
-    var sig_buf: [256]u8 = undefined;
-    const sig = try backend.sign.sign(private_key, .rsa_pss_rsae_sha384, msg, &sig_buf, .random);
-    try testing.expect(sig.len > 0);
-
-    try backend.sign.verify(
-        public_key,
-        .rsa_pss_rsae_sha384,
-        context,
-        &transcript_hash,
-        sig,
-    );
+    var sig_buf: [512]u8 = undefined;
+    const scheme: SignatureScheme = .rsa_pss_rsae_sha384;
+    const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
+    try verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash);
 
     sig_buf[sig.len - 1] ^= 0xff;
     try testing.expectError(
         error.SignatureVerificationFailed,
-        backend.sign.verify(public_key, .rsa_pss_rsae_sha384, context, &transcript_hash, sig),
+        verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash),
     );
 }
 
-// RFC 8446 §4.4.3 — ECDSA P-256 SHA-256 sign/verify round-trip through the
-// backend facade using a deterministic scalar.
-test "backend.sign: ECDSA P-256 SHA-256 sign/verify round-trip" {
+// RFC 8446 §4.4.3 — ECDSA P-256 SHA-256 round-trip with a deterministic scalar.
+test "backend.sign: ECDSA P-256 SHA-256 signature verifies natively" {
     const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     );
@@ -752,31 +765,21 @@ test "backend.sign: ECDSA P-256 SHA-256 sign/verify round-trip" {
     const priv = try backend.sign.privateKeyFromP256Scalar(&scalar);
     defer backend.sign.freeKey(priv);
 
-    // Derive SEC1 bytes with the P-256 facade, then load the verification key
-    // through the signature facade path used by CertificateVerify.
+    // The native verifier takes the certificate's SubjectPublicKey bits
+    // directly, so the SEC1 encoding is the whole key.
     const pub_bytes = try backend.p256.rawPublicKeyFromPrivate(priv);
-    const pub_key = try backend.sign.ecPublicKeyFromSec1(.secp256r1, &pub_bytes);
-    defer backend.sign.freeKey(pub_key);
 
-    const context = "TLS 1.3, server CertificateVerify";
     const transcript_hash: [32]u8 = @splat(0x99);
-    const msg = context ++ transcript_hash;
+    var content_buf: [160]u8 = undefined;
+    const content = serverSignedContent(&content_buf, &transcript_hash);
 
-    var sig_buf: [256]u8 = undefined;
-    const sig = try backend.sign.sign(priv, .ecdsa_secp256r1_sha256, msg, &sig_buf, .random);
-    try testing.expect(sig.len > 0);
-
-    try backend.sign.verify(
-        pub_key,
-        .ecdsa_secp256r1_sha256,
-        context,
-        &transcript_hash,
-        sig,
-    );
+    var sig_buf: [128]u8 = undefined;
+    const sig = try backend.sign.sign(priv, .ecdsa_secp256r1_sha256, content, &sig_buf, .random);
+    try verifyAsServerCertificateVerify(sig, .ecdsa_secp256r1_sha256, &pub_bytes, &transcript_hash);
 }
 
 // RFC 8446 §4.4.3 — ECDSA signature verification must reject a tampered signature.
-test "backend.sign: ECDSA P-256 SHA-256 rejects tampered signature" {
+test "backend.sign: ECDSA P-256 SHA-256 tampered signature is rejected natively" {
     const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     );
@@ -785,32 +788,23 @@ test "backend.sign: ECDSA P-256 SHA-256 rejects tampered signature" {
     defer backend.sign.freeKey(priv);
 
     const pub_bytes = try backend.p256.rawPublicKeyFromPrivate(priv);
-    const pub_key = try backend.sign.ecPublicKeyFromSec1(.secp256r1, &pub_bytes);
-    defer backend.sign.freeKey(pub_key);
 
-    const context = "TLS 1.3, server CertificateVerify";
     const transcript_hash: [32]u8 = @splat(0x99);
-    const msg = context ++ transcript_hash;
+    var content_buf: [160]u8 = undefined;
+    const content = serverSignedContent(&content_buf, &transcript_hash);
 
-    var sig_buf: [256]u8 = undefined;
-    const sig = try backend.sign.sign(priv, .ecdsa_secp256r1_sha256, msg, &sig_buf, .random);
+    var sig_buf: [128]u8 = undefined;
+    const sig = try backend.sign.sign(priv, .ecdsa_secp256r1_sha256, content, &sig_buf, .random);
     sig_buf[0] ^= 0xff;
 
     try testing.expectError(
         error.SignatureVerificationFailed,
-        backend.sign.verify(
-            pub_key,
-            .ecdsa_secp256r1_sha256,
-            context,
-            &transcript_hash,
-            sig,
-        ),
+        verifyAsServerCertificateVerify(sig, .ecdsa_secp256r1_sha256, &pub_bytes, &transcript_hash),
     );
 }
 
-// RFC 8446 §4.4.3 — ECDSA P-384 SHA-384 is advertised for CertificateVerify
-// and must round-trip through the backend facade under every provider lane.
-test "backend.sign: ECDSA P-384 SHA-384 sign/verify round-trip and tamper rejection" {
+// RFC 8446 §4.4.3 — ECDSA P-384 SHA-384 round-trip and tamper rejection.
+test "backend.sign: ECDSA P-384 SHA-384 signature verifies natively and tamper is rejected" {
     const scalar: [48]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f" ++
             "101112131415161718191a1b1c1d1e1f" ++
@@ -821,36 +815,39 @@ test "backend.sign: ECDSA P-384 SHA-384 sign/verify round-trip and tamper reject
     defer backend.p384.freeKey(priv);
 
     const pub_bytes = try backend.p384.rawPublicKeyFromPrivate(priv);
-    const pub_key = try backend.sign.ecPublicKeyFromSec1(.secp384r1, &pub_bytes);
-    defer backend.sign.freeKey(pub_key);
 
-    const context = "TLS 1.3, server CertificateVerify";
     const transcript_hash: [48]u8 = @splat(0x66);
-    const msg = context ++ transcript_hash;
+    var content_buf: [160]u8 = undefined;
+    const content = serverSignedContent(&content_buf, &transcript_hash);
 
-    var sig_buf: [256]u8 = undefined;
-    const sig = try backend.sign.sign(priv, .ecdsa_secp384r1_sha384, msg, &sig_buf, .random);
-    try testing.expect(sig.len > 0);
-
-    try backend.sign.verify(
-        pub_key,
-        .ecdsa_secp384r1_sha384,
-        context,
-        &transcript_hash,
-        sig,
-    );
+    var sig_buf: [160]u8 = undefined;
+    const sig = try backend.sign.sign(priv, .ecdsa_secp384r1_sha384, content, &sig_buf, .random);
+    try verifyAsServerCertificateVerify(sig, .ecdsa_secp384r1_sha384, &pub_bytes, &transcript_hash);
 
     sig_buf[0] ^= 0xff;
     try testing.expectError(
         error.SignatureVerificationFailed,
-        backend.sign.verify(
-            pub_key,
-            .ecdsa_secp384r1_sha384,
-            context,
-            &transcript_hash,
-            sig,
-        ),
+        verifyAsServerCertificateVerify(sig, .ecdsa_secp384r1_sha384, &pub_bytes, &transcript_hash),
     );
+}
+
+// RFC 8446 §4.2.3 — rsa_pss_rsae_sha512 is a legal CertificateVerify scheme
+// even though the default capability tables do not advertise it, so the
+// verifier must handle it. SHA-512 needs a 2048-bit key: emLen has to hold
+// hLen + sLen + 2.
+test "backend.sign: RSA-PSS SHA-512 signature verifies natively" {
+    const private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
+    defer backend.sign.freeKey(private_key);
+    const pub_key = try rsaPssPublicKeyBits();
+
+    const transcript_hash: [64]u8 = @splat(0x11);
+    var content_buf: [192]u8 = undefined;
+    const content = serverSignedContent(&content_buf, &transcript_hash);
+
+    var sig_buf: [512]u8 = undefined;
+    const scheme: SignatureScheme = .rsa_pss_rsae_sha512;
+    const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
+    try verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash);
 }
 
 // RFC 8446 §4.4.3 — the signing output buffer must be large enough or the
@@ -879,281 +876,6 @@ test "backend.sign: key/scheme mismatch is a libcrypto failure" {
     try testing.expectError(
         error.LibcryptoFailed,
         backend.sign.sign(priv, .rsa_pss_rsae_sha256, "test message", &sig_buf, .random),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Wycheproof signature verify vectors — direct backend.sign facade
-// ---------------------------------------------------------------------------
-//
-// These tests exercise verify-only paths with fixed public keys, messages,
-// and signatures sourced from the Wycheproof v1 test vector suite. The
-// backend.sign.verify facade hashes context || transcript_hash via
-// EVP_DigestVerifyUpdate; for raw-message Wycheproof vectors, the full message
-// is passed as context and an empty slice as transcript_hash.
-
-// Wycheproof v1 RSA-PSS 2048 public modulus (rsa_pss_2048_sha256_mgf1_32_test.json),
-// shared by the verify vectors below and the #157 key-parameter policy tests.
-const wycheproof_rsa_n_2048_hex =
-    "a2b451a07d0aa5f96e455671513550514a8a5b462ebef717" ++
-    "094fa1fee82224e637f9746d3f7cafd31878d80325b6ef5a1700f65903b469429" ++
-    "e89d6eac8845097b5ab393189db92512ed8a7711a1253facd20f79c15e8247f3" ++
-    "d3e42e46e48c98e254a2fe9765313a03eff8f17e1a029397a1fa26a8dce26f49" ++
-    "0ed81299615d9814c22da610428e09c7d9658594266f5c021d0fceca08d945a1" ++
-    "2be82de4d1ece6b4c03145b5d3495d4ed5411eb878daf05fd7afc3e09ada0f11" ++
-    "26422f590975a1969816f48698bcbba1b4d9cae79d460d8f9f85e7975005d9bc" ++
-    "22c4e5ac0f7c1a45d12569a62807d3b9a02e5a530e773066f453d1f5b4c2e9cf" ++
-    "7820283f742b9d5";
-
-fn comptimeHexByte(comptime v: u8) *const [2]u8 {
-    const digits = "0123456789abcdef";
-    return &.{ digits[v >> 4], digits[v & 0xf] };
-}
-
-fn comptimeDerLenHex(comptime len: u16) []const u8 {
-    if (len < 0x80) return comptimeHexByte(@intCast(len));
-    if (len < 0x100) return "81" ++ comptimeHexByte(@intCast(len));
-    return "82" ++ comptimeHexByte(@intCast(len >> 8)) ++ comptimeHexByte(@truncate(len));
-}
-
-// RFC 8017 §A.1.1 — RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent
-// INTEGER }. Builds well-formed PKCS#1 DER hex around a caller-chosen modulus
-// and exponent TLV so the loader tests can vary one parameter at a time. Both
-// test moduli have the top bit set, so the modulus INTEGER gets the leading
-// 0x00 sign byte.
-fn rsaPubKeyDerHex(comptime n_hex: []const u8, comptime e_tlv_hex: []const u8) []const u8 {
-    const n_tlv = "02" ++ comptimeDerLenHex(n_hex.len / 2 + 1) ++ "00" ++ n_hex;
-    return "30" ++ comptimeDerLenHex(n_tlv.len / 2 + e_tlv_hex.len / 2) ++ n_tlv ++ e_tlv_hex;
-}
-
-// Wycheproof v1 (google-wycheproof 0.9rc5) — RSA-PSS 2048 SHA-256/MGF1-SHA256
-// sLen=32, tcId 3, valid. Source: rsa_pss_2048_sha256_mgf1_32_test.json.
-// The public key is the RSAPublicKey DER extracted from the Wycheproof SPKI.
-// The backend uses RSA_PSS_SALTLEN_DIGEST (= digest length = 32), matching
-// the Wycheproof sLen=32.
-test "backend.sign: Wycheproof RSA-PSS tcId 3 verify" {
-    // RSAPublicKey DER (PKCS#1) extracted from the Wycheproof SPKI.
-    const pub_der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
-    const msg = stdx.fmt.comptimeHex("54657374"); // "Test"
-    const sig = stdx.fmt.comptimeHex(
-        "401eb03cdb47ca88033e3030f6bdecbac8f5c8fc1dd6a13d23d379ed9a2b3098" ++
-            "91d13d74fea9d21d159b9e6d8f37efa2489962e24555f56dd434ff1d31ce4f9f" ++
-            "5abd3f22cbea8b691d6a11e44efb83e2bca155e6a164325e0fde2a8865afd5c9" ++
-            "f51161a9d615f62af7ec2e31b3e5ab649c164490d31d88cfae35b84aea792569" ++
-            "0f929a144b6d2f48e8fb894a52deecd1b9a6496990c4ecf1588699a42cacd10c" ++
-            "53af350514e4291ea9a058e77f101e32c1c0cefa61d945f7bc931f8bd19e7ba3" ++
-            "169358a60e5a8b0123bc3199b9fdcafe8e519c41ba675491a27b85e44ef2d772" ++
-            "77c10fe107293c8290186913bc9a99b640d8da041b64f31eab1d35920985f4a5",
-    );
-
-    const pub_key = try backend.sign.rsaPublicKeyFromDer(&pub_der);
-    defer backend.sign.freeKey(pub_key);
-
-    try backend.sign.verify(
-        pub_key,
-        .rsa_pss_rsae_sha256,
-        &msg,
-        &.{},
-        &sig,
-    );
-}
-
-// Wycheproof v1 (google-wycheproof 0.9rc5) — RSA-PSS 2048 SHA-256/MGF1-SHA256
-// sLen=32, tcId 62, invalid (first byte of m_hash modified).
-// Source: rsa_pss_2048_sha256_mgf1_32_test.json. The signature is valid for a
-// different message hash; verification must fail for the given message.
-test "backend.sign: Wycheproof RSA-PSS tcId 62 invalid signature" {
-    const pub_der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
-    const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
-    const sig = stdx.fmt.comptimeHex(
-        "67d1d1c0a398148625317c3f5e44b738bdf461c27a59594b39ebb2aebef233c7" ++
-            "809379e54411411b82d2e7ac88f989b58373d532c758baea121878ce97594417" ++
-            "38d121881c1fa2d04421f02dd565b12770d844611ed1873a0b64d822709a6b78" ++
-            "d6d3892b294404bce6711001d6c3a54546c76a1d17819674b0be904497a233b4" ++
-            "66fe4becc832dee740f9ab79e5b9f5db0b0f9aac0084ba05cebf42303b5ca2ad" ++
-            "95e3d61b29ed6475545c02e93e7b0e118af92f5cddb1faeb2cbc23c9e69c120e" ++
-            "29df7fe31991e887b3b29e77688c60e80be65cccf3d7861a7a14c39e6a6e5645" ++
-            "568e2cc5e4a17b75db1dd415aadb45e112a9b582b2ff6e82a43d7a7347b7b56d",
-    );
-
-    const pub_key = try backend.sign.rsaPublicKeyFromDer(&pub_der);
-    defer backend.sign.freeKey(pub_key);
-
-    try testing.expectError(
-        error.SignatureVerificationFailed,
-        backend.sign.verify(pub_key, .rsa_pss_rsae_sha256, &msg, &.{}, &sig),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// RSA public-key parameter policy (baskingspot/tls#157)
-// ---------------------------------------------------------------------------
-
-// RFC 8446 §4.4.3 / §C.3 — the CertificateVerify key loader mirrors the chain
-// verifier's policy (certificate_parser.zig rsa.PublicKey.fromBytes). e = 1
-// makes the RSA public operation the identity, so any well-formed PSS encoding
-// would verify as a CertificateVerify signature without any private key.
-test "backend.sign: RSA public key with exponent 1 is rejected" {
-    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "020101"));
-    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
-}
-
-test "backend.sign: RSA public key with even exponent is rejected" {
-    // e = 65536: parses, but even.
-    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010000"));
-    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
-}
-
-test "backend.sign: RSA public key with exponent wider than 32 bits is rejected" {
-    // e = 2^32 + 1: odd, but 33 bits. The 32-bit cap bounds the public
-    // operation's cost for attacker-chosen keys (Windows CryptoAPI limit).
-    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "02050100000001"));
-    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
-}
-
-test "backend.sign: RSA public key with even modulus is rejected" {
-    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(
-        wycheproof_rsa_n_2048_hex[0..510] ++ "ce",
-        "0203010001",
-    ));
-    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
-}
-
-test "backend.sign: RSA public key with undersized modulus is rejected" {
-    // 512-bit odd modulus (2^511 + 1): parses fine, but below the 1024-bit
-    // loader floor. Every repo fixture and interop key is >= 2048 bits.
-    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(
-        "80" ++ root_compat.repeatString("00", 62) ++ "01",
-        "020103",
-    ));
-    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&der));
-}
-
-test "backend.sign: RSA public key with trailing bytes is rejected" {
-    // The whole SubjectPublicKey must be exactly one RSAPublicKey.
-    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
-    var buf: [der.len + 1]u8 = undefined;
-    @memcpy(buf[0..der.len], &der);
-    buf[der.len] = 0;
-    try testing.expectError(error.InvalidEncoding, backend.sign.rsaPublicKeyFromDer(&buf));
-}
-
-test "backend.sign: RSA public key with exponent 3 is accepted" {
-    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "020103"));
-    const key = try backend.sign.rsaPublicKeyFromDer(&der);
-    defer backend.sign.freeKey(key);
-}
-
-test "backend.sign: RSA public key with exponent 65537 is accepted" {
-    const der = stdx.fmt.comptimeHex(rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "0203010001"));
-    const key = try backend.sign.rsaPublicKeyFromDer(&der);
-    defer backend.sign.freeKey(key);
-}
-
-// Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-256 SHA-256 tcId 1,
-// valid (pseudorandom signature). Source: ecdsa_secp256r1_sha256_test.json.
-// The public key is the SEC1 uncompressed point from the Wycheproof group.
-test "backend.sign: Wycheproof ECDSA P-256 tcId 1 verify" {
-    const pub_sec1: [65]u8 = stdx.fmt.comptimeHex(
-        "0404aaec73635726f213fb8a9e64da3b8632e41495a944d0045b522eba7240fad5" ++
-            "87d9315798aaa3a5ba01775787ced05eaaf7b4e09fc81d6d1aa546e8365d525d",
-    );
-    const sig = stdx.fmt.comptimeHex(
-        "3045022100b292a619339f6e567a305c951c0dcbcc42d16e47f219f9e98e76e09d" ++
-            "8770b34a02200177e60492c5a8242f76f07bfe3661bde59ec2a17ce5bd2dab2a" ++
-            "bebdf89a62e2",
-    );
-
-    const pub_key = try backend.sign.ecPublicKeyFromSec1(.secp256r1, &pub_sec1);
-    defer backend.sign.freeKey(pub_key);
-
-    // tcId 1 has an empty message; the digest of "" is SHA256(eof).
-    try backend.sign.verify(
-        pub_key,
-        .ecdsa_secp256r1_sha256,
-        "",
-        &.{},
-        &sig,
-    );
-}
-
-// Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-256 SHA-256 tcId 6,
-// invalid (Legacy: ASN encoding of s misses leading 0).
-// Source: ecdsa_secp256r1_sha256_test.json. The signature has an s value whose
-// ASN.1 encoding is missing the required leading zero for a negative MSB,
-// making it a malformed DER encoding that must be rejected.
-test "backend.sign: Wycheproof ECDSA P-256 tcId 6 invalid signature" {
-    // Group 1 public key (different from group 0).
-    const pub_sec1: [65]u8 = stdx.fmt.comptimeHex(
-        "042927b10512bae3eddcfe467828128bad2903269919f7086069c8c4df6c73283" ++
-            "8c7787964eaac00e5921fb1498a60f4606766b3d9685001558d1a974e7341513e",
-    );
-    const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
-    const sig = stdx.fmt.comptimeHex(
-        "304402202ba3a8be6b94d5ec80a6d9d1190a436effe50d85a1eee859b8cc6af9" ++
-            "bd5c2e180220b329f479a2bbd0a5c384ee1493b1f5186a87139cac5df4087c13" ++
-            "4b49156847db",
-    );
-
-    const pub_key = try backend.sign.ecPublicKeyFromSec1(.secp256r1, &pub_sec1);
-    defer backend.sign.freeKey(pub_key);
-
-    try testing.expectError(
-        error.SignatureVerificationFailed,
-        backend.sign.verify(pub_key, .ecdsa_secp256r1_sha256, &msg, &.{}, &sig),
-    );
-}
-
-// Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-384 SHA-384 tcId 1,
-// valid (pseudorandom signature). Source: ecdsa_secp384r1_sha384_test.json.
-test "backend.sign: Wycheproof ECDSA P-384 tcId 1 verify" {
-    const pub_sec1: [97]u8 = stdx.fmt.comptimeHex(
-        "0429bdb76d5fa741bfd70233cb3a66cc7d44beb3b0663d92a8136650478bcefb61" ++
-            "ef182e155a54345a5e8e5e88f064e5bc9a525ab7f764dad3dae1468c2b419f3b6" ++
-            "2b9ba917d5e8c4fb1ec47404a3fc76474b2713081be9db4c00e043ada9fc4a3",
-    );
-    const sig = stdx.fmt.comptimeHex(
-        "3064023032401249714e9091f05a5e109d5c1216fdc05e98614261aa0dbd9e9c" ++
-            "d4415dee29238afbd3b103c1e40ee5c9144aee0f02304326756fb2c4fd726360" ++
-            "dd6479b5849478c7a9d054a833a58c1631c33b63c3441336ddf2c7fe0ed129aa" ++
-            "e6d4ddfeb753",
-    );
-
-    const pub_key = try backend.sign.ecPublicKeyFromSec1(.secp384r1, &pub_sec1);
-    defer backend.sign.freeKey(pub_key);
-
-    try backend.sign.verify(
-        pub_key,
-        .ecdsa_secp384r1_sha384,
-        "",
-        &.{},
-        &sig,
-    );
-}
-
-// Wycheproof v1 (google-wycheproof 0.9rc5) — ECDSA P-384 SHA-384 tcId 6,
-// invalid (Legacy: ASN encoding of s misses leading 0).
-// Source: ecdsa_secp384r1_sha384_test.json.
-test "backend.sign: Wycheproof ECDSA P-384 tcId 6 invalid signature" {
-    const pub_sec1: [97]u8 = stdx.fmt.comptimeHex(
-        "042da57dda1089276a543f9ffdac0bff0d976cad71eb7280e7d9bfd9fee4bdb2f2" ++
-            "0f47ff888274389772d98cc5752138aa4b6d054d69dcf3e25ec49df870715e34" ++
-            "883b1836197d76f8ad962e78f6571bbc7407b0d6091f9e4d88f014274406174f",
-    );
-    const msg = stdx.fmt.comptimeHex("313233343030"); // "123400"
-    const sig = stdx.fmt.comptimeHex(
-        "3064023012b30abef6b5476fe6b612ae557c0425661e26b44b1bfe19daf2ca28" ++
-            "e3113083ba8e4ae4cc45a0320abd3394f1c548d70230e7bf25603e2d07076ff" ++
-            "30b7a2abec473da8b11c572b35fc631991d5de62ddca7525aaba89325dfd04f" ++
-            "ecc47bff426f82",
-    );
-
-    const pub_key = try backend.sign.ecPublicKeyFromSec1(.secp384r1, &pub_sec1);
-    defer backend.sign.freeKey(pub_key);
-
-    try testing.expectError(
-        error.SignatureVerificationFailed,
-        backend.sign.verify(pub_key, .ecdsa_secp384r1_sha384, &msg, &.{}, &sig),
     );
 }
 
@@ -1296,23 +1018,6 @@ test "backend error-queue hygiene: successful key load preserves caller entries 
     defer backend.p256.freeKey(key);
 
     try expectQueueMatchesCallerResidue();
-}
-
-// #88 finding 2 — a rejected CertificateVerify signature is an
-// attacker-reachable per-handshake failure; it must leave no residue either.
-test "backend error-queue hygiene: failed signature verification leaves no residue (#88)" {
-    c.ERR_clear_error();
-    const scalar: [32]u8 = @splat(0x01);
-    const priv = try backend.sign.privateKeyFromP256Scalar(&scalar);
-    defer backend.sign.freeKey(priv);
-
-    const bad_sig: [32]u8 = @splat(0);
-    const msg = "error-queue hygiene verify failure";
-    try testing.expectError(
-        error.SignatureVerificationFailed,
-        backend.sign.verify(priv, .ecdsa_secp256r1_sha256, msg, "", &bad_sig),
-    );
-    try testing.expect(c.ERR_get_error() == 0);
 }
 
 // #88 finding 2 — the per-record decrypt path is guarded like every other

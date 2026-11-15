@@ -186,6 +186,11 @@ Signing should stay behind a vtable-shaped interface: scheme + opaque context +
 should expose a backend-neutral function and hide backend-specific public-key
 construction.
 
+Verification satisfies that shape by leaving the backend entirely (#183):
+`certificate.verifySignedContent` takes the scheme and the leaf's
+SubjectPublicKey bits, so no backend key object exists on that path. The
+`verify` shape below is therefore the engine's, not a provider entry point.
+
 Facade shape:
 
 ```zig
@@ -194,8 +199,14 @@ pub fn verify(scheme: SignatureScheme, pubkey: PublicKey,
 // signing stays behind the existing Signer vtable
 ```
 
-Schemes required for TLS 1.3 server auth: rsa_pss_rsae_sha256/384/512, ECDSA
-P-256/384, Ed25519 (one-shot `EVP_DigestVerify`, no streaming). Backend caveat:
+Signing schemes required for TLS 1.3 server auth: rsa_pss_rsae_sha256/384/512
+and ECDSA P-256/384, through `EVP_DigestSign`. Verification does not cross this
+seam any more (#183): CertificateVerify accepts rsa_pss_rsae_sha256/384/512 and
+ECDSA P-256/384, verified in-tree, and Ed25519 is a certificate-chain scheme
+only, never a CertificateVerify one.
+
+The key-construction caveat below therefore applies to the signing path alone,
+which still needs an `EVP_PKEY` for the caller's private key. Backend caveat:
 OpenSSL-3-deprecated key-construction APIs such as `EC_KEY_*`,
 `EVP_PKEY_assign_EC_KEY`, `d2i_RSAPublicKey`, and `EVP_PKEY_assign_RSA` must not
 appear above the backend seam. They may still be the correct backend-local choice
