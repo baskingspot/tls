@@ -7,6 +7,10 @@ All notable changes to tls are recorded here. The format follows
 
 ### Added
 
+- `handshake_core.Server.selectedGroup()` returns the key-share group to answer
+  with: the first of `Server.group_preference` (x25519, secp256r1, then
+  secp384r1 when a P-384 keypair is set) that the ClientHello carried a share
+  for. Null means no usable share, so the caller sends HelloRetryRequest.
 - `tls_nonblocking.SocketClient.Options.cancel` runs a caller hook at the top
   of each handshake step and at least every 100 ms while a handshake read
   waits. Returning true ends `init` with `error.Canceled`, so a dialer can
@@ -91,6 +95,10 @@ All notable changes to tls are recorded here. The format follows
 
 ### Fixed
 
+- `handshake_core.Server.provideClientHello` no longer fails with
+  `error.HybridServerUnsupported` when the ClientHello carries an RFC 10024
+  hybrid share such as Go 1.24's default X25519MLKEM768. The share is skipped
+  and a classical one is selected, as RFC 8446 §4.2.8 requires.
 - `handshake_core.Client` derives its application traffic secrets over the
   transcript through the server Finished, as RFC 8446 §7.1 requires. A client
   that sent a Certificate and CertificateVerify hashed those in as well, and so

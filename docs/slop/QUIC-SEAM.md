@@ -321,10 +321,9 @@ client never offered is refused with `error.GroupNotOffered`, because the caller
 builds that message, and the lookup is the only chance the core gets to catch it.
 
 Known open, same class: the core's server **cannot complete a KEM handshake at
-all today**. It has no server-side RFC 10024 path, so a ClientHello offering a
-hybrid share is refused with `error.HybridServerUnsupported` — deliberately, not
-silently, because a retained share nobody can decapsulate is worse than a named
-refusal. That must land before the server adapter, for the reason the client's
+all today**. It has no server-side RFC 10024 path, so a hybrid share is skipped,
+never retained, and `Server.selectedGroup` picks a classical one (RFC 8446 §4.2.8).
+That must land before the server adapter, for the reason the client's
 move gave: the next consumer (quic, then the server adapter) would otherwise own
 hybrid key agreement itself.
 

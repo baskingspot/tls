@@ -124,6 +124,8 @@ const aead = @import("aead.zig");
 const x25519 = @import("x25519.zig");
 const p256 = @import("p256.zig");
 const p384 = @import("p384.zig");
+const wire = @import("wire.zig");
+const assert = std.debug.assert;
 // Test-only module; not needed by the core itself.
 const fixtures = @import("fixtures");
 const suite_state = @import("suite_state.zig");
@@ -1256,10 +1258,9 @@ test "core client: a wrong-level ServerHello is refused" {
 /// Storage for the classical client key shares a server retains from the
 /// ClientHello: x25519 (32) + P-256 (65) + P-384 (97), plus one group tag each.
 ///
-/// A ClientHello offering an RFC 10024 hybrid share needs more than this. The
-/// core rejects that with `error.HybridServerUnsupported` rather than
-/// truncating — there is no server-side KEM path yet (docs/slop/QUIC-SEAM.md
-/// §5.6). Caller-owned: public key material, so it is never zeroized.
+/// An RFC 10024 hybrid share is not retained: there is no server-side KEM path
+/// yet (docs/slop/QUIC-SEAM.md §5.6), so the server skips it and selects among
+/// these. Caller-owned: public key material, so it is never zeroized.
 pub const peer_share_storage_len = 32 + 65 + 97 + 3;
 
 pub const PeerShare = struct {
@@ -1504,16 +1505,15 @@ pub const Server = struct {
     /// offered. A server configured with a list that overlaps nothing fails the
     /// handshake rather than negotiating none.
     /// Retain the client's classical key shares so `provideServerHello` can
-    /// derive from the one the server ends up selecting. RFC 8446 §4.2.8.
+    /// derive from the one the server ends up selecting. RFC 8446 §4.2.8: a
+    /// share for a group the server cannot do is skipped, not refused. The
+    /// parser has already rejected malformed and duplicate entries, and the
+    /// core has no server-side KEM path, so RFC 10024 hybrid shares are left
+    /// in `parsed` unretained.
     fn retainPeerShares(self: *Server, parsed: client_hello.Parsed) Error!void {
         // No storage: the caller is not asking for retention, and a deriving
         // `provideServerHello` will fail rather than guess.
         if (self.peer_share_storage.len == 0) return;
-        if (parsed.hybrid_key_shares.len != 0) {
-            // The core has no server-side KEM path yet; refusing beats a share
-            // nobody can decapsulate. See docs/slop/QUIC-SEAM.md §5.6.
-            return error.HybridServerUnsupported;
-        }
         var used: usize = 0;
         self.peer_share_count = 0;
         const shares = [_]struct { group: kex.NamedGroup, bytes: ?[]const u8 }{
@@ -1536,6 +1536,29 @@ pub const Server = struct {
             used += bytes.len;
             self.peer_share_count += 1;
         }
+        assert(self.peer_share_count <= self.peer_shares.len);
+    }
+
+    /// The groups this server completes a key exchange with, in its own
+    /// preference order. `selectedGroup` is the only reader. RFC 8446 §4.2.8.
+    pub const group_preference = [_]kex.NamedGroup{ .x25519, .secp256r1, .secp384r1 };
+
+    /// RFC 8446 §4.2.8 - the group to answer the ClientHello with: the first of
+    /// `group_preference` (x25519, then secp256r1, then secp384r1 when the
+    /// keypairs carry a P-384 credential) the client sent a share for. The
+    /// client's order is not consulted, and a share for a group the server
+    /// cannot do (an RFC 10024 hybrid, say) was never retained.
+    ///
+    /// Null means no usable share: the caller sends HelloRetryRequest naming a
+    /// group the client listed in supported_groups. It is also null before
+    /// `provideClientHello` and when no `usePeerShareStorage` was given.
+    pub fn selectedGroup(self: *const Server) ?kex.NamedGroup {
+        const p384_ready = if (self.keypairs) |*kp| kp.p384 != null else false;
+        for (group_preference) |group| {
+            if (group == .secp384r1 and !p384_ready) continue;
+            if (self.peerShare(group) != null) return group;
+        }
+        return null;
     }
 
     fn peerShare(self: *const Server, group: kex.NamedGroup) ?[]const u8 {
@@ -2604,9 +2627,10 @@ test "server: deriving without retained shares is its own error" {
     );
 }
 
-// Retention is bounded and named: a hybrid offer and a short buffer are both
-// errors, never a truncated share.
-test "server: hybrid offers and short storage are named errors" {
+// RFC 8446 §4.2.8 - retention is bounded and named: a short buffer is an
+// error, never a truncated share, and a hybrid share sent after the classical
+// ones is skipped rather than refused.
+test "server: a hybrid offer is skipped, and short storage is a named error" {
     var client_keys: KeyPairs = try .init(.generate());
     defer client_keys.secureZero();
     var server_keys: KeyPairs = try .init(.generate());
@@ -2636,10 +2660,8 @@ test "server: hybrid offers and short storage are named errors" {
     defer server.deinit();
     server.useKeypairs(server_keys);
     server.usePeerShareStorage(&big_storage);
-    try testing.expectError(
-        error.HybridServerUnsupported,
-        server.provideClientHello(.plaintext, hybrid_ch, .aes_128_gcm_sha256),
-    );
+    try server.provideClientHello(.plaintext, hybrid_ch, .aes_128_gcm_sha256);
+    try testing.expectEqual(@as(?kex.NamedGroup, .x25519), server.selectedGroup());
 
     var small_storage: [8]u8 = undefined;
     var plain: Client = .init(&slots, policy);
@@ -2662,6 +2684,217 @@ test "server: hybrid offers and short storage are named errors" {
         error.PeerShareStorageTooSmall,
         small.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256),
     );
+}
+
+const RawShare = struct { group: kex.NamedGroup, key: []const u8 };
+
+/// A TLS 1.3 ClientHello listing `groups` in supported_groups and carrying
+/// `shares` in key_share in wire order. Only the extensions the parser requires
+/// are present, so a test controls the share list byte for byte.
+fn clientHelloWithShares(
+    out: []u8,
+    groups: []const kex.NamedGroup,
+    shares: []const RawShare,
+) []const u8 {
+    var shares_len: usize = 0;
+    for (shares) |share| shares_len += 4 + share.key.len;
+    const extensions_len = (4 + 3) + (4 + 2 + 2 * groups.len) + (4 + 4) + (4 + 2 + shares_len);
+    var w: wire.Writer = .init(out);
+    w.appendAssumeCapacity(handshake.Type, .client_hello);
+    w.appendAssumeCapacity(u24, @intCast(2 + 32 + 1 + 4 + 2 + 2 + extensions_len));
+    w.appendAssumeCapacity(u16, 0x0303);
+    w.appendSliceAssumeCapacity(&@as([32]u8, @splat(0x3c)));
+    w.appendAssumeCapacity(u8, 0); // legacy_session_id
+    w.appendSliceAssumeCapacity(&.{ 0x00, 0x02, 0x13, 0x01 }); // TLS_AES_128_GCM_SHA256
+    w.appendSliceAssumeCapacity(&.{ 0x01, 0x00 }); // null compression
+    w.appendAssumeCapacity(u16, @intCast(extensions_len));
+    // supported_versions: TLS 1.3 only.
+    w.appendSliceAssumeCapacity(&.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
+    w.appendAssumeCapacity(u16, 0x000a);
+    w.appendAssumeCapacity(u16, @intCast(2 + 2 * groups.len));
+    w.appendAssumeCapacity(u16, @intCast(2 * groups.len));
+    for (groups) |group| w.appendAssumeCapacity(kex.NamedGroup, group);
+    // signature_algorithms: ecdsa_secp256r1_sha256.
+    w.appendSliceAssumeCapacity(&.{ 0x00, 0x0d, 0x00, 0x04, 0x00, 0x02, 0x04, 0x03 });
+    w.appendAssumeCapacity(u16, 0x0033);
+    w.appendAssumeCapacity(u16, @intCast(2 + shares_len));
+    w.appendAssumeCapacity(u16, @intCast(shares_len));
+    for (shares) |share| {
+        w.appendAssumeCapacity(kex.NamedGroup, share.group);
+        w.appendAssumeCapacity(u16, @intCast(share.key.len));
+        w.appendSliceAssumeCapacity(share.key);
+    }
+    return w.buffered();
+}
+
+/// A stand-in X25519MLKEM768 client share: the right length, never decoded,
+/// because a server that cannot do the group must not read it.
+const stand_in_hybrid_share: [1216]u8 = @splat(0x5c);
+
+comptime {
+    assert(stand_in_hybrid_share.len == kex.NamedGroup.x25519_mlkem768.publicKeyLen().?);
+}
+
+// RFC 8446 §4.2.8 - the server selects one of the offered shares it supports.
+// Go 1.24+ sends X25519MLKEM768 first and X25519 after it; the hybrid entry is
+// ignored, not refused, and the server answers with a ServerHello for X25519
+// and no HelloRetryRequest. Both roles then derive the same handshake secrets.
+test "server: an X25519MLKEM768 share before an X25519 share selects X25519" {
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+
+    var ch_buf: [2048]u8 = undefined;
+    const ch = clientHelloWithShares(&ch_buf, &.{ .x25519_mlkem768, .x25519 }, &.{
+        .{ .group = .x25519_mlkem768, .key = &stand_in_hybrid_share },
+        .{ .group = .x25519, .key = &client_keys.x25519.public_key.data },
+    });
+    var client_slots: [16]level.Output = undefined;
+    var client: Client = .init(&client_slots, .init);
+    defer client.deinit();
+    client.useKeypairs(client_keys);
+    try client.start(ch);
+
+    var share_storage: [peer_share_storage_len]u8 = undefined;
+    var server_slots: [16]level.Output = undefined;
+    var server: Server = .init(&server_slots);
+    defer server.deinit();
+    server.useKeypairs(server_keys);
+    server.usePeerShareStorage(&share_storage);
+    try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+    try testing.expectEqual(@as(?kex.NamedGroup, .x25519), server.selectedGroup());
+
+    const key_share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    var sh_buf: [256]u8 = undefined;
+    const sh = try server_hello.encodeWithKeyShare(
+        &sh_buf,
+        @splat(0x7a),
+        &.{},
+        .aes_128_gcm_sha256,
+        &key_share,
+    );
+    try server.provideServerHello(.plaintext, sh);
+    try testing.expect(!server.hrr_sent);
+    const first = server.next().?.message;
+    try testing.expectEqual(level.Level.plaintext, first.level);
+    try testing.expectEqualSlices(u8, sh, first.bytes);
+
+    try client.provide(.plaintext, sh);
+    const client_secrets = client.handshakeSecrets().?;
+    const server_secrets = server.handshakeSecrets().?;
+    const len = server_secrets.len;
+    try testing.expectEqual(len, client_secrets.len);
+    try testing.expectEqualSlices(u8, server_secrets.client[0..len], client_secrets.client[0..len]);
+    try testing.expectEqualSlices(u8, server_secrets.server[0..len], client_secrets.server[0..len]);
+}
+
+// RFC 8446 §4.2.8, §4.1.4 - a ClientHello with no share the server can use is
+// answered with HelloRetryRequest. The core says so with a null selection, and
+// a hybrid-only key_share gets exactly the answer an empty one does.
+test "server: a hybrid-only key_share is no usable share, answered by HelloRetryRequest" {
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+    const hybrid_only = [_]RawShare{.{ .group = .x25519_mlkem768, .key = &stand_in_hybrid_share }};
+    const cases = [_][]const RawShare{ &hybrid_only, &.{} };
+    for (cases) |shares| {
+        var ch_buf: [2048]u8 = undefined;
+        const ch = clientHelloWithShares(&ch_buf, &.{ .x25519_mlkem768, .x25519 }, shares);
+        var share_storage: [peer_share_storage_len]u8 = undefined;
+        var slots: [16]level.Output = undefined;
+        var server: Server = .init(&slots);
+        defer server.deinit();
+        server.useKeypairs(server_keys);
+        server.usePeerShareStorage(&share_storage);
+        try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+        try testing.expectEqual(@as(?kex.NamedGroup, null), server.selectedGroup());
+        var hrr_buf: [256]u8 = undefined;
+        _ = try server.sendHelloRetryRequest(.x25519, &hrr_buf);
+        try testing.expect(server.hrr_sent);
+    }
+}
+
+// RFC 8446 §4.2.8, RFC 10024 §4.1 - skipping a group the server cannot do does
+// not relax validation: a malformed or repeated entry still fails the parse.
+test "server: a malformed or duplicate key_share entry is still refused" {
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+    const x25519_key = &client_keys.x25519.public_key.data;
+    const short_x25519 = [_]RawShare{.{ .group = .x25519, .key = x25519_key[0..31] }};
+    const short_hybrid = [_]RawShare{
+        .{ .group = .x25519_mlkem768, .key = stand_in_hybrid_share[0..1215] },
+        .{ .group = .x25519, .key = x25519_key },
+    };
+    const repeated_hybrid = [_]RawShare{
+        .{ .group = .x25519_mlkem768, .key = &stand_in_hybrid_share },
+        .{ .group = .x25519_mlkem768, .key = &stand_in_hybrid_share },
+        .{ .group = .x25519, .key = x25519_key },
+    };
+    const cases = [_][]const RawShare{ &short_x25519, &short_hybrid, &repeated_hybrid };
+    for (cases) |shares| {
+        var ch_buf: [4096]u8 = undefined;
+        const ch = clientHelloWithShares(&ch_buf, &.{ .x25519_mlkem768, .x25519 }, shares);
+        var share_storage: [peer_share_storage_len]u8 = undefined;
+        var slots: [16]level.Output = undefined;
+        var server: Server = .init(&slots);
+        defer server.deinit();
+        server.useKeypairs(server_keys);
+        server.usePeerShareStorage(&share_storage);
+        try testing.expectError(
+            error.UnexpectedMessage,
+            server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256),
+        );
+    }
+}
+
+fn selectedFor(server_keys: KeyPairs, shares: []const RawShare) !?kex.NamedGroup {
+    var ch_buf: [2048]u8 = undefined;
+    const groups: []const kex.NamedGroup = &.{ .x25519, .secp256r1, .secp384r1 };
+    const ch = clientHelloWithShares(&ch_buf, groups, shares);
+    var share_storage: [peer_share_storage_len]u8 = undefined;
+    var slots: [16]level.Output = undefined;
+    var server: Server = .init(&slots);
+    defer server.deinit();
+    server.useKeypairs(server_keys);
+    server.usePeerShareStorage(&share_storage);
+    try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
+    return server.selectedGroup();
+}
+
+// RFC 8446 §4.2.8 - the server picks by its own preference, not the client's
+// order, and only among groups it holds a credential for.
+test "server: selectedGroup follows group_preference, not the client's order" {
+    const preference = Server.group_preference;
+    var client_keys: KeyPairs = try .init(.generate());
+    defer client_keys.secureZero();
+    var client_p384 = try p384.KeyPair.generate();
+    defer client_p384.secureZero();
+    var server_keys: KeyPairs = try .init(.generate());
+    defer server_keys.secureZero();
+    var server_p384_keys: KeyPairs = .initWithP256P384(
+        .generate(),
+        try .generate(),
+        try .generate(),
+    );
+    defer server_p384_keys.secureZero();
+
+    const x: RawShare = .{ .group = .x25519, .key = &client_keys.x25519.public_key.data };
+    const p256_share: RawShare = .{ .group = .secp256r1, .key = &client_keys.p256.public_key.data };
+    const p384_share: RawShare = .{ .group = .secp384r1, .key = &client_p384.public_key.data };
+    const Expect = ?kex.NamedGroup;
+    try testing.expectEqual(@as(Expect, preference[0]), try selectedFor(server_keys, &.{
+        p256_share, x,
+    }));
+    try testing.expectEqual(@as(Expect, preference[1]), try selectedFor(server_p384_keys, &.{
+        p384_share, p256_share,
+    }));
+    try testing.expectEqual(@as(Expect, preference[2]), try selectedFor(server_p384_keys, &.{
+        p384_share,
+    }));
+    // No P-384 credential: a P-384 share is not one this server can use.
+    try testing.expectEqual(@as(Expect, null), try selectedFor(server_keys, &.{p384_share}));
 }
 
 // The keypair type the core's entry points take has a public name, so a
