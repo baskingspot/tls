@@ -360,12 +360,13 @@ fn mtlsServerExchange(ctx: *MtlsServerCtx) !void {
     const sock = try ctx.listener.accept(io);
 
     var conn: IdentityServer = undefined;
+    var scratch: tls.HandshakeScratch = .init;
     try conn.accept(io, sock, .{
         .cert_chain = &.{server_cert_der},
         .signer = key.signer(),
         .alpn = &.{alpn},
         .client_auth = .{ .required = .{ .bundle = ctx.bundle } },
-    });
+    }, &scratch);
     defer conn.deinit();
     ctx.suite = conn.info().cipher_suite;
     if (conn.info().client_identity) |der| {
@@ -398,11 +399,12 @@ fn serverExchange(ctx: *ServerCtx) !void {
     const sock = try ctx.listener.accept(io);
 
     var conn: tls.Server = undefined;
+    var scratch: tls.HandshakeScratch = .init;
     try conn.accept(io, sock, .{
         .cert_chain = &.{server_cert_der},
         .signer = key.signer(),
         .alpn = &.{alpn},
-    });
+    }, &scratch);
     defer conn.deinit();
 
     try testing.expectEqualStrings(alpn, conn.selectedAlpn().?);

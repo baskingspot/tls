@@ -544,6 +544,233 @@ pub const ServerOptions = struct {
     }
 };
 
+/// Per-worker scratch space for the server handshake engine.
+///
+/// A finished server connection keeps the compact `EstablishedSession`, not the
+/// handshake engine, so a slot table of thousands of idle connections carries
+/// one engine per worker instead of one per slot (#169). Declare it once beside
+/// the accept loop:
+///
+///     var scratch: tls_std.HandshakeScratch = .init;
+///     try conn.accept(io, sock, options, &scratch);
+///
+/// A worker runs one handshake at a time, which is what a blocking accept loop
+/// already does. `accept` reinitializes the engine on entry and leaves it
+/// consumed on exit, so the same scratch serves connection after connection.
+pub const HandshakeScratch = struct {
+    hs: tls.ServerHandshake = undefined,
+
+    pub const init: HandshakeScratch = .{};
+};
+
+/// The engine a `tls_std` server connection drives.
+///
+/// During the handshake it borrows the worker's `HandshakeScratch`. On
+/// completion `accept` swaps in the compact session, so the connection's slot
+/// no longer contains a handshake engine.
+///
+/// Both arms answer the connected-state methods, so the record loop never
+/// branches on phase. The handshake-only methods assert they are in the first
+/// arm; a connection that has not handshaken cannot reach the record loop.
+pub const ServerEngine = union(enum) {
+    handshaking: *tls.ServerHandshake,
+    established: Connected,
+
+    pub const Connected = struct {
+        session: tls.EstablishedSession,
+        /// Captured at extraction. `EstablishedSession` does not carry them,
+        /// and `Info` must not change shape when the engine is swapped.
+        alpn: ?[]const u8,
+        cipher_suite: tls.CipherSuite,
+        /// Borrowed from the connection's identity storage, which outlives it.
+        client_identity: ?[]const u8,
+    };
+
+    pub const OutBuffer = tls.ServerHandshake.OutBuffer;
+    pub const Storage = tls.ServerHandshake.Storage;
+    pub const KeyUpdateRequest = tls.ServerHandshake.KeyUpdateRequest;
+    pub const ReceiveEvent = tls.ServerHandshake.ReceiveEvent;
+    pub const ReceiveError = tls.ServerHandshake.ReceiveError;
+    pub const SendError = tls.ServerHandshake.SendError;
+    pub const AlertError = tls.ServerHandshake.AlertError;
+    pub const HandleError = tls.ServerHandshake.HandleError;
+    pub const Event = tls.ServerHandshake.Event;
+
+    /// The handshake arm. Every caller is on the handshake path; the assert is
+    /// the invariant, not input validation.
+    fn handshakeEngine(self: *ServerEngine) *tls.ServerHandshake {
+        assert(self.* == .handshaking);
+        return self.handshaking;
+    }
+
+    fn connected(self: *ServerEngine) *Connected {
+        assert(self.* == .established);
+        return &self.established;
+    }
+
+    pub fn useHandshakeBuffer(self: *ServerEngine, storage: []u8) void {
+        self.handshakeEngine().useHandshakeBuffer(storage);
+    }
+
+    pub fn useClientCertificateBuffer(self: *ServerEngine, storage: []u8) void {
+        self.handshakeEngine().useClientCertificateBuffer(storage);
+    }
+
+    pub fn setCredentials(
+        self: *ServerEngine,
+        certs_der: []const []const u8,
+        signer: tls.signature.Signer,
+    ) void {
+        self.handshakeEngine().setCredentials(certs_der, signer);
+    }
+
+    /// The client-auth policy is written once, before the handshake starts.
+    /// Union arms cannot expose fields, so the writes live here.
+    pub fn setClientAuth(
+        self: *ServerEngine,
+        mode: tls.ServerHandshake.ClientAuthPolicy,
+        trust: ClientTrust,
+        now_sec: i64,
+    ) void {
+        const hs = self.handshakeEngine();
+        hs.client_auth = mode;
+        switch (trust) {
+            .bundle => |b| hs.client_cert_policy.bundle = b,
+            .insecure => hs.client_cert_policy.insecure_no_chain_anchor = true,
+        }
+        hs.client_cert_policy.now_sec = now_sec;
+    }
+
+    pub fn isConnected(self: *const ServerEngine) bool {
+        return switch (self.*) {
+            .handshaking => |hs| hs.isConnected(),
+            .established => true,
+        };
+    }
+
+    pub fn handleRecord(
+        self: *ServerEngine,
+        record: []u8,
+        out: []u8,
+    ) HandleError!Event {
+        return self.handshakeEngine().handleRecord(record, out);
+    }
+
+    pub fn sendServerFlightBuffered(
+        self: *ServerEngine,
+        out: *tls.ServerHandshake.FlightBuffer,
+    ) tls.ServerHandshake.FlightError!?[]u8 {
+        return self.handshakeEngine().sendServerFlightBuffered(out);
+    }
+
+    pub fn receiveRecord(
+        self: *ServerEngine,
+        record: []u8,
+    ) ReceiveError!ReceiveEvent {
+        return switch (self.*) {
+            .handshaking => |hs| hs.receiveRecord(record),
+            // Same event type and error set: the connected record path is
+            // shared code in the core, not a second implementation.
+            .established => |*c| c.session.receive(record),
+        };
+    }
+
+    pub fn completeWrite(self: *ServerEngine) void {
+        switch (self.*) {
+            .handshaking => |hs| hs.completeWrite(),
+            .established => |*c| c.session.completeWrite(),
+        }
+    }
+
+    pub fn sendApplicationData(
+        self: *ServerEngine,
+        plaintext: []const u8,
+        out: []u8,
+    ) SendError![]const u8 {
+        return switch (self.*) {
+            .handshaking => |hs| hs.sendApplicationData(plaintext, out),
+            .established => |*c| c.session.sendApplicationData(plaintext, out),
+        };
+    }
+
+    pub fn sendKeyUpdate(
+        self: *ServerEngine,
+        out: []u8,
+        request: KeyUpdateRequest,
+    ) SendError![]const u8 {
+        return switch (self.*) {
+            .handshaking => |hs| hs.sendKeyUpdate(out, request),
+            .established => |*c| c.session.sendKeyUpdate(out, request),
+        };
+    }
+
+    pub fn sendAlert(
+        self: *ServerEngine,
+        description: alert.Description,
+        out: []u8,
+    ) AlertError![]const u8 {
+        return switch (self.*) {
+            .handshaking => |hs| hs.sendAlert(description, out),
+            .established => |*c| c.session.sendAlert(description, out),
+        };
+    }
+
+    pub fn selectedAlpnProtocol(self: *const ServerEngine) ?[]const u8 {
+        return switch (self.*) {
+            .handshaking => |hs| hs.selectedAlpnProtocol(),
+            .established => |c| c.alpn,
+        };
+    }
+
+    pub fn cipherSuite(self: *const ServerEngine) tls.CipherSuite {
+        return switch (self.*) {
+            .handshaking => |hs| hs.cipherSuite(),
+            .established => |c| c.cipher_suite,
+        };
+    }
+
+    pub fn clientCertificateDer(self: *const ServerEngine) ?[]const u8 {
+        return switch (self.*) {
+            .handshaking => |hs| hs.clientCertificateDer(),
+            .established => |c| c.client_identity,
+        };
+    }
+
+    /// Swap the handshake engine for the compact session. Called once, by
+    /// `accept`, after the handshake completes and after ticket policy is
+    /// settled: `EstablishedSession` cannot issue NewSessionTickets, so a
+    /// ticket owed at this point would be silently lost (RFC 8446 §4.6.1).
+    pub fn extractEstablished(self: *ServerEngine) void {
+        const hs = self.handshakeEngine();
+        assert(hs.isConnected());
+        // Verification is done, so the caller's trust bundle is no longer
+        // borrowed. Dropping it here means the husk already holds no pointer
+        // into caller memory by the time it is deinited.
+        hs.client_cert_policy.bundle = null;
+        // Read the metadata first: extraction wipes the moved-from keys, and
+        // these three are the whole of what `Info` reports afterwards.
+        const alpn = hs.selectedAlpnProtocol();
+        const suite = hs.cipherSuite();
+        const identity = hs.clientCertificateDer();
+        self.* = .{ .established = .{
+            .session = hs.extractEstablished(),
+            .alpn = alpn,
+            .cipher_suite = suite,
+            .client_identity = identity,
+        } };
+    }
+
+    /// The scratch owns the handshake engine: `accept` deinits it. A connection
+    /// torn down mid-handshake must not deinit an engine it does not own.
+    pub fn deinit(self: *ServerEngine) void {
+        switch (self.*) {
+            .handshaking => {},
+            .established => |*c| c.session.deinit(),
+        }
+        self.* = undefined;
+    }
+};
+
 fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) type {
     comptime {
         if (config.record_storage < RecordBuffer.min_storage) @compileError(
@@ -1257,12 +1484,7 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
             trust: ClientTrust,
             io: Io,
         ) void {
-            s.hs.client_auth = mode;
-            switch (trust) {
-                .bundle => |b| s.hs.client_cert_policy.bundle = b,
-                .insecure => s.hs.client_cert_policy.insecure_no_chain_anchor = true,
-            }
-            s.hs.client_cert_policy.now_sec = Io.Timestamp.now(io, .real).toSeconds();
+            s.hs.setClientAuth(mode, trust, Io.Timestamp.now(io, .real).toSeconds());
         }
 
         fn init(io: Io, sock: net.Stream, hs: Hs) Self {
@@ -1410,6 +1632,7 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
             io: Io,
             sock: net.Stream,
             options: Options,
+            scratch: *HandshakeScratch,
         ) AcceptError!void {
             switch (role) {
                 .server => {
@@ -1445,7 +1668,7 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
                         };
                     }
 
-                    const hs: tls.ServerHandshake = .init(
+                    scratch.hs = .init(
                         .{
                             .alpn_protocols = options.alpn,
                             .hybrid_groups = options.hybrid_groups,
@@ -1455,17 +1678,23 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
                             .random = random,
                         },
                     );
+                    // The scratch owns the engine for this connection: the
+                    // Stream points at it and never deinits it, so this one
+                    // defer covers every path below, successful or not. After
+                    // extraction the engine is an empty husk whose deinit only
+                    // wipes the duplicate secret bytes it still holds.
+                    defer scratch.hs.deinit();
 
-                    s.* = .init(io, sock, hs);
+                    s.* = .init(io, sock, .{ .handshaking = &scratch.hs });
                     s.finishInit();
                     errdefer s.deinit();
 
                     s.hs.setCredentials(options.cert_chain, options.signer);
 
                     // Client trust is borrowed only while accept drives the
-                    // handshake; the established connection retains the
-                    // verified leaf, not the caller's trust bundle.
-                    defer s.hs.client_cert_policy.bundle = null;
+                    // handshake; `extractEstablished` drops the borrow, and the
+                    // established connection retains the verified leaf, not the
+                    // caller's trust bundle.
                     switch (options.client_auth) {
                         .none => {},
                         .optional => |trust| s.wireClientAuth(.optional, trust, io),
@@ -1473,6 +1702,12 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
                     }
 
                     try s.driveServerHandshake();
+
+                    // The handshake is complete and every ticket it owed has
+                    // been flushed (extractEstablished asserts that). From here
+                    // the connection carries the session, not the engine, so
+                    // its slot no longer pays for a handshake (#169).
+                    s.hs.extractEstablished();
                 },
                 .client => @compileError("accept is server-only; use connect on tls_std.Client"),
             }
@@ -1491,7 +1726,7 @@ pub fn ClientWith(comptime config: Config) type {
 
 /// A TLS 1.3 server connection with custom buffer sizing.
 pub fn ServerWith(comptime config: Config) type {
-    return StreamImpl(tls.ServerHandshake, .server, config);
+    return StreamImpl(ServerEngine, .server, config);
 }
 
 /// A TLS 1.3 client connection with default buffers (~148 KB). Self-referential
@@ -1661,6 +1896,23 @@ test "Config: buffer sizing is the whole story of the Stream footprint" {
     // exact-delta assertions below guard caller-configured buffer growth.
     try testing.expect(@sizeOf(Client) <= 152_128);
     try testing.expect(@sizeOf(Server) <= 135_360);
+
+    // #169 — a finished server connection carries the compact session, not the
+    // handshake engine. Adding the engine back must still fit the ceiling the
+    // slot used to have, which is what proves it is no longer in the slot. The
+    // engine lives in the worker's `HandshakeScratch` instead, one per worker
+    // rather than one per connection.
+    try testing.expect(
+        @sizeOf(Server) + (@sizeOf(tls.ServerHandshake) - @sizeOf(ServerEngine)) <= 135_360,
+    );
+    try testing.expect(@sizeOf(ServerEngine) < @sizeOf(tls.ServerHandshake));
+    // The engine (or the session that replaces it) is no longer per-connection
+    // state: a slot pays for whichever arm it holds, not for both.
+    // 116,536 against 135,184 before the swap: 18,648 bytes per connection,
+    // and handoff holds 10k of them (#169). The remaining engine-sized cost is
+    // the reassembly buffer, which is stage 2.
+    try testing.expect(@sizeOf(Server) <= 116_600);
+    try testing.expect(@sizeOf(ServerEngine) < @sizeOf(tls.ServerHandshake) / 8);
 
     // Retaining the peer chain for `info()` costs exactly one handshake-sized
     // buffer, which is why it is opt-in.

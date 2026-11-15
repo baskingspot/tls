@@ -139,6 +139,8 @@ const ServerCtx = struct {
     read_total: usize = 0,
     err: ?anyerror = null,
     done: Gate = .{},
+    /// Share the worker scratch across sequential connections (#169).
+    scratch: ?*tls.HandshakeScratch = null,
 
     fn fail(ctx: *ServerCtx, err: anyerror) void {
         ctx.err = err;
@@ -159,11 +161,13 @@ fn serverRun(ctx: *ServerCtx) void {
     defer key.deinit();
 
     var conn: tls.Server = undefined;
+    var own_scratch: tls.HandshakeScratch = .init;
+    const scratch = ctx.scratch orelse &own_scratch;
     conn.accept(io, streamFor(ctx.fd), .{
         .cert_chain = &.{test_cert_der},
         .signer = key.signer(),
         .alpn = ctx.alpn,
-    }) catch |err| {
+    }, scratch) catch |err| {
         ctx.err = err;
         return;
     };
@@ -355,11 +359,12 @@ fn authServerExchange(comptime Server: type, ctx: *AuthServerCtx) !void {
     defer key.deinit();
 
     var conn: Server = undefined;
+    var scratch: tls.HandshakeScratch = .init;
     conn.accept(io, streamFor(ctx.fd), .{
         .cert_chain = &.{test_cert_der},
         .signer = key.signer(),
         .client_auth = ctx.client_auth,
-    }) catch |err| {
+    }, &scratch) catch |err| {
         ctx.err = err;
         return;
     };
@@ -636,10 +641,11 @@ fn keyUpdateServerExchange(ctx: *KeyUpdateServerCtx) !void {
     defer key.deinit();
 
     var conn: tls.Server = undefined;
+    var scratch: tls.HandshakeScratch = .init;
     try conn.accept(io, streamFor(ctx.fd), .{
         .cert_chain = &.{test_cert_der},
         .signer = key.signer(),
-    });
+    }, &scratch);
     defer conn.deinit();
 
     ctx.ready.open();
@@ -1477,10 +1483,11 @@ test "accept: empty cert_chain fails and cleans up after itself" {
     defer key.deinit();
 
     var conn: tls.Server = undefined;
+    var scratch: tls.HandshakeScratch = .init;
     try testing.expectError(error.MissingCredentials, conn.accept(io, streamFor(fds[1]), .{
         .cert_chain = &.{},
         .signer = key.signer(),
-    }));
+    }, &scratch));
     // Documented as harmless after a failed accept.
     conn.deinit();
 }
@@ -1845,10 +1852,11 @@ test "accept: a header-only failure ends the handshake without waiting for a bod
     defer key.deinit();
 
     var conn: tls.Server = undefined;
+    var scratch: tls.HandshakeScratch = .init;
     const result = conn.accept(io, streamFor(fds[0]), .{
         .cert_chain = &.{test_cert_der},
         .signer = key.signer(),
-    });
+    }, &scratch);
     peer.release.open();
     thread.join();
 
@@ -2204,4 +2212,34 @@ test "peer identity: a verified chain decodes to a subject and SANs" {
 
     conn.close();
     server.join();
+}
+
+// #169 — one scratch serves connection after connection. `accept` initializes
+// the engine on entry and consumes it on exit, so a worker's accept loop reuses
+// one scratch for every connection it ever handshakes.
+test "scratch: one worker scratch serves sequential handshakes" {
+    const io = testIo();
+    var scratch: tls.HandshakeScratch = .init;
+
+    for (0..2) |_| {
+        const fds = try socketPair();
+        var sctx: ServerCtx = .{ .fd = fds[1], .steps = &.{.drain}, .scratch = &scratch };
+        const server = try spawnServer(&sctx);
+
+        var conn: tls.Client = undefined;
+        try conn.connect(io, streamFor(fds[0]), .{
+            .host = test_host,
+            .verify = .insecure,
+        });
+        defer conn.deinit();
+        defer _ = std.c.close(fds[0]);
+
+        // A completed handshake, not just an initialized engine: the second
+        // round is the proof that the scratch survived an extraction.
+        try testing.expectEqual(tls_core.CipherSuite.aes_128_gcm_sha256, conn.info().cipher_suite);
+
+        conn.close();
+        server.join();
+        try testing.expectEqual(@as(?anyerror, null), sctx.err);
+    }
 }

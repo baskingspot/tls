@@ -597,12 +597,16 @@ pub fn serveOne(io: std.Io, listener: *std.Io.net.Server,
     var key: tls_core.signature.PrivateKey = try .fromP256Scalar(scalar);
     defer key.deinit();
 
+    // One per worker, not per connection: the handshake engine lives here so a
+    // finished connection does not carry it (#169).
+    var scratch: tls.HandshakeScratch = .init;
+
     var conn: tls.Server = undefined;
     try conn.accept(io, sock, .{
         .cert_chain = &.{cert_der}, // leaf-first DER
         .signer = key.signer(),     // key must outlive this accept() call
         .alpn = &.{"http/1.1"},
-    });
+    }, &scratch);
     defer conn.deinit();
 
     const r = conn.reader();
@@ -614,6 +618,20 @@ pub fn serveOne(io: std.Io, listener: *std.Io.net.Server,
     conn.close(); // flushes for you
 }
 ```
+
+`accept` initializes the handshake engine inside `scratch`, drives the
+handshake there, and replaces it with the 856-byte established session before it
+returns. So a finished `tls.Server` is 116,536 bytes with the default buffers
+instead of 135,184, and the ~19 KiB handshake engine is one per worker rather
+than one per connection. A server holding 10,000 idle connections saves about
+186 MB of address space.
+
+Declare the scratch beside the accept loop and keep it for the worker's life.
+A worker handshakes one connection at a time, which a blocking accept loop
+already does; `accept` reinitializes the engine on entry, so the same scratch
+serves every connection. What the scratch no longer does is keep the
+ClientHello reassembly buffer, which is still per-connection; pooling it is the
+second half of #169.
 
 ### Composing with a hypothetical `http.zig`
 
