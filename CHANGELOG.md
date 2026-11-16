@@ -5,6 +5,8 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-16
+
 ### Changed
 
 - `tls_nonblocking.SocketClient.Options.cancel` now covers the connection, not
