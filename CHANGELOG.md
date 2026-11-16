@@ -5,6 +5,16 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `tls_nonblocking.SocketClient.Options.cancel` now covers the connection, not
+  only the handshake: the hook is consulted between application-data reads and
+  a pending read ends with `error.Canceled` within the 100 ms poll interval.
+  This reverses 0.4.2, where the hook was cleared when the handshake ended. The
+  `context` pointer must now outlive the `SocketClient`; a hook scoped to the
+  connect call is a use-after-free. With a hook set, every application read
+  takes the batch read path with a 100 ms cap instead of one plain read.
+
 ## [0.4.2] - 2026-11-15
 
 ### Added

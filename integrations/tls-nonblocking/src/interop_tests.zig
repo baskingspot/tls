@@ -496,3 +496,67 @@ fn openSsl(target: []const u8) !void {
     try testing.expect(term == .exited);
     try testing.expectEqual(@as(u8, 0), term.exited);
 }
+
+const ApplicationCancel = struct {
+    start: i96 = 0,
+    /// Cancels once this much time has passed; moving it out of reach turns
+    /// the hook back into a keeper.
+    after_ns: i96,
+    calls: usize = 0,
+
+    fn shouldCancel(context: *anyopaque) bool {
+        const self: *ApplicationCancel = @ptrCast(@alignCast(context));
+        self.calls += 1;
+        const now = Io.Timestamp.now(testing.io, .awake).nanoseconds;
+        return now - self.start >= self.after_ns;
+    }
+};
+
+// A watcher has to be able to stop a read that is already waiting, and the
+// connection has to survive the cancel. The peer answers only after "ping", so
+// the first read has nothing to deliver and no deadline to end it.
+test "SocketClient: a cancel ends a blocked application read and the stream resumes" {
+    // A read already waiting can only be cut where the runtime can bound it.
+    if (comptime !SocketClient.polled_cancel) return error.SkipZigTest;
+
+    var context: Context = .{ .listener = try listen(), .failure = null };
+    defer context.listener.deinit(testing.io);
+    const thread = try std.Thread.spawn(.{}, Context.run, .{&context});
+    defer thread.join();
+
+    const socket = try connectTo(&context.listener);
+    defer socket.close(testing.io);
+
+    var state: ApplicationCancel = .{ .after_ns = 150 * std.time.ns_per_ms };
+    state.start = Io.Timestamp.now(testing.io, .awake).nanoseconds;
+    var client: SocketClient = undefined;
+    try client.init(testing.allocator, testing.io, socket, .{
+        .insecure_no_chain_anchor = true,
+        .host_name = "ztls.server.test",
+        .now_sec = 1_790_000_000,
+        .alpn = &.{"h2"},
+        .cancel = .{ .context = &state, .shouldCancel = ApplicationCancel.shouldCancel },
+    });
+    defer client.deinit();
+    try testing.expectEqualStrings("h2", client.selectedAlpn().?);
+
+    const started = Io.Timestamp.now(testing.io, .awake).nanoseconds;
+    var byte: [1]u8 = undefined;
+    try testing.expectError(error.ReadFailed, client.reader().readSliceAll(&byte));
+    const elapsed = Io.Timestamp.now(testing.io, .awake).nanoseconds - started;
+    try testing.expectEqual(
+        @as(?SocketClient.ReadError, error.Canceled),
+        client.readError(),
+    );
+    try testing.expect(!client.expired());
+    try testing.expect(elapsed < std.time.ns_per_s);
+
+    // The cancel abandoned one read, not the connection: the exchange runs.
+    state.after_ns = std.math.maxInt(i96);
+    try client.writer().writeAll("ping");
+    var reply: [4]u8 = undefined;
+    try client.reader().readSliceAll(&reply);
+    try testing.expectEqualStrings("ping", &reply);
+    try testing.expect(state.calls >= 2);
+    if (context.failure) |err| return err;
+}
