@@ -6,6 +6,7 @@
 //! is intentionally boring; the point is proving tls's Sans-I/O record driver
 //! composes with io_uring for the TLS data path.
 const std = @import("std");
+const mem = std.mem;
 const Io = std.Io;
 const IoUring = std.os.linux.IoUring;
 const print = std.debug.print;
@@ -123,7 +124,7 @@ fn serverRun(ctx: *ServerCtx) !void {
             const ev = try hs.handleRecord(record, &out.buffer);
             switch (ev) {
                 .application_data => |data| {
-                    if (!std.mem.eql(u8, data, ping(&msg_buf, round))) {
+                    if (!mem.eql(u8, data, ping(&msg_buf, round))) {
                         return error.UnexpectedPing;
                     }
                     const rec = try hs.sendApplicationData(pong(&msg_buf, round), &out.buffer);
@@ -212,7 +213,7 @@ fn clientRun(io: Io, client_keypair: tls.x25519.KeyPair, actual_port: u16) !void
         if (n == 0) return error.ServerClosed;
         while (try rb.next()) |record| switch (try hs.handleRecord(record, &out.buffer)) {
             .application_data => |data| {
-                if (!std.mem.eql(u8, data, pong(&msg_buf, round))) {
+                if (!mem.eql(u8, data, pong(&msg_buf, round))) {
                     return error.UnexpectedPong;
                 }
                 print("[client] received: {s}", .{data});
@@ -269,9 +270,9 @@ fn recvIntoRecordBuffer(ring: *IoUring, fd: std.posix.fd_t, rb: *tls.RecordBuffe
 }
 
 fn ping(buf: []u8, round: usize) []const u8 {
-    return std.fmt.bufPrint(buf, "ping {d}\n", .{round}) catch unreachable;
+    return mem.print(buf, "ping {d}\n", .{round}) catch unreachable;
 }
 
 fn pong(buf: []u8, round: usize) []const u8 {
-    return std.fmt.bufPrint(buf, "pong {d}\n", .{round}) catch unreachable;
+    return mem.print(buf, "pong {d}\n", .{round}) catch unreachable;
 }

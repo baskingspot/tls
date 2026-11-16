@@ -2,7 +2,7 @@
     .name = .tls,
     .version = "0.4.2",
     .fingerprint = 0xacfd1db3288cfd9d,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // Production: fixed-capacity containers and memory scans shared with
         // the rest of the baskingspot tree. Not lazy — the library imports it.

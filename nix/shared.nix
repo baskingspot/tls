@@ -62,7 +62,7 @@ rec {
   openssl = pkgs.openssl_3_6;
 
   # commonHook is interpolated into backendShell's shellHook and used directly
-  # by the base shell. It isolates both Zig caches by compiler version. The
+  # by the base shell. It isolates the Zig caches by compiler version. The
   # BoringSSL path references boringsslPc when a shell calls commonHook.
   commonHook = zig-tools: ''
     unset NIX_CFLAGS_COMPILE
@@ -71,12 +71,10 @@ rec {
     unset ZIG_GLOBAL_CACHE_DIR
     export ZIG_LOCAL_CACHE_DIR=.zig-cache/${zig-tools.zig.version}
     export ZIG_GLOBAL_CACHE_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/zig/${zig-tools.zig.version}"
-    # Zig 0.16.0 zip-dep fetch writes tmp/<random>.zip under the global cache
-    # without creating tmp/ (or the cache root) first, so a fresh cache fails
-    # with 'failed to create temporary zip file: FileNotFound' — ziglang
-    # #31964, fixed on master, unreleased. This broke the TLS-Anvil suite
-    # workflows for every fresh runner since the 0.16 migration. No-op once
-    # the pinned zig carries the fix; drop this line then.
+    # Zip-dep fetch writes tmp/<random>.zip under the global cache without
+    # creating tmp/ first on a fresh cache, which fails with 'failed to create
+    # temporary zip file: FileNotFound' (ziglang #31964). Keep the directory
+    # until the pinned Zig carries the fix.
     mkdir -p "$ZIG_GLOBAL_CACHE_DIR/tmp"
     export TLS_OPENSSL_PKG_CONFIG_PATH=${openssl.dev}/lib/pkgconfig
     export TLS_OPENSSL_LIB_DIR=${openssl.out}/lib
@@ -125,7 +123,7 @@ rec {
     );
 
   # The compiler a shell is built around, from the version string the flake
-  # module uses ("0.16", "0.17"). commonHook keys the two Zig caches off this
+  # module uses. commonHook keys the Zig cache off this
   # value, so a shell that composes another toolchain must pass its own or the
   # compiler and the cache dirs disagree. zls comes from the module's shell,
   # not from here.

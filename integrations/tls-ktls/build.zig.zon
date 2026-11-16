@@ -2,7 +2,7 @@
     .name = .tls_ktls,
     .version = "0.0.0",
     .fingerprint = 0x8940f5449c710ce2,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // In-tree development dependency. External consumers fetch the root
         // package and import its Linux-only `tls_ktls` module; see #79.

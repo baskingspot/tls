@@ -44,10 +44,9 @@ reports the authenticated choice; callers decide which protocols to accept.
 
 `Options.deadline_ns` and `setDeadline` use absolute monotonic nanoseconds for
 read waits, including the eager handshake. They do not bound writes. `TimedOut`
-sets `expired`; cancellation and `DeadlineUnsupported` do not. Zig 0.16 can
-report an already-expired deadline but reports a future one as
-`DeadlineUnsupported`. `readError` and `writeError` recover the cause collapsed
-by the std interfaces. `peerAlert` retains the peer's exact alert after
+sets `expired`; cancellation does not. An Io implementation that cannot wait for
+a socket read concurrently returns `error.ConcurrencyUnavailable`.
+`readError` and `writeError` recover the cause collapsed by the std interfaces. `peerAlert` retains the peer's exact alert after
 `error.PeerAlert`. Bare transport EOF is `UnexpectedEof`. An authenticated
 `close_notify` ends the plaintext reader with `error.EndOfStream`.
 

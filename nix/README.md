@@ -6,7 +6,7 @@ DevShell helpers for the tls flake.
 
 - `shared.nix` — a plain function `{ pkgs, lib }: rec { ... }` holding the
   interdependent devShell helpers (`commonPackages`, `commonHook`,
-  `boringsslPc`, `backendShell`, the zig 0.16 tool set, `ast-grep`,
+  `boringsslPc`, `backendShell`, the zig 0.17 tool set, `ast-grep`,
   `rustToolchain`, `wrangler`, and the shared `opensslBackend` literal).
   `flake.nix` imports it once and inherits what it needs. `pkgs` must already
   carry the mattware + rust-overlay overlays (applied in `flake.nix`); this file

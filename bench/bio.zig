@@ -1,4 +1,5 @@
 const std = @import("std");
+const mem = std.mem;
 const assert = std.debug.assert;
 
 const testingx = @import("testingx");
@@ -149,7 +150,7 @@ pub fn benchmarkHandshake(b: *testingx.B) !void {
     @setEvalBranchQuota(1000000);
     var name_buf: [80]u8 = undefined;
     inline for (suites) |suite| {
-        const name = try std.fmt.bufPrint(&name_buf, "impl=openssl/suite={s}", .{suite});
+        const name = try mem.print(&name_buf, "impl=openssl/suite={s}", .{suite});
         _ = try b.run(name, benchHandshake(suite));
     }
 }
@@ -208,7 +209,7 @@ pub fn benchmarkAppClientToServer(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (suites) |suite| {
         inline for (sizes) |size| {
-            const name = try std.fmt.bufPrint(
+            const name = try mem.print(
                 &name_buf,
                 "impl=openssl/suite={s}/size={d}",
                 .{ suite, size },
@@ -223,7 +224,7 @@ pub fn benchmarkAppServerToClient(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (suites) |suite| {
         inline for (sizes) |size| {
-            const name = try std.fmt.bufPrint(
+            const name = try mem.print(
                 &name_buf,
                 "impl=openssl/suite={s}/size={d}",
                 .{ suite, size },
@@ -238,7 +239,7 @@ pub fn benchmarkAppPingPong(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (suites) |suite| {
         inline for (sizes) |size| {
-            const name = try std.fmt.bufPrint(
+            const name = try mem.print(
                 &name_buf,
                 "impl=openssl/suite={s}/size={d}",
                 .{ suite, size },

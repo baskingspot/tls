@@ -73,25 +73,19 @@ When already inside the devshell, run commands directly. Don't wrap normal
 checks in `nix develop --command` unless there is evidence the current shell is
 missing the updated environment.
 
-The tree builds on Zig 0.16 and 0.17. `nix develop` is 0.17 (the current
-stable); `nix develop .#zig-old` is 0.16 (the previous one, and the minimum in
-`build.zig.zon`). `just check` runs the Debug, ReleaseSafe, and ReleaseFast
-suites on whichever shell you are in; CI runs `ci` on 0.17 and `check` on 0.16.
-`just lint` uses `ziglint-0-16`, so a 0.17-only deprecation does not fail a tree
-that must build on 0.16.
+The tree builds on Zig 0.17, the current stable. `nix develop` is the one shell.
+`just check` runs the Debug, ReleaseSafe, and ReleaseFast suites; CI runs `ci`,
+`check`, and the distribution smoke on 0.17. `just lint` uses `ziglint-0-17`.
 
-The fmt trap: 0.17's `zig fmt` rewrites `@intFromEnum`/`@enumFromInt` to
-`@backingInt`/`@fromBackingInt`, and 0.16 cannot parse those. Both builtins live
-in `src/compat.zig` inside a `// zig fmt: off` region, and every call site uses
-`compat.enumToInt`/`compat.enumFromInt`. Every other 0.17 difference in this
-tree is a shape probe (`@hasField`, `@hasDecl`) or a shim in the same file.
+`src/compat.zig` holds the few API adapters the tree uses (backing-integer
+conversions, enum field metadata, error-set names, declaration and parameter
+shapes). They target 0.17 and are private to the module.
 
 `just ci` is the gate before a push, run by CI and by hand. `just test` and
 `just integrations-ci` are subsets of it: the conformance subproject has its
 own call sites, so neither compiles anything under `conformance/`. A public
 signature change can pass both and still break the push. `distribution-ci` runs
-as its own job in the `zig-old` shell: the distribution smoke tests the minimum
-supported Zig.
+as its own job on 0.17: the distribution smoke tests the minimum supported Zig.
 
 There is no pre-push hook, deliberately. A local hook that runs the full gate
 duplicates CI, blocks the push for as long as the gate takes, and in practice

@@ -65,7 +65,7 @@ const Suite = enum {
 };
 
 fn nameBuf(buf: []u8, suite: Suite, size: usize) ![]const u8 {
-    return fmt.bufPrint(buf, "{s}/{d}", .{ suite.name(), size });
+    return mem.print(buf, "{s}/{d}", .{ suite.name(), size });
 }
 
 pub fn benchmarkParseHeader(b: *testingx.B) !void {
@@ -247,7 +247,7 @@ fn benchTlsHandshake(comptime suite: Suite) testingx.Function {
 pub fn benchmarkHandshake(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
-        const name = try fmt.bufPrint(&name_buf, "impl=tls/suite={s}", .{suite.name()});
+        const name = try mem.print(&name_buf, "impl=tls/suite={s}", .{suite.name()});
         _ = try b.run(name, benchTlsHandshake(suite));
     }
 }
@@ -687,7 +687,7 @@ pub fn benchmarkAppClientToServer(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
-            const name = try fmt.bufPrint(
+            const name = try mem.print(
                 &name_buf,
                 "impl=tls/suite={s}/size={d}",
                 .{ suite.name(), size },
@@ -701,7 +701,7 @@ pub fn benchmarkAppServerToClient(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
-            const name = try fmt.bufPrint(
+            const name = try mem.print(
                 &name_buf,
                 "impl=tls/suite={s}/size={d}",
                 .{ suite.name(), size },
@@ -782,7 +782,7 @@ pub fn benchmarkAppPingPong(b: *testingx.B) !void {
     var name_buf: [80]u8 = undefined;
     inline for (all_suites) |suite| {
         inline for (sizes) |size| {
-            const name = try fmt.bufPrint(
+            const name = try mem.print(
                 &name_buf,
                 "impl=tls/suite={s}/size={d}",
                 .{ suite.name(), size },

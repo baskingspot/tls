@@ -132,7 +132,7 @@ fn captureSuite(io: Io, arena: Allocator, suite: []const u8, port: u16) ![]u8 {
 }
 
 fn startServer(io: Io, arena: Allocator, suite: []const u8, port: u16) !std.process.Child {
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
+    const port_str = try arena.print("{d}", .{port});
     return std.process.spawn(io, .{
         .argv = &.{
             "openssl",                   "s_server",
