@@ -21,7 +21,7 @@ The library is in production use. Pillar 3 (performance — the project's reason
 Concretely, the position to lean into:
 - Sans-I/O: you feed it bytes, it gives you bytes back. No sockets, no threads, no I/O opinions. Composable into anything.
 - No tls-owned allocations in the engine: caller owns every buffer. Embeddable, predictable, no hidden heap.
-- Zig 0.16: memory-safety-adjacent, no C footguns, no allocator in the hot path.
+- Zig 0.17: memory-safety-adjacent, no C footguns, no allocator in the hot path.
 - TLS 1.3 only: no TLS 1.2 legacy weight, no DTLS, no Windows portability tax.
 - Performance is the reason this exists — but say so honestly: the harness exists, the methodology is being hardened, and the numbers are not yet the final word. Never claim a win the proven evidence does not support.
 

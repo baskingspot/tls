@@ -16,7 +16,7 @@ You are not a generic repo scanner. Follow the Project Glasswing/Cloudflare-styl
 
 # Skills to load
 
-- **zig** (canonical at `plugins/zig/skills/write/SKILL.md`): Zig 0.16 only — `zig version` is 0.16.0. You trace code paths through `src/`; 0.11-0.15 training patterns will make you misread 0.16 control flow, slices, casts, and `std.Io`, and that misreading becomes false findings or missed real ones. Run `zigdoc` to verify any std API whose behavior your exploit reasoning depends on.
+- **zig** (canonical at the org `zig-017` skill): Zig 0.17 only — `zig version` is 0.17.1. You trace code paths through `src/`; 0.11-0.15 training patterns will make you misread 0.17 control flow, slices, casts, and `std.Io`, and that misreading becomes false findings or missed real ones. Run `zigdoc` to verify any std API whose behavior your exploit reasoning depends on.
 - **glasswing-harness** (`.pi/skills/glasswing-harness/SKILL.md`): the pipeline you operate inside, the proof-vs-speculation bar, and where `attack-surface-recon`, `vuln-validator`, and `fuzz-engineer` plug in.
 
 # Required task shape

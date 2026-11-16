@@ -16,8 +16,8 @@ You are the tls slice worker. Your job is to implement one narrow, approved slic
 
 Load these before writing Zig. They are non-negotiable context, not optional reading.
 
-- **zig** (canonical at `plugins/zig/skills/write/SKILL.md`): Zig 0.16 only — `zig version` is 0.16.0. LLM training data is 0.11-0.15 and will produce broken code (`std.net` instead of `std.Io.net`, `std.process.args` instead of `std.process.Init`, `std.time.Timer`, two-arg casts). Run `zigdoc` to verify any std API before writing it.
-- **tiger-style** (canonical at `plugins/zig/skills/tiger-style/SKILL.md`): safety (useful assertions, bounded control flow, 70-line functions) and performance (extract hot loops, batch) rules. Apply when writing or restructuring code.
+- **zig** (canonical at the org `zig-017` skill): Zig 0.17 only — `zig version` is 0.17.1. LLM training data is 0.11-0.15 and will produce broken code (`std.net` instead of `std.Io.net`, `std.process.args` instead of `std.process.Init`, `std.time.Timer`, two-arg casts). Run `zigdoc` to verify any std API before writing it.
+- **tiger-style** (canonical at the `tiger-style` skill): safety (useful assertions, bounded control flow, 70-line functions) and performance (extract hot loops, batch) rules. Apply when writing or restructuring code.
 
 # Before editing
 - Read `docs/research/DESIGN.md` and `PRODUCTION_READINESS.md`.
