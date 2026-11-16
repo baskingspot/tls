@@ -80,8 +80,13 @@ const ext_supported_versions_len = ext_header_len + 1 + 2;
 const ext_psk_kem_len = ext_header_len + 1 + 1;
 const ext_sig_algs_len = ext_header_len + 2 + sig_scheme_count * 2;
 const ext_sig_algs_cert_len = ext_header_len + 2 + cert_sig_scheme_count * 2;
+/// X25519 is the default first-flight group. An approved-only build does not
+/// advertise it (FIPS 140-3 IG: Curve25519 is not approved for key agreement),
+/// so P-256 carries the first flight there.
+const include_x25519: bool = backend.capabilities.client_x25519;
+
 comptime {
-    assert(backend.capabilities.client_x25519);
+    assert(include_x25519 or backend.capabilities.client_p256);
 }
 
 fn alpnExtDataLen(protocols: AlpnProtocols) AlpnError!u16 {
@@ -115,12 +120,13 @@ fn groupCount(
     include_p384: bool,
     hybrid_groups: []const NamedGroup,
 ) usize {
-    return 1 + @as(usize, @intFromBool(include_p256)) +
+    return @as(usize, @intFromBool(include_x25519)) +
+        @as(usize, @intFromBool(include_p256)) +
         @as(usize, @intFromBool(include_p384)) + hybrid_groups.len;
 }
 
 fn keySharesLen(include_p256: bool, include_p384: bool, kem: ?KemShare) usize {
-    return x25519_key_share_len +
+    return (if (include_x25519) x25519_key_share_len else 0) +
         (if (include_p256) p256_key_share_len else 0) +
         (if (include_p384) p384_key_share_len else 0) +
         (if (kem) |k| 2 + 2 + k.data.len else 0);
@@ -437,7 +443,7 @@ pub fn encodeRetryAfterHrrWithHybridAndPsk(
     w.appendAssumeCapacity(ExtensionType, .supported_groups);
     w.appendAssumeCapacity(u16, @intCast(2 + groupCount(true, include_p384, hybrid_groups) * 2));
     w.appendAssumeCapacity(u16, @intCast(groupCount(true, include_p384, hybrid_groups) * 2));
-    w.appendAssumeCapacity(NamedGroup, .x25519);
+    if (comptime include_x25519) w.appendAssumeCapacity(NamedGroup, .x25519);
     w.appendAssumeCapacity(NamedGroup, .secp256r1);
     if (include_p384) w.appendAssumeCapacity(NamedGroup, .secp384r1);
     for (hybrid_groups) |group| w.appendAssumeCapacity(NamedGroup, group);
@@ -924,7 +930,7 @@ pub fn encodeWithPskAndHybridGroups(
     const group_count = groupCount(include_p256, include_p384, hybrid_groups);
     w.appendAssumeCapacity(u16, @intCast(2 + group_count * 2));
     w.appendAssumeCapacity(u16, @intCast(group_count * 2));
-    w.appendAssumeCapacity(NamedGroup, .x25519);
+    if (comptime include_x25519) w.appendAssumeCapacity(NamedGroup, .x25519);
     if (include_p256) w.appendAssumeCapacity(NamedGroup, .secp256r1);
     if (include_p384) w.appendAssumeCapacity(NamedGroup, .secp384r1);
     for (hybrid_groups) |group| w.appendAssumeCapacity(NamedGroup, group);
@@ -947,9 +953,11 @@ pub fn encodeWithPskAndHybridGroups(
     w.appendAssumeCapacity(ExtensionType, .key_share);
     w.appendAssumeCapacity(u16, @intCast(2 + shares_len));
     w.appendAssumeCapacity(u16, @intCast(shares_len));
-    w.appendAssumeCapacity(NamedGroup, .x25519);
-    w.appendAssumeCapacity(u16, x25519.public_length);
-    w.appendSliceAssumeCapacity(&public_key.data);
+    if (comptime include_x25519) {
+        w.appendAssumeCapacity(NamedGroup, .x25519);
+        w.appendAssumeCapacity(u16, x25519.public_length);
+        w.appendSliceAssumeCapacity(&public_key.data);
+    }
     if (public_key_p256) |key| {
         w.appendAssumeCapacity(NamedGroup, .secp256r1);
         w.appendAssumeCapacity(u16, p256.public_length);
@@ -1399,7 +1407,7 @@ fn encodeInternal(
     const group_count = groupCount(include_p256, include_p384, hybrid_groups);
     w.appendAssumeCapacity(u16, @intCast(2 + group_count * 2));
     w.appendAssumeCapacity(u16, @intCast(group_count * 2));
-    w.appendAssumeCapacity(NamedGroup, .x25519);
+    if (comptime include_x25519) w.appendAssumeCapacity(NamedGroup, .x25519);
     if (include_p256) w.appendAssumeCapacity(NamedGroup, .secp256r1);
     if (include_p384) w.appendAssumeCapacity(NamedGroup, .secp384r1);
     for (hybrid_groups) |group| w.appendAssumeCapacity(NamedGroup, group);
@@ -1432,9 +1440,11 @@ fn encodeInternal(
     w.appendAssumeCapacity(ExtensionType, .key_share);
     w.appendAssumeCapacity(u16, @intCast(2 + shares_len));
     w.appendAssumeCapacity(u16, @intCast(shares_len));
-    w.appendAssumeCapacity(NamedGroup, .x25519);
-    w.appendAssumeCapacity(u16, x25519.public_length); // key_exchange length
-    w.appendSliceAssumeCapacity(&public_key.data);
+    if (comptime include_x25519) {
+        w.appendAssumeCapacity(NamedGroup, .x25519);
+        w.appendAssumeCapacity(u16, x25519.public_length); // key_exchange length
+        w.appendSliceAssumeCapacity(&public_key.data);
+    }
     if (public_key_p256) |key| {
         w.appendAssumeCapacity(NamedGroup, .secp256r1);
         w.appendAssumeCapacity(u16, p256.public_length); // key_exchange length
@@ -1626,6 +1636,9 @@ pub fn parseWithExtensions(msg: []const u8, opts: ParseOptions) ParseError!Parse
     return parsed;
 }
 
+/// The pre-P-256 encoders take an X25519 key and emit only that share, so the
+/// wire-layout assertions built on them describe the default build. An
+/// approved-only build carries a P-256 first flight instead.
 fn clientHelloWithSniForTest(out: []u8, name: ?[]const u8) ![]const u8 {
     const base = try encode(out, .zero, .zero, null, &.{});
     const list_len = if (name) |n| 3 + n.len else 0;

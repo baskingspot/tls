@@ -39,13 +39,14 @@ the backend family from those headers at compile time:
 
 ```sh
 PKG_CONFIG_PATH=/path/to/lib/pkgconfig zig build
-zig build -Dcrypto-fips=true
+zig build -Dcrypto-approved-only=true
 ```
 
 `OPENSSL_IS_AWSLC` identifies AWS-LC. `OPENSSL_IS_BORINGSSL` identifies
-BoringSSL. The absence of both macros identifies OpenSSL. The FIPS option
-narrows OpenSSL or AWS-LC capabilities. It does not select a different library.
-BoringSSL rejects the FIPS option.
+BoringSSL. The absence of both macros identifies OpenSSL. The approved-only
+option narrows OpenSSL or AWS-LC capabilities to approved algorithms. It does
+not select a different library, does not enable a provider, and is not a
+validation claim. BoringSSL rejects the option.
 
 The rest of ztls imports one backend-agnostic module (`src/crypto/`). Each
 backend is one implementation file behind the same Zig interface. AWS-LC and
@@ -175,9 +176,10 @@ the provider import, and classical/ML-KEM shared-secret concatenation. The
 three implemented groups are X25519MLKEM768 (`0x11ec`),
 SecP256r1MLKEM768 (`0x11eb`), and SecP384r1MLKEM1024 (`0x11ed`). OpenSSL uses
 its provider EVP KEM API; AWS-LC and BoringSSL use their pure ML-KEM EVP APIs.
-The non-FIPS capability tables advertise all three groups. The
-`openssl-fips` and `aws-lc-fips` identities advertise none and reject explicit
-hybrid configuration instead of downgrading.
+The default capability tables advertise all three groups. The
+`openssl-approved` and `aws-lc-approved` identities advertise none and reject
+explicit hybrid configuration instead of downgrading, because the RFC 10024
+composition is this library's construction rather than an approved scheme.
 
 ### 4. Signatures and signing
 
@@ -229,15 +231,18 @@ pub const capabilities = struct {
     pub const suites: []const Suite = ...;
     pub const groups: []const NamedGroup = ...;
     pub const sig_schemes: []const SignatureScheme = ...;
-    pub const fips: bool = build_options.crypto_fips;
+    pub const approved_only: bool = build_options.crypto_approved_only;
     pub const pq: bool = ...; // backend+version gated
 };
 ```
 
-FIPS posture is explicit build-time policy through `-Dcrypto-fips=true`. The
-flag narrows the capability table. It does not prove OpenSSL FIPS-provider
-activation or select an AWS-LC FIPS library. The caller must configure the
-matching provider or library. BoringSSL does not support this policy identity.
+Algorithm policy is explicit at build time through
+`-Dcrypto-approved-only=true`. The flag narrows the capability table to
+approved algorithms. It does not prove OpenSSL FIPS-provider activation or
+select an AWS-LC FIPS library, and it does not put the library's own crypto
+inside a validated module: verification, the key schedule, all randomness, and
+on OpenSSL the transcript hash and EC key construction run in-tree. BoringSSL
+does not support this policy identity.
 
 ### 6. Memory ownership and backend allocations
 

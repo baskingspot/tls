@@ -51,8 +51,8 @@ choose:
 
 All modules use the same libcrypto headers and library, selected through
 `PKG_CONFIG_PATH`. The compiler infers OpenSSL, AWS-LC, or BoringSSL from the
-headers. Add `.@"crypto-fips" = true` only for an explicitly configured FIPS
-build.
+headers. Add `.@"crypto-approved-only" = true` to negotiate only approved
+algorithms; it is an algorithm policy, not a FIPS validation claim.
 
 The integration directories keep standalone manifests for in-tree development.
 External consumers depend only on the root package.
@@ -179,10 +179,12 @@ Crypto primitives come from a libcrypto backend, selected at build time:
 | BoringSSL | Supported; selected by its `libcrypto.pc` and headers |
 
 All three RFC 10024 groups use provider-backed pure ML-KEM with engine-owned
-hybrid composition on OpenSSL, AWS-LC, and BoringSSL. The FIPS backend
-identities do not advertise them. `-Dcrypto-fips=true` selects the FIPS
-capability identity for OpenSSL or AWS-LC. It does not verify runtime
-FIPS-provider activation. A BoGo conformance runner is deferred.
+hybrid composition on OpenSSL, AWS-LC, and BoringSSL. Approved-only builds do
+not advertise them: FIPS 203 approves ML-KEM, but the RFC 10024 composition is
+this library's own construction. `-Dcrypto-approved-only=true` narrows
+negotiation to approved algorithms for OpenSSL or AWS-LC. It is not a
+validation: several operations run outside the linked module, and
+`PRODUCTION_READINESS.md` lists them. A BoGo conformance runner is deferred.
 
 # The buffer model
 
@@ -619,9 +621,9 @@ After the handshake, `selectedAlpnProtocol()` returns the negotiated protocol (o
 
 ## RFC 10024 hybrid key exchange
 
-Hybrid groups are opt-in. The non-FIPS OpenSSL, AWS-LC, and BoringSSL backends support all three RFC 10024 groups. The provider supplies pure ML-KEM operations. The engine owns group negotiation and classical-secret composition. FIPS backend identities advertise no hybrid groups.
+Hybrid groups are opt-in. The default OpenSSL, AWS-LC, and BoringSSL backends support all three RFC 10024 groups. The provider supplies pure ML-KEM operations. The engine owns group negotiation and classical-secret composition. Approved-only builds advertise no hybrid groups and no X25519, so a client sends a P-256 first flight.
 
-`tls.capabilities.active_backend` identifies the inferred backend and explicit FIPS policy. `tls.capabilities.is_fips` reports compile-time FIPS narrowing. It does not prove the provider runtime mode. `supportsHybridGroup(role, group)` reports role support. Provider operations can still fail at runtime.
+`tls.capabilities.active_backend` identifies the inferred backend and the build's algorithm policy. `tls.capabilities.approved_only` reports compile-time narrowing. It does not prove the provider runtime mode. `supportsGroup(role, group)`, `supportsHybridGroup(role, group)`, and `supportsCipherSuite(suite)` report what the build advertises. Provider operations can still fail at runtime.
 
 Start with one group:
 

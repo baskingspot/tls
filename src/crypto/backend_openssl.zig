@@ -52,32 +52,35 @@ pub const capabilities = struct {
     };
 };
 
-/// FIPS 140-3 narrowed capability table. `-Dcrypto-fips=true` selects this
-/// table when OpenSSL headers are active. The caller is responsible for ensuring
-/// the linked libcrypto is actually in FIPS mode (e.g. FIPS provider loaded).
-/// No runtime provider probing is performed by tls.
+/// Approved-algorithm capability table. `-Dcrypto-approved-only=true` selects
+/// this table when OpenSSL headers are active.
 ///
-/// Signature verification is outside the validated module, so this table
-/// narrows the schemes but does not put verification inside the boundary:
-/// certificate-chain and CertificateVerify signatures verify in-tree (#183).
-pub const capabilities_fips = struct {
-    // FIPS 140-3 does not approve ChaCha20-Poly1305 for TLS 1.3.
+/// This narrows negotiation to algorithms a NIST-approved FIPS policy covers.
+/// It is not a validation claim: tls is not a FIPS 140-3 validated module, and
+/// signature verification, the TLS key schedule, all randomness, and (on
+/// OpenSSL) the transcript hash and EC key construction run outside the linked
+/// module. `PRODUCTION_READINESS.md` lists what runs where.
+pub const capabilities_approved = struct {
+    // ChaCha20-Poly1305 is not a NIST-approved algorithm.
     pub const cipher_suites: []const CipherSuite = &.{
         .aes_128_gcm_sha256,
         .aes_256_gcm_sha384,
     };
 
-    pub const client_x25519 = true;
     pub const client_p256 = true;
     pub const client_p384 = true;
-    // FIPS 140-3 does not approve ML-KEM (NIST FIPS 203 is not yet in the
-    // 140-3 validated algorithms list as of 2026-07).
+    // FIPS 140-3 IG: "Curves that are included in SP 800-186 but not included
+    // in SP 800-56Arev3 are not approved for key agreement". X25519 is one of
+    // them, so an approved-only build must not advertise it.
+    pub const client_x25519 = false;
+    // FIPS 203 approves ML-KEM, but the RFC 10024 hybrid composition is this
+    // library's own construction and is not an approved scheme.
     pub const client_x25519_mlkem768 = false;
     pub const client_secp256r1_mlkem768 = false;
     pub const client_secp384r1_mlkem1024 = false;
-    pub const server_x25519 = true;
     pub const server_p256 = true;
     pub const server_p384 = true;
+    pub const server_x25519 = false;
     pub const server_x25519_mlkem768 = false;
     pub const server_secp256r1_mlkem768 = false;
     pub const server_secp384r1_mlkem1024 = false;
@@ -89,11 +92,16 @@ pub const capabilities_fips = struct {
         .rsa_pss_rsae_sha384,
     };
 
-    // FIPS 140-3 does not approve RSA PKCS#1 v1.5 for TLS 1.3 certificate
-    // signatures (only RSASSA-PSS is approved) and does not approve Ed25519.
+    // FIPS 186-5 approves RSASSA-PKCS1-v1_5 and EdDSA as well as ECDSA, so
+    // certificate-chain signatures accept all three. CertificateVerify above
+    // stays narrower because the engine has no Ed25519 CertificateVerify path.
     pub const certificate_signature_schemes: []const SignatureScheme = &.{
+        .rsa_pkcs1_sha256,
+        .rsa_pkcs1_sha384,
+        .rsa_pkcs1_sha512,
         .ecdsa_secp256r1_sha256,
         .ecdsa_secp384r1_sha384,
+        .ed25519,
     };
 };
 
@@ -385,7 +393,7 @@ pub fn p256PrivateKeyFromSecret(secret: *const [32]u8) Error!*pkey {
 pub fn p256PublicFromSecret(secret: *const [32]u8) Error![65]u8 {
     errqEnter();
     defer errqExit();
-    if (build_options.crypto_fips) {
+    if (build_options.crypto_approved_only) {
         const key = try p256PrivateKeyFromSecretImpl(secret);
         defer c.EVP_PKEY_free(key);
         return p256RawPublicKeyFromPrivateImpl(key);
@@ -413,7 +421,7 @@ pub fn p256PublicFromSecret(secret: *const [32]u8) Error![65]u8 {
 pub fn p256EcdhKeyFromSecret(secret: *const [32]u8) Error!*pkey {
     errqEnter();
     defer errqExit();
-    if (build_options.crypto_fips) return p256PrivateKeyFromSecretImpl(secret);
+    if (build_options.crypto_approved_only) return p256PrivateKeyFromSecretImpl(secret);
     const group = c.EC_GROUP_new_by_curve_name(c.NID_X9_62_prime256v1) orelse
         return error.LibcryptoFailed;
     defer c.EC_GROUP_free(group);

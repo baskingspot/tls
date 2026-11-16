@@ -7131,8 +7131,8 @@ fn expectSameEstablishedEvent(expected: Event, actual: Event) !void {
 test "per-connection structs stay within their measured sizes" {
     const Ceiling = struct { server: usize, established: usize, suite: usize };
     const ceiling: Ceiling = switch (backend.active) {
-        .openssl, .@"openssl-fips" => .{ .server = 19528, .established = 808, .suite = 616 },
-        .@"aws-lc", .@"aws-lc-fips" => .{ .server = 21232, .established = 1944, .suite = 616 },
+        .openssl, .@"openssl-approved" => .{ .server = 19528, .established = 808, .suite = 616 },
+        .@"aws-lc", .@"aws-lc-approved" => .{ .server = 21232, .established = 1944, .suite = 616 },
         .boringssl => .{ .server = 21192, .established = 1920, .suite = 608 },
     };
     try testing.expect(@sizeOf(ServerHandshake) <= ceiling.server);

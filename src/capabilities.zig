@@ -4,6 +4,7 @@ const compat = @import("compat.zig");
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
+const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 const kex = @import("kex.zig");
 const NamedGroup = kex.NamedGroup;
 
@@ -14,8 +15,12 @@ pub const Role = enum { client, server };
 /// Backend identity inferred from the selected libcrypto headers and FIPS policy.
 pub const active_backend: Backend = backend.active;
 
-/// True for a compile-time FIPS capability identity.
-pub const is_fips: bool = backend.is_fips;
+/// True for a compile-time approved-algorithm capability identity.
+pub const approved_only: bool = backend.approved_only;
+
+/// TLS 1.3 cipher suites this build advertises. An approved-only build
+/// advertises AES-GCM only.
+pub const cipher_suites = backend.capabilities.cipher_suites;
 
 /// RFC 10024 groups that tls implements. Backend support remains selectable.
 pub const hybrid_groups = [_]NamedGroup{
@@ -30,6 +35,34 @@ pub const HybridPolicyError = error{
     /// The selected backend identity prohibits a known hybrid group.
     HybridGroupUnavailable,
 };
+
+/// Report whether this build advertises `suite`.
+pub fn supportsCipherSuite(suite: CipherSuite) bool {
+    for (cipher_suites) |advertised| {
+        if (advertised == suite) return true;
+    }
+    return false;
+}
+
+/// Report whether one role can use a classical group with the active backend.
+/// An approved-only build answers false for X25519.
+pub fn supportsGroup(role: Role, group: NamedGroup) bool {
+    return switch (group) {
+        .x25519 => switch (role) {
+            .client => backend.capabilities.client_x25519,
+            .server => backend.capabilities.server_x25519,
+        },
+        .secp256r1 => switch (role) {
+            .client => backend.capabilities.client_p256,
+            .server => backend.capabilities.server_p256,
+        },
+        .secp384r1 => switch (role) {
+            .client => backend.capabilities.client_p384,
+            .server => backend.capabilities.server_p384,
+        },
+        else => supportsHybridGroup(role, group),
+    };
+}
 
 /// Report whether one role can use an RFC 10024 group with the active backend.
 pub fn supportsHybridGroup(role: Role, group: NamedGroup) bool {
@@ -96,7 +129,7 @@ pub fn requiresP384(groups: []const NamedGroup) bool {
 
 test "active backend identity matches the private provider facade" {
     try testing.expectEqualStrings(@tagName(backend.active), @tagName(active_backend));
-    try testing.expectEqual(backend.is_fips, is_fips);
+    try testing.expectEqual(backend.approved_only, approved_only);
 }
 
 // RFC 10024 §7 — public capability queries cover exactly the implemented groups.
@@ -118,7 +151,7 @@ test "hybrid capability queries match the active backend" {
     try testing.expect(!supportsHybridGroup(.server, unknown));
 
     for (hybrid_groups) |group| {
-        if (is_fips) {
+        if (approved_only) {
             try testing.expect(!supportsHybridGroup(.client, group));
             try testing.expect(!supportsHybridGroup(.server, group));
         } else {

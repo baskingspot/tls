@@ -198,7 +198,14 @@ fn abortEarlyServer() CheckError!void {
         .random = .zero,
     });
     defer client.deinit();
-    client.keypairs.x25519.public_key = .zero;
+    // The first flight carries an X25519 share unless the build is
+    // approved-only, where P-256 carries it (FIPS 140-3 IG excludes
+    // Curve25519 from key agreement). Degenerate whichever one is sent.
+    if (comptime tls.capabilities.supportsGroup(.client, .x25519)) {
+        client.keypairs.x25519.public_key = .zero;
+    } else {
+        client.keypairs.p256.public_key = .init(@splat(0));
+    }
     var client_wire: [4096]u8 = undefined;
     const hello = client.startWithPsk(&ticket, &client_wire, true) catch
         return error.UnexpectedBackendResult;
@@ -217,7 +224,13 @@ fn abortEarlyServer() CheckError!void {
         // Transactional reset (#160): the failed ClientHello deinits the
         // early key it installed, so early_rx is null and the allocation
         // balance is checked by the baseline comparison, not by deinit.
-        if (err != error.IdentityElement or server.state != .wait_ch or server.early_rx != null)
+        // The degenerate first-flight share is an identity element for X25519
+        // and a malformed encoding for P-256; either way the reset must hold.
+        const expected = if (comptime tls.capabilities.supportsGroup(.client, .x25519))
+            error.IdentityElement
+        else
+            error.MalformedKeyShare;
+        if (err != expected or server.state != .wait_ch or server.early_rx != null)
             return error.UnexpectedBackendResult;
         return;
     };

@@ -7,6 +7,24 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- `-Dcrypto-fips` is now `-Dcrypto-approved-only`, `capabilities.is_fips` is
+  `capabilities.approved_only`, and the backend identities are
+  `openssl-approved` / `aws-lc-approved`. The option selects an
+  approved-algorithm policy: AES-GCM suites, P-256/P-384 groups, and the
+  corresponding signature schemes. It never made tls a FIPS 140-3 validated
+  module and no longer implies it, because the key schedule, all randomness,
+  signature verification, and on OpenSSL the transcript hash and EC key
+  construction run outside the linked module. `PRODUCTION_READINESS.md` lists
+  the split. `capabilities.cipher_suites`, `supportsCipherSuite(suite)`, and
+  `supportsGroup(role, group)` are new.
+- An approved-only build no longer advertises X25519, which the FIPS 140-3
+  implementation guidance excludes from key agreement, and a client in that
+  build sends a P-256 first flight instead. Certificate-chain signature
+  schemes in the approved table now include RSASSA-PKCS1-v1_5 and Ed25519,
+  which FIPS 186-5 approves.
+
+### Changed
+
 - `tls` requires Zig 0.17. The 0.16 lane is gone: `build.zig.zon` asks for
   0.17.0 in the root, integrations, and conformance, the `.#zig-old` shell and
   the 0.16 CI lane are removed, and the 0.16-only code paths and shims are

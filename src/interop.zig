@@ -24,10 +24,21 @@ const response = "HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhello";
 const server_cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
 const server_scalar: []const u8 = &fixtures.server_ecdsa_scalar;
 
-const client_suites = [_][]const u8{
-    "TLS_AES_128_GCM_SHA256",
-    "TLS_CHACHA20_POLY1305_SHA256",
-    "TLS_AES_256_GCM_SHA384",
+fn opensslSuiteName(suite: tls.CipherSuite) []const u8 {
+    return switch (suite) {
+        .aes_128_gcm_sha256 => "TLS_AES_128_GCM_SHA256",
+        .aes_256_gcm_sha384 => "TLS_AES_256_GCM_SHA384",
+        .chacha20_poly1305_sha256 => "TLS_CHACHA20_POLY1305_SHA256",
+    };
+}
+
+/// The suites this build actually advertises, so an approved-only build
+/// interoperates against AES-GCM alone instead of failing on ChaCha20.
+const client_suites = blk: {
+    const advertised = tls.capabilities.cipher_suites;
+    var names: [advertised.len][]const u8 = undefined;
+    for (advertised, 0..) |suite, i| names[i] = opensslSuiteName(suite);
+    break :blk names;
 };
 
 const ServerSuite = struct {
@@ -35,10 +46,14 @@ const ServerSuite = struct {
     tls_suite: tls.CipherSuite,
 };
 
-const server_suites = [_]ServerSuite{
-    .{ .openssl_name = "TLS_AES_128_GCM_SHA256", .tls_suite = .aes_128_gcm_sha256 },
-    .{ .openssl_name = "TLS_CHACHA20_POLY1305_SHA256", .tls_suite = .chacha20_poly1305_sha256 },
-    .{ .openssl_name = "TLS_AES_256_GCM_SHA384", .tls_suite = .aes_256_gcm_sha384 },
+const server_suites = blk: {
+    const advertised = tls.capabilities.cipher_suites;
+    var suites: [advertised.len]ServerSuite = undefined;
+    for (advertised, 0..) |suite, i| suites[i] = .{
+        .openssl_name = opensslSuiteName(suite),
+        .tls_suite = suite,
+    };
+    break :blk suites;
 };
 
 const InteropGroup = struct {
@@ -344,6 +359,10 @@ test "tls client with credentials interoperates with OpenSSL s_server -Verify" {
 // test, this exercises the real socket drive loop including record
 // reassembly and partial reads.
 test "tls-to-tls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
+    // An approved-only build does not advertise ChaCha20-Poly1305, so the
+    // handshake cannot select this suite.
+    if (!tls.capabilities.supportsCipherSuite(.chacha20_poly1305_sha256))
+        return error.SkipZigTest;
     const KuCtx = struct {
         server_keypair: tls.x25519.KeyPair,
     };

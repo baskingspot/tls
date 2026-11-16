@@ -3,15 +3,15 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const crypto_fips = b.option(
+    const crypto_approved_only = b.option(
         bool,
-        "crypto-fips",
+        "crypto-approved-only",
         "Use the backend FIPS capability identity",
     ) orelse false;
     const tls_dep = b.dependency("tls", .{
         .target = target,
         .optimize = optimize,
-        .@"crypto-fips" = crypto_fips,
+        .@"crypto-approved-only" = crypto_approved_only,
     });
     const mod = b.addModule("tls_nonblocking", .{
         .root_source_file = b.path("src/root.zig"),

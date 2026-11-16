@@ -102,11 +102,18 @@ The row is reported on its own.
 
 ## What is not proven
 
-- **FIPS builds verify signatures outside the module.** `-Dcrypto-fips=true`
-  narrows the advertised suites and schemes, and the linking application is
-  responsible for the linked libcrypto being in FIPS mode. Signature
-  verification, both certificate-chain and CertificateVerify, runs in-tree and
-  is therefore outside that boundary (#183).
+- **No FIPS 140-3 claim, and the approved-only build cannot support one.**
+  `-Dcrypto-approved-only=true` narrows negotiation to approved algorithms; it
+  is an algorithm policy, not a validation. These operations run outside the
+  linked module in every build: signature verification for certificate chains
+  and CertificateVerify (#183), the TLS key schedule (`hmac.zig`, `hkdf.zig`),
+  all randomness (`entropy.zig` fills ephemeral scalars and Hello randoms from
+  the OS, so the module's DRBG is never used), and on OpenSSL the transcript
+  hash (`SHA*_Init` bypasses the provider) and EC key construction
+  (`EC_POINT_mul`, `EC_KEY_*`). A consumer that must use only validated
+  cryptography should use a stack whose whole policy is inside the module. What
+  the flag does buy is negotiation that an approved-mode peer accepts: AES-GCM
+  suites, P-256/P-384 groups, and no X25519.
 
 - **No external audit.** The security work here is an internal adversarial pass,
   not a third-party audit. Say so if you are evaluating it for a decision.

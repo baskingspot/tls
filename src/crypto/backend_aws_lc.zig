@@ -69,28 +69,31 @@ pub const capabilities = struct {
 
 /// FIPS 140-3 narrowed capability table. Signature verification is outside the
 /// validated module: certificate-chain and CertificateVerify signatures verify
-/// in-tree (#183). `-Dcrypto-fips=true` selects this
+/// in-tree (#183). `-Dcrypto-approved-only=true` selects this
 /// table when AWS-LC headers are active. The caller is responsible for ensuring
 /// the linked AWS-LC libcrypto is actually a FIPS-validated build. No runtime
 /// provider probing is performed by tls.
-pub const capabilities_fips = struct {
-    // FIPS 140-3 does not approve ChaCha20-Poly1305 for TLS 1.3.
+pub const capabilities_approved = struct {
+    // ChaCha20-Poly1305 is not a NIST-approved algorithm.
     pub const cipher_suites: []const CipherSuite = &.{
         .aes_128_gcm_sha256,
         .aes_256_gcm_sha384,
     };
 
-    pub const client_x25519 = true;
     pub const client_p256 = true;
     pub const client_p384 = true;
-    // FIPS 140-3 does not approve ML-KEM (NIST FIPS 203 is not yet in the
-    // 140-3 validated algorithms list as of 2026-07).
+    // FIPS 140-3 IG: "Curves that are included in SP 800-186 but not included
+    // in SP 800-56Arev3 are not approved for key agreement". X25519 is one of
+    // them, so an approved-only build must not advertise it.
+    pub const client_x25519 = false;
+    // FIPS 203 approves ML-KEM, but the RFC 10024 hybrid composition is this
+    // library's own construction and is not an approved scheme.
     pub const client_x25519_mlkem768 = false;
     pub const client_secp256r1_mlkem768 = false;
     pub const client_secp384r1_mlkem1024 = false;
-    pub const server_x25519 = true;
     pub const server_p256 = true;
     pub const server_p384 = true;
+    pub const server_x25519 = false;
     pub const server_x25519_mlkem768 = false;
     pub const server_secp256r1_mlkem768 = false;
     pub const server_secp384r1_mlkem1024 = false;
@@ -102,11 +105,16 @@ pub const capabilities_fips = struct {
         .rsa_pss_rsae_sha384,
     };
 
-    // FIPS 140-3 does not approve RSA PKCS#1 v1.5 for TLS 1.3 certificate
-    // signatures (only RSASSA-PSS is approved) and does not approve Ed25519.
+    // FIPS 186-5 approves RSASSA-PKCS1-v1_5 and EdDSA as well as ECDSA, so
+    // certificate-chain signatures accept all three. CertificateVerify above
+    // stays narrower because the engine has no Ed25519 CertificateVerify path.
     pub const certificate_signature_schemes: []const SignatureScheme = &.{
+        .rsa_pkcs1_sha256,
+        .rsa_pkcs1_sha384,
+        .rsa_pkcs1_sha512,
         .ecdsa_secp256r1_sha256,
         .ecdsa_secp384r1_sha384,
+        .ed25519,
     };
 };
 

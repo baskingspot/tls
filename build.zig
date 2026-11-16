@@ -25,10 +25,12 @@ pub fn build(b: *Build) void {
         .default_target = nativeTarget(),
     });
     const optimize = b.standardOptimizeOption(.{});
-    const crypto_fips = b.option(
+    const crypto_approved_only = b.option(
         bool,
-        "crypto-fips",
-        "Narrow the inferred libcrypto backend to its FIPS capability identity",
+        "crypto-approved-only",
+        "Negotiate only approved algorithms: AES-GCM cipher suites, P-256/P-384 " ++
+            "groups, and the corresponding signature schemes. This is an " ++
+            "algorithm policy, not a FIPS 140-3 validation claim.",
     ) orelse false;
     // Fuzz mode uses the default test runner, which speaks the server protocol
     // that `zig build test --fuzz` needs. testingx's `.mode = .simple` bypasses
@@ -37,7 +39,7 @@ pub fn build(b: *Build) void {
         b.option(bool, "fuzz", "Enable fuzzing (uses the default test runner)") orelse false;
 
     const build_options = b.addOptions();
-    build_options.addOption(bool, "crypto_fips", crypto_fips);
+    build_options.addOption(bool, "crypto_approved_only", crypto_approved_only);
 
     // Fixed-capacity containers and memory scans. A production dependency:
     // the library imports it, so it is resolved before the consumer early
