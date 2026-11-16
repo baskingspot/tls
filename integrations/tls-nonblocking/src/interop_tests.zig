@@ -8,6 +8,7 @@ const transport = @import("tls_nonblocking");
 const Server = transport.Server;
 const SocketClient = transport.SocketClient;
 const fixtures = @import("fixtures");
+const Bundle = std.crypto.Certificate.Bundle;
 
 const Context = struct {
     listener: Io.net.Server,
@@ -464,7 +465,7 @@ test "SocketClient: invalid trust anchors clean up without closing the socket" {
     defer socket.close(testing.io);
     var client: SocketClient = undefined;
     var options = rawClientOptions(null);
-    options.ca_pem = "not a certificate";
+    options.trust = .{ .pem = "not a certificate" };
     try testing.expectError(
         error.NoTrustAnchors,
         client.init(testing.allocator, testing.io, socket, options),
@@ -559,4 +560,65 @@ test "SocketClient: a cancel ends a blocked application read and the stream resu
     try testing.expectEqualStrings("ping", &reply);
     try testing.expect(state.calls >= 2);
     if (context.failure) |err| return err;
+}
+
+// The seam `http`'s platform-store default depends on: a bundle the caller
+// loaded, rather than PEM the adapter parses. The fixture certificate is
+// CA:FALSE, so a store holding it reaches the policy and is refused there;
+// without a store the handshake fails earlier for a different reason. The
+// error names prove the borrowed store was the one consulted.
+test "SocketClient: a caller-supplied trust store is the one consulted" {
+    var bundle: Bundle = .empty;
+    defer bundle.deinit(testing.allocator);
+    try bundle.bytes.appendSlice(testing.allocator, &fixtures.server_ecdsa_cert_der);
+    try bundle.parseCert(testing.allocator, 0, 1_790_000_000);
+
+    {
+        var context: Context = .{ .listener = try listen(), .failure = null };
+        defer context.listener.deinit(testing.io);
+        const thread = try std.Thread.spawn(.{}, Context.run, .{&context});
+        defer thread.join();
+
+        const socket = try connectTo(&context.listener);
+        defer socket.close(testing.io);
+
+        var client: SocketClient = undefined;
+        try testing.expectError(error.CertificateIssuerNotCa, client.init(
+            testing.allocator,
+            testing.io,
+            socket,
+            .{
+                .trust = .{ .bundle = &bundle },
+                .host_name = "ztls.server.test",
+                .now_sec = 1_790_000_000,
+                .alpn = &.{"h2"},
+            },
+        ));
+        // Ownership stays with the caller.
+        client.deinit();
+    }
+
+    // Without a store the same peer fails differently: no anchor at all.
+    {
+        var context: Context = .{ .listener = try listen(), .failure = null };
+        defer context.listener.deinit(testing.io);
+        const thread = try std.Thread.spawn(.{}, Context.run, .{&context});
+        defer thread.join();
+
+        const socket = try connectTo(&context.listener);
+        defer socket.close(testing.io);
+
+        var client: SocketClient = undefined;
+        try testing.expectError(error.MissingTrustAnchor, client.init(
+            testing.allocator,
+            testing.io,
+            socket,
+            .{
+                .host_name = "ztls.server.test",
+                .now_sec = 1_790_000_000,
+                .alpn = &.{"h2"},
+            },
+        ));
+        client.deinit();
+    }
 }

@@ -1,6 +1,7 @@
 //! A blocking TLS 1.3 client over a caller-owned `std.Io.net.Stream`.
 //!
-//! The adapter owns TLS buffers and an optional PEM trust bundle. The caller
+//! The adapter owns TLS buffers and, when it parses PEM, the trust bundle it
+//! builds; a bundle handed to it stays the caller's. The caller
 //! owns the socket, its lifetime, and ALPN policy. All calls on one connection
 //! must be serial. Initialize the value in its final location and do not move
 //! or copy it while initialized.
@@ -20,11 +21,10 @@ const Bundle = std.crypto.Certificate.Bundle;
 const SocketClient = @This();
 
 pub const Options = struct {
-    /// PEM trust anchors. The adapter parses and owns the resulting bundle.
-    /// Null trusts nothing unless `insecure_no_chain_anchor` is set.
-    ca_pem: ?[]const u8 = null,
+    /// How to trust the peer.
+    trust: Trust = .none,
     /// Test-only chain-anchor opt-out. Hostname verification still runs.
-    /// Ignored when `ca_pem` is present.
+    /// Ignored when `trust` is not `.none`.
     insecure_no_chain_anchor: bool = false,
     /// Name for SNI and hostname verification: a DNS name or an address
     /// literal (RFC 9525 §6.2.1), which sends no SNI (RFC 6066 §3). Borrowed
@@ -47,6 +47,19 @@ pub const Options = struct {
     /// on a full socket is also not interrupted. The socket stays caller-owned
     /// and the handshake state is released like any other failed `init`.
     cancel: ?Cancel = null,
+
+    /// The trust anchors for one connection.
+    pub const Trust = union(enum) {
+        /// No anchors. `insecure_no_chain_anchor` must be set to connect.
+        none,
+        /// PEM blocks the adapter parses into a bundle it owns and frees.
+        pem: []const u8,
+        /// A store the caller already loaded, such as the platform store
+        /// `tls_std.trust_store.loadSystem` fills. Borrowed until `deinit`:
+        /// it must outlive the `SocketClient` and must not be mutated or
+        /// deinitialized while it is borrowed.
+        bundle: *const Bundle,
+    };
 
     /// A caller's cancellation hook. It is consulted for the connection's
     /// lifetime, never concurrently with the TLS state, so `context` must
@@ -118,8 +131,8 @@ pub fn init(
     };
     errdefer self.deinit();
 
-    if (options.ca_pem) |pem| {
-        self.bundle = try anchors.build(allocator, pem, options.now_sec);
+    if (options.trust == .pem) {
+        self.bundle = try anchors.build(allocator, options.trust.pem, options.now_sec);
         self.owns_bundle = true;
     }
 
@@ -129,7 +142,11 @@ pub fn init(
     try io.randomSecure(&random.data);
     defer random.secureZero();
 
-    const ca: ?*const Bundle = if (self.owns_bundle) &self.bundle else null;
+    const ca: ?*const Bundle = switch (options.trust) {
+        .none => null,
+        .pem => &self.bundle,
+        .bundle => |bundle| bundle,
+    };
     try self.client.init(&.{
         .ca = ca,
         .insecure_no_chain_anchor = options.insecure_no_chain_anchor,

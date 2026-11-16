@@ -5,6 +5,14 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `tls_nonblocking.SocketClient.Options.trust` is one decision: `.pem` for PEM
+  blocks the adapter parses and owns, `.bundle` for a trust store the caller
+  loaded and keeps, `.none` for no anchors. A borrowed store must outlive the
+  `SocketClient` and must not be mutated or deinitialized while it is borrowed.
+  This replaces `Options.ca_pem`; use `trust = .{ .pem = pem }`.
+
 ### Changed
 
 - `tls_nonblocking.SocketClient.Options.cancel` now covers the connection, not

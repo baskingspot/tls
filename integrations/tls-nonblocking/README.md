@@ -21,13 +21,13 @@ Readiness status lives in [`PRODUCTION_READINESS.md`](../../PRODUCTION_READINESS
 `SocketClient` drives `Client` over a connected `std.Io.net.Stream`. It presents
 plaintext `Io.Reader` and `Io.Writer` interfaces and completes the handshake in
 `init`. The caller owns and closes the socket on success and failure. `deinit`
-releases only TLS buffers and the optional trust bundle, including after a
-failed `init`.
+releases only TLS buffers and any bundle it built from `trust.pem`, including
+after a failed `init`.
 
 ```zig
 var connection: transport.SocketClient = undefined;
 try connection.init(gpa, io, socket, .{
-    .ca_pem = pem,
+    .trust = .{ .pem = pem },
     .host_name = "example.com",
     .now_sec = now_sec,
     .alpn = &.{"h2"},
@@ -38,8 +38,11 @@ const reader = connection.reader();
 const writer = connection.writer();
 ```
 
-`ca_pem` is parsed into a bundle owned by the connection. `host_name`, the ALPN
-slice and entries, and their bytes are borrowed until `deinit`. `selectedAlpn`
+`trust` is one decision: `.pem` is parsed into a bundle the connection owns and
+frees, `.bundle` borrows a store the caller loaded and keeps until the
+connection is deinitialized, and `.none` needs `insecure_no_chain_anchor`.
+`host_name`, the ALPN slice and entries, and their bytes are borrowed until
+`deinit`. `selectedAlpn`
 reports the authenticated choice; callers decide which protocols to accept.
 
 `Options.deadline_ns` and `setDeadline` use absolute monotonic nanoseconds for
