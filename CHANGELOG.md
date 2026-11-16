@@ -15,13 +15,13 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
-- `tls_nonblocking.SocketClient.Options.cancel` now covers the connection, not
-  only the handshake: the hook is consulted between application-data reads and
-  a pending read ends with `error.Canceled` within the 100 ms poll interval.
-  This reverses 0.4.2, where the hook was cleared when the handshake ended. The
-  `context` pointer must now outlive the `SocketClient`; a hook scoped to the
-  connect call is a use-after-free. With a hook set, every application read
-  takes the batch read path with a 100 ms cap instead of one plain read.
+- `tls_std.Server.accept` takes a `*Scratch`, one per worker, and the finished
+  connection holds the established session instead of the handshake engine and
+  its ClientHello reassembly buffer. With default buffers a `tls.Server` is
+  83,768 bytes rather than 135,184: 51,416 fewer per connection, about 514 MB
+  across 10,000 idle connections. Declare `var scratch: tls_std.Server.Scratch
+  = .init;` beside the accept loop and pass `&scratch`. `Config.reassembly_storage`
+  now sizes that scratch on a server. The client is unchanged (#169).
 - CertificateVerify verification runs in-tree for every scheme tls accepts:
   ECDSA on `std.crypto` and RSA-PSS on the in-tree RSA module. A peer can no
   longer reach the libcrypto backend through a signature, and
@@ -43,6 +43,17 @@ All notable changes to tls are recorded here. The format follows
   callers of the public `tls.Certificate.rsa.PSSSignature.verify` in v0.4.2
   were exposed (#183).
 
+## [0.4.3] - 2026-11-16
+
+### Changed
+
+- `tls_nonblocking.SocketClient.Options.cancel` now covers the connection, not
+  only the handshake: the hook is consulted between application-data reads and
+  a pending read ends with `error.Canceled` within the 100 ms poll interval.
+  This reverses 0.4.2, where the hook was cleared when the handshake ended. The
+  `context` pointer must now outlive the `SocketClient`; a hook scoped to the
+  connect call is a use-after-free. With a hook set, every application read
+  takes the batch read path with a 100 ms cap instead of one plain read.
 
 ## [0.4.2] - 2026-11-15
 
@@ -99,13 +110,6 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
-- `tls_std.Server.accept` takes a `*Scratch`, one per worker, and the finished
-  connection holds the established session instead of the handshake engine and
-  its ClientHello reassembly buffer. With default buffers a `tls.Server` is
-  83,768 bytes rather than 135,184: 51,416 fewer per connection, about 514 MB
-  across 10,000 idle connections. Declare `var scratch: tls_std.Server.Scratch
-  = .init;` beside the accept loop and pass `&scratch`. `Config.reassembly_storage`
-  now sizes that scratch on a server. The client is unchanged (#169).
 - `alert.alertForError` answers every engine error with the alert RFC 8446 §6.2
   defines for it, and `alert.alertForHandshakeError` replaces the old
   fall-through with a switch that is exhaustive over the engine's error set: a

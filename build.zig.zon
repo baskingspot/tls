@@ -1,6 +1,6 @@
 .{
     .name = .tls,
-    .version = "0.4.2",
+    .version = "0.4.3",
     .fingerprint = 0xacfd1db3288cfd9d,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
