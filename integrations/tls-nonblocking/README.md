@@ -1,6 +1,6 @@
 # tls-nonblocking
 
-Caller-driven TLS 1.3 transports for Zig 0.16 and 0.17.
+Caller-driven TLS 1.3 transports for Zig 0.17.
 
 `tls_nonblocking.Server` and `tls_nonblocking.Client` turn transport bytes into
 borrowed plaintext and expose one outbound record at a time. The caller owns the
@@ -42,15 +42,15 @@ const writer = connection.writer();
 frees, `.bundle` borrows a store the caller loaded and keeps until the
 connection is deinitialized, and `.none` needs `insecure_no_chain_anchor`.
 `host_name`, the ALPN slice and entries, and their bytes are borrowed until
-`deinit`. `selectedAlpn`
-reports the authenticated choice; callers decide which protocols to accept.
+`deinit`. `selectedAlpn` reports the authenticated choice; callers decide which
+protocols to accept.
 
 `Options.deadline_ns` and `setDeadline` use absolute monotonic nanoseconds for
 read waits, including the eager handshake. They do not bound writes. `TimedOut`
-sets `expired`; cancellation and `DeadlineUnsupported` do not. Zig 0.16 can
-report an already-expired deadline but reports a future one as
-`DeadlineUnsupported`. `readError` and `writeError` recover the cause collapsed
-by the std interfaces. `peerAlert` retains the peer's exact alert after
+sets `expired`; cancellation does not. An Io implementation that cannot wait for
+a socket read concurrently returns `error.ConcurrencyUnavailable`.
+`readError` and `writeError` recover the cause collapsed by the std
+interfaces. `peerAlert` retains the peer's exact alert after
 `error.PeerAlert`. Bare transport EOF is `UnexpectedEof`. An authenticated
 `close_notify` ends the plaintext reader with `error.EndOfStream`.
 

@@ -2,9 +2,9 @@
 set -euo pipefail
 
 case "$(zig version)" in
-    0.16.*) ;;
+    0.17.*) ;;
     *)
-        echo "distribution smoke requires Zig 0.16, found $(zig version)" >&2
+        echo "distribution smoke requires Zig 0.17, found $(zig version)" >&2
         exit 1
         ;;
 esac
@@ -31,7 +31,7 @@ git archive --format=tar.gz --prefix=tls/ -o "$archive" "${snapshot:-HEAD}"
 cp -R "$repo_root/tests/distribution-consumer/." "$consumer/"
 (
     cd "$consumer"
-    zig fetch --global-cache-dir "$global_cache" --save=tls "file://$archive"
+    ZIG_GLOBAL_CACHE_DIR="$global_cache" zig fetch --save=tls "file://$archive"
 )
 if ! grep -F '.url = "file://' "$consumer/build.zig.zon" >/dev/null; then
     echo "distribution consumer is not pinned to the fetched archive" >&2
@@ -95,8 +95,7 @@ build_consumer() {
     local selected=$1
     (
         cd "$consumer"
-        zig build \
-            --global-cache-dir "$global_cache" \
+        ZIG_GLOBAL_CACHE_DIR="$global_cache" zig build \
             --cache-dir "$local_cache" \
             -Dmode="$selected" \
             --summary all

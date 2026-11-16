@@ -333,10 +333,6 @@ test "handshake: ClientHello header and body reassemble across records" {
 
 // A dialer that wants to stop must not wait out a black-holed handshake.
 test "handshake: a cancel hook ends a read that never completes" {
-    // A read in progress can only be cut where the runtime can bound a socket
-    // read.
-    if (comptime !SocketClient.polled_cancel) return error.SkipZigTest;
-
     const io = testing.io;
     var address: Io.net.IpAddress = try .parseLiteral("127.0.0.1:0");
     var listener = try address.listen(io, .{ .mode = .stream, .reuse_address = true });
@@ -368,8 +364,6 @@ test "handshake: a cancel hook ends a read that never completes" {
 }
 
 test "handshake: a real deadline still expires while the cancel hook polls" {
-    if (comptime !SocketClient.polled_cancel) return error.SkipZigTest;
-
     const io = testing.io;
     var address: Io.net.IpAddress = try .parseLiteral("127.0.0.1:0");
     var listener = try address.listen(io, .{ .mode = .stream, .reuse_address = true });
@@ -397,34 +391,6 @@ test "handshake: a real deadline still expires while the cancel hook polls" {
     const elapsed = Io.Clock.awake.now(io).nanoseconds - state.start;
     try testing.expect(elapsed >= 300 * std.time.ns_per_ms);
     try testing.expect(elapsed < 800 * std.time.ns_per_ms);
-}
-
-test "handshake: a runtime without polled reads keeps an expired deadline" {
-    if (comptime SocketClient.polled_cancel) return error.SkipZigTest;
-
-    const io = testing.io;
-    var address: Io.net.IpAddress = try .parseLiteral("127.0.0.1:0");
-    var listener = try address.listen(io, .{ .mode = .stream, .reuse_address = true });
-    defer listener.deinit(io);
-    address.setPort(listener.socket.address.getPort());
-
-    const stream = try address.connect(io, .{ .mode = .stream });
-    defer stream.close(io);
-
-    // Setting the hook must not shadow the deadline on a runtime that cannot
-    // bound a socket read. An already-expired deadline still reports itself.
-    var state: CancelState = .{ .io = io, .after_ns = std.math.maxInt(i96) };
-    state.start = Io.Clock.awake.now(io).nanoseconds;
-    var client: SocketClient = undefined;
-    try testing.expectError(error.TimedOut, client.init(testing.allocator, io, stream, .{
-        .host_name = "127.0.0.1",
-        .now_sec = 1_798_761_600,
-        .insecure_no_chain_anchor = true,
-        .deadline_ns = state.start - 1,
-        .cancel = .{ .context = &state, .shouldCancel = CancelState.shouldCancel },
-    }));
-    defer client.deinit();
-    try testing.expect(client.expired());
 }
 
 test "handshake: a cancel hook that says stop before any I/O never writes" {

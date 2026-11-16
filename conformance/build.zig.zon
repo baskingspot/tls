@@ -2,7 +2,7 @@
     .name = .tls_conformance,
     .version = "0.0.0",
     .fingerprint = 0x3798d310a047b0e3,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .tls = .{
             .path = "../",
@@ -10,8 +10,8 @@
         // Development-only: comptime txtar fixtures. Lazy so consumers of this
         // package never fetch it.
         .testingx = .{
-            .url = "https://baskingspot.dev/testingx/v0.4.0.tar.gz",
-            .hash = "testingx-0.4.0-ib95-2JkAwDVM639ma-akYafT4bdewLfpFaAEnLBzQXG",
+            .url = "https://baskingspot.dev/testingx/v0.5.0.tar.gz",
+            .hash = "testingx-0.5.0-ib95-9FWAwAzwy03e-h52udEnWkVzuV-gCFJTp1IQ5rV",
             .lazy = true,
         },
         .tlsanvil = .{

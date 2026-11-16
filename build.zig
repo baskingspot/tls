@@ -203,8 +203,7 @@ pub fn build(b: *Build) void {
 
         // Zig 0.17's system-library search is paths-first and stops at the
         // module's own library paths, so the C ABI build must name libcrypto's
-        // directory instead of relying on the implicit system sweep that 0.16
-        // performed. pkg-config is the source of truth in both shells.
+        // directory. pkg-config is the source of truth in the shell.
         const libdir_output = b.run(&.{ "pkg-config", "--variable=libdir", "libcrypto" });
         const libdir = std.mem.trim(u8, libdir_output, " \t\r\n");
         if (libdir.len == 0) panic("libcrypto pkg-config libdir is empty", .{});

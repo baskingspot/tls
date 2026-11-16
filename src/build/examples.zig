@@ -30,7 +30,7 @@ pub fn addSteps(b: *Build, opts: struct {
         exe_mod.addImport("fixtures", opts.fixtures_mod);
         const exe = b.addExecutable(.{ .name = name, .root_module = exe_mod });
         const run = b.addRunArtifact(exe);
-        passthru.passthruArgs(b, run);
+        passthru.passthruArgs(run);
         const step = b.step(b.fmt("example-{s}", .{name}), b.fmt("Run {s} example", .{name}));
         step.dependOn(&run.step);
     }
@@ -51,7 +51,7 @@ pub fn addSteps(b: *Build, opts: struct {
             exe_mod.addImport("fixtures", opts.fixtures_mod);
             const exe = b.addExecutable(.{ .name = name, .root_module = exe_mod });
             const run = b.addRunArtifact(exe);
-            passthru.passthruArgs(b, run);
+            passthru.passthruArgs(run);
             const step = b.step(
                 b.fmt("example-{s}", .{name}),
                 b.fmt("Run Linux {s} example", .{name}),

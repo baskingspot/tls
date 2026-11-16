@@ -5,6 +5,16 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `tls` requires Zig 0.17. The 0.16 lane is gone: `build.zig.zon` asks for
+  0.17.0 in the root, integrations, and conformance, the `.#zig-old` shell and
+  the 0.16 CI lane are removed, and the 0.16-only code paths and shims are
+  deleted. `tls_nonblocking.SocketClient` deadlines always use
+  `Io.Operation.net_read`, the cancel hook polls every 100 ms, and
+  `error.DeadlineUnsupported` is removed; an Io implementation that cannot wait
+  concurrently reports `error.ConcurrencyUnavailable`.
+
 ## [0.4.4] - 2026-11-16
 
 ### Added

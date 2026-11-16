@@ -39,13 +39,11 @@ pub const Options = struct {
     /// Null waits indefinitely. This does not bound socket writes.
     deadline_ns: ?i96 = null,
     /// Consulted between handshake steps, between application-data reads, and
-    /// at least every 100 ms while a read waits, where the runtime can bound a
-    /// socket read. Returning true ends the handshake or the read with
-    /// `error.Canceled`, so a watcher can stop a stream it is blocked on. On
-    /// Zig 0.16 it runs between steps only, so a read already waiting returns
-    /// when the peer answers or the deadline passes. A write already blocked
-    /// on a full socket is also not interrupted. The socket stays caller-owned
-    /// and the handshake state is released like any other failed `init`.
+    /// at least every 100 ms while a read waits. Returning true ends the
+    /// handshake or the read with `error.Canceled`, so a watcher can stop a
+    /// stream it is blocked on. A write already blocked on a full socket is
+    /// not interrupted. The socket stays caller-owned and the handshake state
+    /// is released like any other failed `init`.
     cancel: ?Cancel = null,
 
     /// The trust anchors for one connection.
@@ -77,12 +75,15 @@ pub const TransportWriteError = net.Stream.Writer.Error;
 pub const DeadlineError = error{
     /// The absolute monotonic deadline expired before input arrived.
     TimedOut,
-    /// Future read deadlines require `Io.Operation.net_read`, added in 0.17.
-    /// An already-expired deadline still reports `TimedOut` on Zig 0.16.
-    DeadlineUnsupported,
 };
 pub const ReadError = Client.Error || TransportReadError || TransportWriteError ||
-    DeadlineError || error{ TransportClosed, NoReadCompletion };
+    DeadlineError || error{
+    TransportClosed,
+    NoReadCompletion,
+    /// The Io implementation cannot wait for a socket read concurrently; the
+    /// adapter's deadline and cancel poll require it.
+    ConcurrencyUnavailable,
+};
 pub const WriteError = Client.Error || TransportWriteError || error{TransportClosed};
 pub const InitError = Client.InitError || ReadError || anchors.BuildError ||
     tls.p256.Error || Io.RandomSecureError;
@@ -238,8 +239,8 @@ pub fn setDeadline(self: *SocketClient, absolute_ns: ?i96) void {
     self.expired_flag = false;
 }
 
-/// True only when the last deadline failure was `TimedOut`. Cancellation and
-/// `DeadlineUnsupported` do not set this flag.
+/// True only when the last deadline failure was `TimedOut`. Cancellation does
+/// not set this flag.
 pub fn expired(self: *const SocketClient) bool {
     return self.expired_flag;
 }
@@ -441,12 +442,6 @@ fn makeWriteProgress(self: *SocketClient) WriteError!void {
 /// retried. Only a real deadline sets `expired_flag`.
 const ReadBound = enum { deadline, cancel_poll };
 
-/// A polled read needs a wait with a timeout. Zig 0.16 has no socket operation
-/// in `Io.Operation`, so there is nothing to slice with; the hook is then
-/// consulted between handshake steps only, and a read already waiting returns
-/// when the peer answers or the deadline passes.
-pub const polled_cancel = @hasField(Io.Operation, "net_read");
-
 /// How long one handshake read may wait before the cancel hook is consulted
 /// again.
 const cancel_poll_ns: i96 = 100 * std.time.ns_per_ms;
@@ -457,7 +452,7 @@ fn readSocket(self: *SocketClient) ReadError!ReceiveResult {
         try self.flushSend();
         return .retry;
     }
-    if (self.cancel != null and polled_cancel) {
+    if (self.cancel != null) {
         return self.readSocketDeadline(buffer, self.deadline_ns, .cancel_poll);
     }
     if (self.deadline_ns) |deadline| return self.readSocketDeadline(buffer, deadline, .deadline);
@@ -491,48 +486,43 @@ fn readSocketDeadline(
         .fromNanoseconds(wait_ns)
         .withClock(Io.Clock.awake);
 
-    // Zig 0.16 has no portable vectored net_read operation in Io.Batch. Keep
-    // the compile-time probe so both supported compilers analyze their own API.
-    if (comptime @hasField(Io.Operation, "net_read")) {
-        var storage: [1]Io.Operation.Storage = undefined;
-        var batch: Io.Batch = .init(&storage);
-        var iovecs: [1][]u8 = .{buffer};
-        _ = batch.add(.{ .net_read = .{
-            .socket_handle = self.socket.socket.handle,
-            .data = &iovecs,
-        } });
-        const wait_error: ?Io.Batch.AwaitConcurrentError = wait: {
-            batch.awaitConcurrent(self.io, .{ .deadline = give_up }) catch |err|
-                break :wait err;
-            break :wait null;
-        };
-        // Timeout does not reap an evented read. Preserve successful racing
-        // completions before this batch's stack storage goes out of scope.
-        batch.cancel(self.io);
-        while (batch.next()) |completion| {
-            switch (completion.result) {
-                .net_read => |result| {
-                    const ready = try result;
-                    if (ready.data_len != 0) self.client.received(ready.data_len);
-                    if (wait_error != null and wait_error.? == error.Canceled) {
-                        return error.Canceled;
-                    }
-                    if (ready.data_len == 0) return .eof;
-                    return .received;
-                },
-                else => unreachable,
-            }
+    var storage: [1]Io.Operation.Storage = undefined;
+    var batch: Io.Batch = .init(&storage);
+    var iovecs: [1][]u8 = .{buffer};
+    _ = batch.add(.{ .net_read = .{
+        .socket_handle = self.socket.socket.handle,
+        .data = &iovecs,
+    } });
+    const wait_error: ?Io.Batch.AwaitConcurrentError = wait: {
+        batch.awaitConcurrent(self.io, .{ .deadline = give_up }) catch |err|
+            break :wait err;
+        break :wait null;
+    };
+    // Timeout does not reap an evented read. Preserve successful racing
+    // completions before this batch's stack storage goes out of scope.
+    batch.cancel(self.io);
+    while (batch.next()) |completion| {
+        switch (completion.result) {
+            .net_read => |result| {
+                const ready = try result;
+                if (ready.data_len != 0) self.client.received(ready.data_len);
+                if (wait_error != null and wait_error.? == error.Canceled) {
+                    return error.Canceled;
+                }
+                if (ready.data_len == 0) return .eof;
+                return .received;
+            },
+            else => unreachable,
         }
-        if (wait_error) |err| return switch (err) {
-            // A poll timeout is not an expiry: the handshake loop returns to
-            // its cancel check and reads again.
-            error.Timeout => self.timeoutResult(bound),
-            error.Canceled => error.Canceled,
-            error.ConcurrencyUnavailable => error.DeadlineUnsupported,
-        };
-        return error.NoReadCompletion;
     }
-    return error.DeadlineUnsupported;
+    if (wait_error) |err| return switch (err) {
+        // A poll timeout is not an expiry: the handshake loop returns to
+        // its cancel check and reads again.
+        error.Timeout => self.timeoutResult(bound),
+        error.Canceled => error.Canceled,
+        error.ConcurrencyUnavailable => error.ConcurrencyUnavailable,
+    };
+    return error.NoReadCompletion;
 }
 
 /// What a wait's timeout means. A cancel poll timeout is a retry, not an
@@ -564,17 +554,12 @@ fn failWrite(self: *SocketClient, cause: WriteError) error{WriteFailed} {
     return error.WriteFailed;
 }
 
-const direct_stream_io = @hasField(Io.VTable, "netRead");
-
 fn transportRead(
     io: Io,
     handle: net.Socket.Handle,
     buffer: []u8,
 ) TransportReadError!usize {
     var data: [1][]u8 = .{buffer};
-    if (comptime direct_stream_io) {
-        return io.vtable.netRead(io.userdata, handle, &data);
-    }
     const result = try io.operate(.{ .net_read = .{
         .socket_handle = handle,
         .data = &data,
@@ -600,9 +585,6 @@ fn transportWrite(
     bytes: []const u8,
 ) TransportWriteError!usize {
     const data: [1][]const u8 = .{bytes};
-    if (comptime direct_stream_io) {
-        return io.vtable.netWrite(io.userdata, handle, "", &data, 1);
-    }
     const result = try io.operate(.{ .net_write = .{
         .socket_handle = handle,
         .header = "",
@@ -696,64 +678,62 @@ const TransferCancel = struct {
 };
 
 test "deadline batches reap pending reads and preserve completions that race cancellation" {
-    if (comptime @hasField(Io.Operation, "net_read")) {
-        const Probe = @import("socket_client_test_io.zig").BatchProbe;
-        const Scenario = enum {
-            timeout,
-            canceled,
-            unsupported,
-            missing,
-            timeout_race,
-            canceled_race,
-        };
-        for (std.enums.values(Scenario)) |scenario| {
-            var probe: Probe = .init(
-                switch (scenario) {
-                    .timeout, .timeout_race => error.Timeout,
-                    .canceled, .canceled_race => error.Canceled,
-                    .unsupported => error.ConcurrencyUnavailable,
-                    .missing => null,
-                },
-                switch (scenario) {
-                    .timeout_race, .canceled_race => 0x16,
-                    else => null,
-                },
-            );
-            var vtable = testing.io.vtable.*;
-            vtable.batchAwaitConcurrent = Probe.awaitConcurrent;
-            vtable.batchCancel = Probe.cancel;
-            vtable.now = Probe.now;
-            const io: Io = .{ .userdata = &probe, .vtable = &vtable };
-            var client: SocketClient = .{
-                .io = io,
-                .allocator = testing.allocator,
-                .socket = .{ .socket = .{ .handle = -1, .address = undefined } },
-            };
-            try client.client.init(&.{}, .{
-                .keypairs = try .init(.generate()),
-                .host_name = null,
-                .now_sec = 0,
-                .random = .zero,
-                .reassembly = &client.reassembly,
-            }, .{ .record = &client.record, .out = &client.out });
-            defer client.client.deinit();
-            const before = client.client.receiveBuffer().len;
-            const result = client.readSocketDeadline(
-                client.client.receiveBuffer(),
-                12345,
-                .deadline,
-            );
+    const Probe = @import("socket_client_test_io.zig").BatchProbe;
+    const Scenario = enum {
+        timeout,
+        canceled,
+        unsupported,
+        missing,
+        timeout_race,
+        canceled_race,
+    };
+    for (std.enums.values(Scenario)) |scenario| {
+        var probe: Probe = .init(
             switch (scenario) {
-                .timeout => try testing.expectError(error.TimedOut, result),
-                .canceled, .canceled_race => try testing.expectError(error.Canceled, result),
-                .unsupported => try testing.expectError(error.DeadlineUnsupported, result),
-                .missing => try testing.expectError(error.NoReadCompletion, result),
-                .timeout_race => try testing.expectEqual(ReceiveResult.received, try result),
-            }
-            try testing.expect(probe.cancel_called);
-            try testing.expectEqual(scenario == .timeout, client.expired());
-            const accepted: usize = if (probe.complete_on_cancel != null) 1 else 0;
-            try testing.expectEqual(before - accepted, client.client.receiveBuffer().len);
+                .timeout, .timeout_race => error.Timeout,
+                .canceled, .canceled_race => error.Canceled,
+                .unsupported => error.ConcurrencyUnavailable,
+                .missing => null,
+            },
+            switch (scenario) {
+                .timeout_race, .canceled_race => 0x16,
+                else => null,
+            },
+        );
+        var vtable = testing.io.vtable.*;
+        vtable.batchAwaitConcurrent = Probe.awaitConcurrent;
+        vtable.batchCancel = Probe.cancel;
+        vtable.now = Probe.now;
+        const io: Io = .{ .userdata = &probe, .vtable = &vtable };
+        var client: SocketClient = .{
+            .io = io,
+            .allocator = testing.allocator,
+            .socket = .{ .socket = .{ .handle = -1, .address = undefined } },
+        };
+        try client.client.init(&.{}, .{
+            .keypairs = try .init(.generate()),
+            .host_name = null,
+            .now_sec = 0,
+            .random = .zero,
+            .reassembly = &client.reassembly,
+        }, .{ .record = &client.record, .out = &client.out });
+        defer client.client.deinit();
+        const before = client.client.receiveBuffer().len;
+        const result = client.readSocketDeadline(
+            client.client.receiveBuffer(),
+            12345,
+            .deadline,
+        );
+        switch (scenario) {
+            .timeout => try testing.expectError(error.TimedOut, result),
+            .canceled, .canceled_race => try testing.expectError(error.Canceled, result),
+            .unsupported => try testing.expectError(error.ConcurrencyUnavailable, result),
+            .missing => try testing.expectError(error.NoReadCompletion, result),
+            .timeout_race => try testing.expectEqual(ReceiveResult.received, try result),
         }
-    } else return error.SkipZigTest;
+        try testing.expect(probe.cancel_called);
+        try testing.expectEqual(scenario == .timeout, client.expired());
+        const accepted: usize = if (probe.complete_on_cancel != null) 1 else 0;
+        try testing.expectEqual(before - accepted, client.client.receiveBuffer().len);
+    }
 }

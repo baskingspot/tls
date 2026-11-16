@@ -2,7 +2,7 @@
     .name = .tls_std,
     .version = "0.0.0",
     .fingerprint = 0x805aae3645e451b5, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // In-tree development dependency. External consumers fetch the root
         // package and import its `tls_std` module; see #79.
@@ -26,8 +26,8 @@
         // Development-only: test runner and comptime fixtures. Lazy so
         // consumers of this package never fetch it.
         .testingx = .{
-            .url = "https://baskingspot.dev/testingx/v0.4.0.tar.gz",
-            .hash = "testingx-0.4.0-ib95-2JkAwDVM639ma-akYafT4bdewLfpFaAEnLBzQXG",
+            .url = "https://baskingspot.dev/testingx/v0.5.0.tar.gz",
+            .hash = "testingx-0.5.0-ib95-9FWAwAzwy03e-h52udEnWkVzuV-gCFJTp1IQ5rV",
             .lazy = true,
         },
     },

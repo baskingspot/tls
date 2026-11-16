@@ -196,7 +196,7 @@ fn sendAlertAndReturnError(
 pub fn localPort(stream: Io.net.Stream) ?u16 {
     var addr: posix.sockaddr.storage = undefined;
     var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
-    // posix.getsockname moved off POSIX in 0.16; the libc symbol is
+    // posix.getsockname moved off POSIX; the libc symbol is
     // identical and every consumer of this helper links libc.
     if (std.c.getsockname(stream.socket.handle, @ptrCast(&addr), &addr_len) != 0) return null;
     const bytes: [*]const u8 = @ptrCast(&addr);

@@ -163,7 +163,7 @@ test "OpenSSL: poll adapter, short nonblocking I/O, h2 ALPN, echo, and close_not
     };
     defer context.listener.deinit(io);
     var target_buf: [64]u8 = undefined;
-    const target = try std.fmt.bufPrint(
+    const target = try std.mem.print(
         &target_buf,
         "127.0.0.1:{d}",
         .{context.listener.socket.address.getPort()},
@@ -275,15 +275,14 @@ test "SocketClient: a read timeout keeps its cause across deadline cleanup" {
     vtable.batchAwaitConcurrent = BatchWaits.awaitBatch;
     client.io = .{ .userdata = testing.io.userdata, .vtable = &vtable };
     BatchWaits.count = 0;
-    const future = @hasField(Io.Operation, "net_read");
     const now = Io.Clock.awake.now(testing.io).nanoseconds;
-    client.setDeadline(if (future) now + 200 * std.time.ns_per_ms else now - 1);
+    client.setDeadline(now + 200 * std.time.ns_per_ms);
     var response: [4]u8 = undefined;
     var vectors: [1][]u8 = .{&response};
     try testing.expectError(error.ReadFailed, client.reader().readVec(&vectors));
     try testing.expect(client.expired());
     try testing.expect(client.readError().? == error.TimedOut);
-    if (future) try testing.expect(BatchWaits.count != 0);
+    try testing.expect(BatchWaits.count != 0);
 
     client.setDeadline(null);
     try testing.expect(!client.expired());
@@ -390,9 +389,7 @@ test "SocketClient: a fatal peer alert survives init cleanup" {
 }
 
 // The eager handshake uses Options.deadline_ns before its first socket wait.
-// Zig 0.16 rejects only future deadlines; both versions handle an expired one.
 test "SocketClient: deadline bounds eager handshake and init releases resources" {
-    const future = @hasField(Io.Operation, "net_read");
     var context: RawContext = .{
         .listener = try listen(),
         .failure = null,
@@ -406,25 +403,19 @@ test "SocketClient: deadline bounds eager handshake and init releases resources"
     defer socket.close(testing.io);
     var client: SocketClient = undefined;
     const now = Io.Clock.awake.now(testing.io).nanoseconds;
-    const deadline = if (future) now + 20 * 1_000_000 else now + 1_000_000;
     const result = client.init(
         testing.allocator,
         testing.io,
         socket,
-        rawClientOptions(deadline),
+        rawClientOptions(now + 20 * 1_000_000),
     );
-    if (future) {
-        try testing.expectError(error.TimedOut, result);
-        try testing.expect(client.expired());
-    } else {
-        try testing.expectError(error.DeadlineUnsupported, result);
-        try testing.expect(!client.expired());
-    }
+    try testing.expectError(error.TimedOut, result);
+    try testing.expect(client.expired());
     client.deinit();
     if (context.failure) |err| return err;
 }
 
-test "SocketClient: an already expired deadline works on both Zig versions" {
+test "SocketClient: an already expired deadline is detected" {
     var context: RawContext = .{
         .listener = try listen(),
         .failure = null,
@@ -517,9 +508,6 @@ const ApplicationCancel = struct {
 // connection has to survive the cancel. The peer answers only after "ping", so
 // the first read has nothing to deliver and no deadline to end it.
 test "SocketClient: a cancel ends a blocked application read and the stream resumes" {
-    // A read already waiting can only be cut where the runtime can bound it.
-    if (comptime !SocketClient.polled_cancel) return error.SkipZigTest;
-
     var context: Context = .{ .listener = try listen(), .failure = null };
     defer context.listener.deinit(testing.io);
     const thread = try std.Thread.spawn(.{}, Context.run, .{&context});

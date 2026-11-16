@@ -599,7 +599,7 @@ fn runEarlyDataInterop(
 ) !void {
     const port = try freePort();
     // Start s_server with -early_data to accept 0-RTT.
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
+    const port_str = try arena.print("{d}", .{port});
     const argv = &.{
         "openssl",                "s_server",
         "-tls1_3",                "-ciphersuites",
@@ -657,7 +657,7 @@ fn startServer(
     suite: []const u8,
     port: u16,
 ) !Child {
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
+    const port_str = try arena.print("{d}", .{port});
     const argv = &.{
         "openssl", "s_server",
         "-tls1_3", "-ciphersuites",
@@ -682,7 +682,7 @@ fn startServerWithGroup(
     group: InteropGroup,
     port: u16,
 ) !Child {
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
+    const port_str = try arena.print("{d}", .{port});
     const argv = &.{
         "openssl",                "s_server",
         "-tls1_3",                "-ciphersuites",
@@ -1191,8 +1191,8 @@ fn startClient(
     suite: []const u8,
     port: u16,
 ) !Child {
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
-    const connect_to = try std.fmt.allocPrint(arena, "{s}:{s}", .{ host, port_str });
+    const port_str = try arena.print("{d}", .{port});
+    const connect_to = try arena.print("{s}:{s}", .{ host, port_str });
     const tail = [_][]const u8{
         "s_client",      "-tls1_3",
         "-connect",      connect_to,
@@ -1216,8 +1216,8 @@ fn startClientSaveSession(
     session_path: []const u8,
     port: u16,
 ) !Child {
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
-    const connect_to = try std.fmt.allocPrint(arena, "{s}:{s}", .{ host, port_str });
+    const port_str = try arena.print("{d}", .{port});
+    const connect_to = try arena.print("{s}:{s}", .{ host, port_str });
     const argv = &.{
         "openssl",                "s_client",
         "-tls1_3",                "-connect",
@@ -1234,8 +1234,8 @@ fn startClientReuseSession(
     session_path: []const u8,
     port: u16,
 ) !Child {
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
-    const connect_to = try std.fmt.allocPrint(arena, "{s}:{s}", .{ host, port_str });
+    const port_str = try arena.print("{d}", .{port});
+    const connect_to = try arena.print("{s}:{s}", .{ host, port_str });
     const argv = &.{
         "openssl",                "s_client",
         "-tls1_3",                "-connect",
@@ -1257,8 +1257,8 @@ fn spawnClient(argv: []const []const u8) !Child {
 }
 
 fn startClientWithGroup(arena: Allocator, group: InteropGroup, port: u16) !Child {
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
-    const connect_to = try std.fmt.allocPrint(arena, "{s}:{s}", .{ host, port_str });
+    const port_str = try arena.print("{d}", .{port});
+    const connect_to = try arena.print("{s}:{s}", .{ host, port_str });
     const argv = &.{
         "openssl",                "s_client",
         "-tls1_3",                "-connect",
@@ -1606,8 +1606,8 @@ fn startClientWithCert(
     key_path: []const u8,
     port: u16,
 ) !Child {
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
-    const connect_to = try std.fmt.allocPrint(arena, "{s}:{s}", .{ host, port_str });
+    const port_str = try arena.print("{d}", .{port});
+    const connect_to = try arena.print("{s}:{s}", .{ host, port_str });
     const argv = &.{
         "openssl",                "s_client",
         "-tls1_3",                "-connect",
@@ -1658,7 +1658,7 @@ fn startServerVerify(
     ca_path: []const u8,
     port: u16,
 ) !Child {
-    const port_str = try std.fmt.allocPrint(arena, "{d}", .{port});
+    const port_str = try arena.print("{d}", .{port});
     const argv = &.{
         "openssl",                "s_server",
         "-tls1_3",                "-ciphersuites",
@@ -1766,8 +1766,7 @@ fn writeFixtureCertPem(arena: Allocator, pem_path: []const u8) !void {
     if (b64_len > b64_buf.len) return error.BufferTooShort;
     const encoded = enc.encode(b64_buf[0..b64_len], der);
 
-    const pem = try std.fmt.allocPrint(
-        arena,
+    const pem = try arena.print(
         "-----BEGIN CERTIFICATE-----\n{s}\n-----END CERTIFICATE-----\n",
         .{encoded},
     );
