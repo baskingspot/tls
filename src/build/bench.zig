@@ -41,7 +41,7 @@ fn addRunStep(
     bin_desc: []const u8,
 ) void {
     const run = b.addRunArtifact(exe);
-    passthru.passthruArgs(b, run);
+    passthru.passthruArgs(run);
     b.step(step_name, step_desc).dependOn(&run.step);
 
     const install = b.addInstallArtifact(exe, .{});

@@ -2,7 +2,7 @@
     .name = .tls_nonblocking,
     .version = "0.0.0",
     .fingerprint = 0x7884ccd419b3a367,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .tls = .{ .path = "../.." },
         .testingx = .{

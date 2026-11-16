@@ -15,9 +15,8 @@ default:
 example EXAMPLE *ARGS:
     zig build example-{{ EXAMPLE }} -- {{ ARGS }}
 
-# The full gate runs on the current stable Zig. The previous version gets
-# `just check`; see .github/ci.yaml. `distribution-ci` runs on that older lane
-# too: the distribution smoke tests the minimum supported Zig.
+# The full gate runs on Zig 0.17. The release-mode `check` and the
+# distribution smoke run on the same shell; see .github/ci.yaml.
 [doc("Run all CI gates")]
 [group("check")]
 ci: test check-backend-aws-lc check-backends check-fips-builds lint consumer-gate-selftest examples-ci capi-ci integrations-ci

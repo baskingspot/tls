@@ -212,7 +212,7 @@ capi-ci:
     fi
     # Zig's bundled linker does not inherit the Nix wrapper's implicit -L flags,
     # so libcrypto's directory is named explicitly. pkg-config is the source of
-    # truth in every shell, 0.16 and 0.17 alike.
+    # truth in the shell.
     crypto_libdir=$(pkg-config --variable=libdir libcrypto)
     if [ -z "$crypto_libdir" ]; then
         echo "pkg-config did not report libcrypto's libdir" >&2
@@ -368,11 +368,11 @@ fmt-zig:
 fmt-rust:
     cargo fmt --manifest-path bench/rustls/Cargo.toml
 
-[doc("Lint Zig sources: fmt --check, ziglint-0-16 (the minimum supported API surface), ast-grep (baskingspot-lint and the repo's own rules)")]
+[doc("Lint Zig sources: fmt --check, ziglint-0-17 (the supported API surface), ast-grep (baskingspot-lint and the repo's own rules)")]
 [group("check")]
 lint-zig:
     zig fmt --check src/ examples/ bench/ tests/distribution-consumer/ build.zig
-    ziglint-0-16 build.zig examples bench tests/distribution-consumer $(fd --extension zig --exclude certificate_parser.zig . src)
+    ziglint-0-17 build.zig examples bench tests/distribution-consumer $(fd --extension zig --exclude certificate_parser.zig . src)
     baskingspot-lint src
     ast-grep scan --rule rules/no-tls-owned-allocations.yml src --globs '*.zig' --globs '!src/test/**' --globs '!src/bench/**' --globs '!src/interop.zig' --report-style short
     ast-grep scan --rule rules/no-c-pointer-types.yml src --globs '*.zig' --report-style short

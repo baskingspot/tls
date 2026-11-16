@@ -86,7 +86,7 @@ fn generateCertificateWithSan(
 ) !void {
     const io = testIo();
     var addext_buf: [128]u8 = undefined;
-    const addext = try std.fmt.bufPrint(&addext_buf, "subjectAltName={s}", .{alt_name});
+    const addext = try mem.print(&addext_buf, "subjectAltName={s}", .{alt_name});
     var child = try std.process.spawn(io, .{
         .argv = &.{
             "openssl",                 "req",     "-x509",
@@ -108,7 +108,7 @@ fn startOpenSslServer(
     key_path: []const u8,
     port: u16,
 ) !Child {
-    const port_text = try std.fmt.allocPrint(allocator, "{d}", .{port});
+    const port_text = try allocator.print("{d}", .{port});
     return std.process.spawn(testIo(), .{
         .argv = &.{
             "openssl", "s_server",
@@ -136,7 +136,7 @@ fn startOpenSslVerifyingServer(
     ca_path: []const u8,
     port: u16,
 ) !Child {
-    const port_text = try std.fmt.allocPrint(allocator, "{d}", .{port});
+    const port_text = try allocator.print("{d}", .{port});
     return std.process.spawn(testIo(), .{
         .argv = &.{
             "openssl", "s_server",
@@ -164,7 +164,7 @@ fn startOpenSslMtlsClient(
     key_path: []const u8,
     port: u16,
 ) !Child {
-    const target = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ host, port });
+    const target = try allocator.print("{s}:{d}", .{ host, port });
     return std.process.spawn(testIo(), .{
         .argv = &.{
             "openssl",          "s_client",
@@ -254,7 +254,7 @@ fn startOpenSslClient(
     ca_path: []const u8,
     port: u16,
 ) !Child {
-    const target = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ host, port });
+    const target = try allocator.print("{s}:{d}", .{ host, port });
     return std.process.spawn(testIo(), .{
         .argv = &.{
             "openssl",          "s_client",
@@ -278,7 +278,7 @@ fn startOpenSslClientCapturingFailure(
     ca_path: []const u8,
     port: u16,
 ) !Child {
-    const target = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ host, port });
+    const target = try allocator.print("{s}:{d}", .{ host, port });
     return std.process.spawn(testIo(), .{
         .argv = &.{
             "openssl",          "s_client",
@@ -457,8 +457,7 @@ fn writeDerCertificatePem(allocator: mem.Allocator, der: []const u8, path: []con
     var encoded_buffer: [4096]u8 = undefined;
     if (encoded_len > encoded_buffer.len) return error.BufferTooShort;
     const encoded = encoder.encode(encoded_buffer[0..encoded_len], der);
-    const pem = try std.fmt.allocPrint(
-        allocator,
+    const pem = try allocator.print(
         "-----BEGIN CERTIFICATE-----\n{s}\n-----END CERTIFICATE-----\n",
         .{encoded},
     );

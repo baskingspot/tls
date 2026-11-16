@@ -739,9 +739,6 @@ test "round-trip: handshake, both directions, ALPN, close_notify" {
     };
     const server = try spawnServer(&sctx);
 
-    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-
     var conn: IntrospectingClient = undefined;
     try conn.connect(io, streamFor(fds[0]), .{
         .host = test_host,

@@ -62,7 +62,7 @@ The same dependency exposes `tls_std`, `tls_nonblocking` (caller-driven server),
 and `tls_ktls` (Linux).
 The [guide](https://baskingspot.dev/tls/#install) has the full setup.
 
-The library and every integration module build on Zig 0.16 and 0.17.
+The library and every integration module build on Zig 0.17.
 
 The build needs libcrypto and `pkg-config` to find it. The module calls
 `linkSystemLibrary("crypto")`, and the C ABI step runs `pkg-config --variable=libdir

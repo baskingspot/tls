@@ -44,10 +44,10 @@ choose:
 
 | Module     | Requirement                                      |
 | ---------- | ------------------------------------------------ |
-| `tls`      | Zig 0.16 and 0.17                                |
-| `tls_std`  | Zig 0.16 and 0.17                                |
-| `tls_nonblocking` | Zig 0.16 and 0.17, caller-driven server transport |
-| `tls_ktls` | Zig 0.16 and 0.17 on Linux                       |
+| `tls`      | Zig 0.17                                         |
+| `tls_std`  | Zig 0.17                                         |
+| `tls_nonblocking` | Zig 0.17, caller-driven server transport          |
+| `tls_ktls` | Zig 0.17 on Linux                                |
 
 All modules use the same libcrypto headers and library, selected through
 `PKG_CONFIG_PATH`. The compiler infers OpenSSL, AWS-LC, or BoringSSL from the

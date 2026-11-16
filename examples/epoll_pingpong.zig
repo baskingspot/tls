@@ -229,11 +229,11 @@ fn fillRecordBuffer(fd: posix.fd_t, rb: *tls.RecordBuffer) !FillResult {
 /// Format a "ping N\n" / "pong N\n" line into caller storage. Call sites use a
 /// 64-byte buffer, which always fits, so a short write is unreachable.
 fn ping(buf: []u8, round: usize) []const u8 {
-    return std.fmt.bufPrint(buf, "ping {d}\n", .{round}) catch unreachable;
+    return mem.print(buf, "ping {d}\n", .{round}) catch unreachable;
 }
 
 fn pong(buf: []u8, round: usize) []const u8 {
-    return std.fmt.bufPrint(buf, "pong {d}\n", .{round}) catch unreachable;
+    return mem.print(buf, "pong {d}\n", .{round}) catch unreachable;
 }
 
 // -- Configuration ------------------------------------------------------------
