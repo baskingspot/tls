@@ -358,7 +358,6 @@ test "handshake: a cancel hook ends a read that never completes" {
         .insecure_no_chain_anchor = true,
         .cancel = .{ .context = &state, .shouldCancel = CancelState.shouldCancel },
     }));
-    try testing.expect(client.cancel == null);
     client.deinit();
 
     const elapsed = Io.Clock.awake.now(io).nanoseconds - state.start;
@@ -447,8 +446,6 @@ test "handshake: a cancel hook that says stop before any I/O never writes" {
         .insecure_no_chain_anchor = true,
         .cancel = .{ .context = &state, .shouldCancel = CancelState.shouldCancel },
     }));
-    // The handshake clears the hook: nothing after it consults the pointer.
-    try testing.expect(client.cancel == null);
     client.deinit();
     try testing.expectEqual(@as(usize, 1), state.calls);
 }

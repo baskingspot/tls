@@ -38,20 +38,23 @@ pub const Options = struct {
     /// Absolute monotonic deadline for read waits, including the handshake.
     /// Null waits indefinitely. This does not bound socket writes.
     deadline_ns: ?i96 = null,
-    /// Consulted between handshake steps, and at least every 100 ms while a
-    /// handshake read waits, where the runtime can bound a socket read. On
+    /// Consulted between handshake steps, between application-data reads, and
+    /// at least every 100 ms while a read waits, where the runtime can bound a
+    /// socket read. Returning true ends the handshake or the read with
+    /// `error.Canceled`, so a watcher can stop a stream it is blocked on. On
     /// Zig 0.16 it runs between steps only, so a read already waiting returns
-    /// when the peer answers or the deadline passes. Returning true abandons
-    /// the handshake with `error.Canceled`; the socket stays caller-owned and
-    /// the handshake state is released like any other failed `init`.
+    /// when the peer answers or the deadline passes. A write already blocked
+    /// on a full socket is also not interrupted. The socket stays caller-owned
+    /// and the handshake state is released like any other failed `init`.
     cancel: ?Cancel = null,
 
-    /// A caller's cancellation hook. It runs on the task that drives the
-    /// handshake, never concurrently with the TLS state, and is cleared when
-    /// the handshake ends.
+    /// A caller's cancellation hook. It is consulted for the connection's
+    /// lifetime, never concurrently with the TLS state, so `context` must
+    /// outlive the `SocketClient`. True abandons the handshake or ends the
+    /// pending read with `error.Canceled`.
     pub const Cancel = struct {
         context: *anyopaque,
-        /// True abandons the handshake.
+        /// True abandons the handshake or the pending read.
         shouldCancel: *const fn (context: *anyopaque) bool,
     };
 };
@@ -292,6 +295,11 @@ fn rebase(_: *Io.Writer, _: usize, _: usize) Io.Writer.Error!void {
 
 fn nextApplication(self: *SocketClient) ReadError!?[]const u8 {
     while (true) {
+        // The hook outlives the handshake: a caller watching a stream needs a
+        // blocked application read to come back so it can stop.
+        if (self.cancel) |cancel| {
+            if (cancel.shouldCancel(cancel.context)) return error.Canceled;
+        }
         const event = try self.step();
         switch (event) {
             .application_data => |bytes| return bytes,
@@ -312,9 +320,6 @@ fn nextApplication(self: *SocketClient) ReadError!?[]const u8 {
 }
 
 fn handshake(self: *SocketClient) ReadError!void {
-    // The hook exists for the handshake. A live connection has no one to
-    // consult it, and leaving it set would slice every read for nothing.
-    defer self.cancel = null;
     while (true) {
         // A black-holed handshake is one blocking read, so the read itself is
         // bounded by `cancel_poll_ns` below and this check runs between steps.
@@ -632,6 +637,46 @@ test "unexpected application data cannot spin the eager handshake" {
     client.client.pending_application = "early";
     try testing.expectError(error.UnexpectedRecord, client.handshake());
 }
+
+// A caller watching a stream has to be able to stop a read that is already
+// waiting, so the hook outlives the handshake and is checked before each
+// application-data step.
+test "application data: a cancel hook ends a read instead of delivering it" {
+    var client: SocketClient = undefined;
+    client.cancel = null;
+    try client.client.init(&.{}, .{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .reassembly = &client.reassembly,
+    }, .{ .record = &client.record, .out = &client.out });
+    defer client.client.deinit();
+    client.client.started = true;
+    client.client.pending_application = "early";
+
+    var state: TransferCancel = .{};
+    client.cancel = .{ .context = &state, .shouldCancel = TransferCancel.shouldCancel };
+    try testing.expectError(error.Canceled, client.nextApplication());
+    try testing.expectEqual(@as(usize, 1), state.calls);
+
+    // A hook that says keep going leaves the same client able to deliver the
+    // plaintext it had pinned.
+    state.stop = false;
+    const bytes = (try client.nextApplication()).?;
+    try testing.expectEqualStrings("early", bytes);
+}
+
+const TransferCancel = struct {
+    stop: bool = true,
+    calls: usize = 0,
+
+    fn shouldCancel(context: *anyopaque) bool {
+        const self: *TransferCancel = @ptrCast(@alignCast(context));
+        self.calls += 1;
+        return self.stop;
+    }
+};
 
 test "deadline batches reap pending reads and preserve completions that race cancellation" {
     if (comptime @hasField(Io.Operation, "net_read")) {
