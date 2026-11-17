@@ -1205,6 +1205,20 @@ const rfc8448_server_hs_secret = [_]u8{
     0x42, 0xbe, 0xfd, 0x59, 0xd3, 0x91, 0xad, 0x38,
 };
 
+/// The classical group the server falls back to: X25519 by default, P-256 in
+/// an approved-only build, which does not implement X25519.
+fn classicalGroupForTest() kex.NamedGroup {
+    return if (comptime root.capabilities.supportsGroup(.server, .x25519)) .x25519 else .secp256r1;
+}
+
+/// The ServerHello key share for the group the client's first flight carried:
+/// X25519 by default, P-256 in an approved-only build, which has no X25519.
+fn serverShareForTest(kp: KeyPairs) server_hello.KeyShare {
+    if (comptime root.capabilities.supportsGroup(.client, .x25519))
+        return .{ .x25519 = kp.x25519.public_key };
+    return .{ .secp256r1 = kp.p256.public_key };
+}
+
 test "core client: RFC 8448 §3 plaintext half" {
     var slots: [8]level.Output = undefined;
     var client: Client = .init(&slots, .init);
@@ -2294,6 +2308,15 @@ test "client hybrid: the core retains the KEM key and decapsulates the server sh
     var slots: [8]level.Output = undefined;
     var client: Client = .init(&slots, .init);
     defer client.deinit();
+    // This profile advertises no hybrid group, so a hybrid policy is refused
+    // when a flight is built.
+    if (comptime !root.capabilities.supportsHybridGroup(.client, .x25519_mlkem768)) {
+        try testing.expectError(
+            error.HybridGroupUnavailable,
+            root.capabilities.validateHybridGroups(.client, &.{.x25519_mlkem768}),
+        );
+        return;
+    }
     client.offerHybrid(.{
         .supported_groups = &.{.x25519_mlkem768},
         .initial_key_share = .x25519_mlkem768,
@@ -2377,7 +2400,7 @@ test "client: provide derives the classical shared secret" {
         &.{},
     );
 
-    const share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    const share: server_hello.KeyShare = serverShareForTest(server_keys);
     var sh_buf: [512]u8 = undefined;
     const sh = try server_hello.encodeWithKeyShare(
         &sh_buf,
@@ -2391,11 +2414,19 @@ test "client: provide derives the classical shared secret" {
     const parsed_sh = try server_hello.parse(sh);
     const derived = try client.deriveSharedSecret(parsed_sh, &secret_buf);
     var expected: [32]u8 = undefined;
-    try x25519.sharedSecret(
-        server_keys.x25519.secret_key,
-        client_keys.x25519.public_key,
-        &expected,
-    );
+    switch (classicalGroupForTest()) {
+        .x25519 => try x25519.sharedSecret(
+            server_keys.x25519.secret_key,
+            client_keys.x25519.public_key,
+            &expected,
+        ),
+        .secp256r1 => try p256.sharedSecret(
+            server_keys.p256.secret_key,
+            client_keys.p256.public_key,
+            &expected,
+        ),
+        else => unreachable,
+    }
     try testing.expectEqualSlices(u8, &expected, derived);
 
     try client.provide(.plaintext, sh);
@@ -2413,6 +2444,15 @@ test "client hybrid: policy and group mismatches are caught" {
     {
         var client: Client = .init(&slots, .init);
         defer client.deinit();
+        // This profile advertises no hybrid group, so a hybrid policy is
+        // refused when a flight is built.
+        if (comptime !root.capabilities.supportsHybridGroup(.client, .x25519_mlkem768)) {
+            try testing.expectError(
+                error.HybridGroupUnavailable,
+                root.capabilities.validateHybridGroups(.client, &.{.x25519_mlkem768}),
+            );
+            return;
+        }
         client.offerHybrid(.{
             .supported_groups = &.{.x25519_mlkem768},
             .initial_key_share = .secp256r1_mlkem768,
@@ -2507,7 +2547,7 @@ test "core: both roles derive the same secret, and neither is given one" {
     server.usePeerShareStorage(&share_storage);
     try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
 
-    const key_share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    const key_share: server_hello.KeyShare = serverShareForTest(server_keys);
     var sh_buf: [256]u8 = undefined;
     const sh = try server_hello.encodeWithKeyShare(
         &sh_buf,
@@ -2612,7 +2652,7 @@ test "server: deriving without retained shares is its own error" {
     // No usePeerShareStorage: nothing is retained.
     try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
 
-    const key_share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    const key_share: server_hello.KeyShare = serverShareForTest(server_keys);
     var sh_buf: [256]u8 = undefined;
     const sh = try server_hello.encodeWithKeyShare(
         &sh_buf,
@@ -2640,6 +2680,13 @@ test "server: a hybrid offer is skipped, and short storage is a named error" {
     const policy: certificate.Policy = .init;
     var client: Client = .init(&slots, policy);
     defer client.deinit();
+    if (comptime !root.capabilities.supportsHybridGroup(.client, .x25519_mlkem768)) {
+        try testing.expectError(
+            error.HybridGroupUnavailable,
+            root.capabilities.validateHybridGroups(.client, &.{.x25519_mlkem768}),
+        );
+        return;
+    }
     client.offerHybrid(.{
         .supported_groups = &.{.x25519_mlkem768},
         .initial_key_share = .x25519_mlkem768,
@@ -2661,7 +2708,7 @@ test "server: a hybrid offer is skipped, and short storage is a named error" {
     server.useKeypairs(server_keys);
     server.usePeerShareStorage(&big_storage);
     try server.provideClientHello(.plaintext, hybrid_ch, .aes_128_gcm_sha256);
-    try testing.expectEqual(@as(?kex.NamedGroup, .x25519), server.selectedGroup());
+    try testing.expectEqual(@as(?kex.NamedGroup, classicalGroupForTest()), server.selectedGroup());
 
     var small_storage: [8]u8 = undefined;
     var plain: Client = .init(&slots, policy);
@@ -2739,16 +2786,22 @@ comptime {
 // Go 1.24+ sends X25519MLKEM768 first and X25519 after it; the hybrid entry is
 // ignored, not refused, and the server answers with a ServerHello for X25519
 // and no HelloRetryRequest. Both roles then derive the same handshake secrets.
-test "server: an X25519MLKEM768 share before an X25519 share selects X25519" {
+test "server: a hybrid share before the classical share selects the classical group" {
     var client_keys: KeyPairs = try .init(.generate());
     defer client_keys.secureZero();
     var server_keys: KeyPairs = try .init(.generate());
     defer server_keys.secureZero();
 
     var ch_buf: [2048]u8 = undefined;
-    const ch = clientHelloWithShares(&ch_buf, &.{ .x25519_mlkem768, .x25519 }, &.{
+    const classical = classicalGroupForTest();
+    const classical_key: []const u8 = switch (classical) {
+        .x25519 => &client_keys.x25519.public_key.data,
+        .secp256r1 => &client_keys.p256.public_key.data,
+        else => unreachable,
+    };
+    const ch = clientHelloWithShares(&ch_buf, &.{ .x25519_mlkem768, classical }, &.{
         .{ .group = .x25519_mlkem768, .key = &stand_in_hybrid_share },
-        .{ .group = .x25519, .key = &client_keys.x25519.public_key.data },
+        .{ .group = classical, .key = classical_key },
     });
     var client_slots: [16]level.Output = undefined;
     var client: Client = .init(&client_slots, .init);
@@ -2763,9 +2816,9 @@ test "server: an X25519MLKEM768 share before an X25519 share selects X25519" {
     server.useKeypairs(server_keys);
     server.usePeerShareStorage(&share_storage);
     try server.provideClientHello(.plaintext, ch, .aes_128_gcm_sha256);
-    try testing.expectEqual(@as(?kex.NamedGroup, .x25519), server.selectedGroup());
+    try testing.expectEqual(@as(?kex.NamedGroup, classical), server.selectedGroup());
 
-    const key_share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    const key_share: server_hello.KeyShare = serverShareForTest(server_keys);
     var sh_buf: [256]u8 = undefined;
     const sh = try server_hello.encodeWithKeyShare(
         &sh_buf,
@@ -2799,7 +2852,8 @@ test "server: a hybrid-only key_share is no usable share, answered by HelloRetry
     const cases = [_][]const RawShare{ &hybrid_only, &.{} };
     for (cases) |shares| {
         var ch_buf: [2048]u8 = undefined;
-        const ch = clientHelloWithShares(&ch_buf, &.{ .x25519_mlkem768, .x25519 }, shares);
+        const groups = [_]kex.NamedGroup{ .x25519_mlkem768, classicalGroupForTest() };
+        const ch = clientHelloWithShares(&ch_buf, &groups, shares);
         var share_storage: [peer_share_storage_len]u8 = undefined;
         var slots: [16]level.Output = undefined;
         var server: Server = .init(&slots);
@@ -2835,7 +2889,8 @@ test "server: a malformed or duplicate key_share entry is still refused" {
     const cases = [_][]const RawShare{ &short_x25519, &short_hybrid, &repeated_hybrid };
     for (cases) |shares| {
         var ch_buf: [4096]u8 = undefined;
-        const ch = clientHelloWithShares(&ch_buf, &.{ .x25519_mlkem768, .x25519 }, shares);
+        const groups = [_]kex.NamedGroup{ .x25519_mlkem768, classicalGroupForTest() };
+        const ch = clientHelloWithShares(&ch_buf, &groups, shares);
         var share_storage: [peer_share_storage_len]u8 = undefined;
         var slots: [16]level.Output = undefined;
         var server: Server = .init(&slots);
@@ -3061,7 +3116,7 @@ test "core: both roles carry 0x0039 and agree on application secrets" {
     try testing.expectEqual(@as(u16, 0x0039), server.peerExtensions()[0].extension_type);
     try testing.expectEqualSlices(u8, &client_bytes, server.peerExtensions()[0].data);
 
-    const key_share: server_hello.KeyShare = .{ .x25519 = server_keys.x25519.public_key };
+    const key_share: server_hello.KeyShare = serverShareForTest(server_keys);
     var sh_buf: [256]u8 = undefined;
     const sh = try server_hello.encodeWithKeyShare(
         &sh_buf,

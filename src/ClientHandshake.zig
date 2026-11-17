@@ -130,6 +130,16 @@ pub const SessionTicket = struct {
     }
 };
 
+/// The ServerHello share for the group the first flight carried: X25519 by
+/// default, P-256 in an approved-only build.
+fn serverShareForTest(server_kp: x25519.KeyPair) server_hello.KeyShare {
+    if (comptime root.capabilities.supportsGroup(.client, .x25519))
+        return .{ .x25519 = server_kp.public_key };
+    const seed: [32]u8 = @splat(0x5c);
+    const p256_key = p256.KeyPair.generateDeterministic(.init(seed)) catch unreachable;
+    return .{ .secp256r1 = p256_key.public_key };
+}
+
 /// A hand-built ClientHello whose first flight carries a group this build
 /// advertises: X25519 with the X25519-only encoder, P-256 in an approved-only
 /// build, which does not advertise X25519.
@@ -2678,13 +2688,8 @@ test "processServerHello: accepts secp256r1 key_share" {
     hs.injectClientHello(ch);
 
     var sh_buf: [192]u8 = undefined;
-    // A group the client did not offer: X25519 in an approved-only build,
-    // P-256 in the default one.
-    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
-    var server_ks: server_hello.KeyShare = if (offers_x25519)
-        .{ .secp256r1 = server_p256.public_key }
-    else
-        .{ .x25519 = x25519.PublicKey.init(@splat(0x11)) };
+    // The client offered P-256, so the ServerHello answers with it.
+    var server_ks: server_hello.KeyShare = .{ .secp256r1 = server_p256.public_key };
     const sh = try server_hello.encodeWithKeyShare(
         &sh_buf,
         @splat(0xab),
@@ -4636,7 +4641,7 @@ test "handleRecord: PSK-offering client rejects bare Finished unless server sele
     // Common setup: client offers a PSK, server has its own ephemeral keypair.
     const client_kp = x25519.KeyPair.generate();
     const server_kp = x25519.KeyPair.generate();
-    var server_ks: server_hello.KeyShare = .{ .x25519 = server_kp.public_key };
+    var server_ks: server_hello.KeyShare = serverShareForTest(server_kp);
 
     var ticket: SessionTicket = .init(0x262a6494, 0, .aes_128_gcm_sha256, null);
     ticket.identity.appendSliceAssumeCapacity(&identity_bytes);
@@ -5998,7 +6003,13 @@ test "processServerHello: failed key exchange rolls back the transcript union" {
     hs.injectClientHello(ch);
 
     var bad_buf: [256]u8 = undefined;
-    var zero_share: server_hello.KeyShare = .{ .x25519 = .zero };
+    // A share for the advertised group with an all-zero key, which fails the
+    // key-exchange step rather than the group check.
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
+    var zero_share: server_hello.KeyShare = if (offers_x25519)
+        .{ .x25519 = .zero }
+    else
+        .{ .secp256r1 = p256.PublicKey.init(@splat(0)) };
     const bad_sh = try server_hello.encodeWithKeyShare(
         &bad_buf,
         @splat(0xab),
@@ -6012,7 +6023,7 @@ test "processServerHello: failed key exchange rolls back the transcript union" {
 
     var good_buf: [256]u8 = undefined;
     const server_keypair = x25519.KeyPair.generate();
-    var good_share: server_hello.KeyShare = .{ .x25519 = server_keypair.public_key };
+    var good_share: server_hello.KeyShare = serverShareForTest(server_keypair);
     const good_sh = try server_hello.encodeWithKeyShare(
         &good_buf,
         @splat(0xab),

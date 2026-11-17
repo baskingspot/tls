@@ -115,6 +115,8 @@ fn approvedCipherSuite(suite: CipherSuite) bool {
     return false;
 }
 
+pub const Protocols = AlpnProtocols;
+
 /// `encodedLen` for the message `encodeForTest` produces.
 fn encodedLenForTest(server_name: ?[]const u8, alpn_protocols: AlpnProtocols) !usize {
     if (comptime include_x25519) return encodedLen(server_name, alpn_protocols);

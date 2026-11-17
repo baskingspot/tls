@@ -415,12 +415,27 @@ pub const ConfigError = ServerConfig.ValidationError;
 /// A hand-built ClientHello whose first flight carries a group this build
 /// advertises: X25519 with the X25519-only encoder, P-256 in an approved-only
 /// build, which does not advertise X25519.
-fn encodeClientHelloForTest(buf: []u8, key: x25519.PublicKey) ![]u8 {
+/// The key-exchange bytes a parsed ServerHello carries, whichever group the
+/// build advertised.
+fn parsedShareBytes(sh: server_hello.ServerHello) []const u8 {
+    return switch (sh.key_share) {
+        .x25519 => |*k| &k.data,
+        .secp256r1 => |*k| &k.data,
+        else => unreachable,
+    };
+}
+
+fn encodeClientHelloForTest(
+    buf: []u8,
+    key: x25519.PublicKey,
+    server_name: ?[]const u8,
+    alpn: root.AlpnProtocols,
+) ![]u8 {
     if (comptime root.capabilities.supportsGroup(.client, .x25519))
-        return client_hello.encode(buf, .zero, key, null, &.{});
+        return client_hello.encode(buf, .zero, key, server_name, alpn);
     const seed: [32]u8 = @splat(0x5a);
     const p256_key = try p256.KeyPair.generateDeterministic(.init(seed));
-    return client_hello.encodeWithP256(buf, .zero, key, p256_key.public_key, null, &.{});
+    return client_hello.encodeWithP256(buf, .zero, key, p256_key.public_key, server_name, alpn);
 }
 
 test "ServerConfig.validate reports invalid lists and missing P-384 material" {
@@ -3287,7 +3302,7 @@ test "handleRecord: rejects ChangeCipherSpec before ClientHello" {
 test "handleRecord: drops valid ChangeCipherSpec while waiting for client Finished" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
@@ -3307,7 +3322,7 @@ test "handleRecord: drops valid ChangeCipherSpec while waiting for client Finish
 test "handleRecord: rejects malformed ChangeCipherSpec payload" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
@@ -3327,7 +3342,7 @@ test "handleRecord: rejects malformed ChangeCipherSpec payload" {
 test "handleRecord: ClientHello returns ServerHello write and enforces pending write" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
@@ -3370,9 +3385,8 @@ test "acceptClientHello: emits ServerHello and installs handshake keys" {
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try client_hello.encode(
+    const ch = try encodeClientHelloForTest(
         &ch_buf,
-        .zero,
         client_keypair.public_key,
         "example.com",
         &.{ "h2", "http/1.1" },
@@ -3395,7 +3409,14 @@ test "acceptClientHello: emits ServerHello and installs handshake keys" {
     try testing.expectEqual(frame.header_len + @as(usize, hdr.length()), sh_record.len);
     const sh = try server_hello.parse(sh_record[frame.header_len..][0..hdr.length()]);
     try testing.expectEqual(.aes_128_gcm_sha256, sh.cipher_suite);
-    try testing.expectEqualSlices(u8, &server_keypair.public_key.data, &sh.key_share.x25519.data);
+    // The echo comes from the keypair the server actually used, which for the
+    // P-256 case is generated inside the config.
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
+    const expected_share: []const u8 = if (offers_x25519)
+        &hs.keypairs.x25519.public_key.data
+    else
+        &hs.keypairs.p256.public_key.data;
+    try testing.expectEqualSlices(u8, expected_share, parsedShareBytes(sh));
 
     var client_hs: ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),
@@ -3424,7 +3445,7 @@ test "acceptClientHello: negotiates secp256r1 key share" {
     const server_p256 = try p256.KeyPair.generateDeterministic(.init(test_p256_seed_b));
 
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_x25519.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_x25519.public_key, null, &.{});
     var p256_ch_buf: [768]u8 = undefined;
     const p256_ch = clientHelloWithP256KeyShare(&p256_ch_buf, ch, client_p256.public_key);
     var record: [1024]u8 = undefined;
@@ -3489,7 +3510,7 @@ fn deferredServerHello(
     const client_x25519: x25519.KeyPair = .generate();
     const client_p256 = try p256.KeyPair.generateDeterministic(.init(test_p256_seed_a));
     var ch_buf: [512]u8 = undefined;
-    const x25519_ch = try encodeClientHelloForTest(&ch_buf, client_x25519.public_key);
+    const x25519_ch = try encodeClientHelloForTest(&ch_buf, client_x25519.public_key, null, &.{});
     var p256_ch_buf: [768]u8 = undefined;
     const ch = switch (client_share) {
         .x25519 => x25519_ch,
@@ -3564,7 +3585,7 @@ test "acceptClientHello: negotiates secp384r1 key share" {
     const server_p384 = try p384.KeyPair.generateDeterministic(.init(test_p384_seed_b));
 
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_x25519.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_x25519.public_key, null, &.{});
     var p384_ch_buf: [768]u8 = undefined;
     const p384_ch = clientHelloWithP384KeyShare(&p384_ch_buf, ch, client_p384.public_key);
     var record: [1024]u8 = undefined;
@@ -3610,7 +3631,7 @@ test "acceptClientHello: emits HelloRetryRequest for missing secp256r1 key share
     const client_x25519: x25519.KeyPair = .generate();
     const client_p256 = try p256.KeyPair.generateDeterministic(.init(test_p256_seed_a));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_x25519.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_x25519.public_key, null, &.{});
     var p256_ch_buf: [768]u8 = undefined;
     const p256_ch = clientHelloWithP256KeyShare(&p256_ch_buf, ch, client_p256.public_key);
     patchClientHelloKeyShareGroup(p256_ch_buf[0..p256_ch.len], 0x6a6a);
@@ -3728,7 +3749,7 @@ test "acceptClientHello: rejects early_data in ClientHello2 after HRR" {
 
     const client_keypair: x25519.KeyPair = .generate();
     var ch1_buf: [512]u8 = undefined;
-    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key);
+    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key, null, &.{});
     patchClientHelloKeyShareGroup(ch1, 0x6a6a);
     var ch1_record: [1024]u8 = undefined;
     const ch1_header: frame.Header = .init(.handshake, @intCast(ch1.len));
@@ -4433,7 +4454,7 @@ test "acceptClientHello: PSK selection rejects a slack-byte identities vector" {
 test "acceptClientHello: rejects ClientHello2 that ignores HRR selected group" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch1_buf: [512]u8 = undefined;
-    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key);
+    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key, null, &.{});
     var hrr_ch1_buf: [512]u8 = undefined;
     const hrr_ch1 = clientHelloWithKeyShareGroup(
         &hrr_ch1_buf,
@@ -4469,7 +4490,7 @@ test "acceptClientHello: rejects ClientHello2 that ignores HRR selected group" {
 test "acceptClientHello: rejects ClientHello2 with extra key share" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch1_buf: [512]u8 = undefined;
-    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key);
+    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key, null, &.{});
     var hrr_ch1_buf: [512]u8 = undefined;
     const hrr_ch1 = clientHelloWithKeyShareGroup(
         &hrr_ch1_buf,
@@ -4504,7 +4525,7 @@ test "acceptClientHello: HRR sends at most one compatibility ChangeCipherSpec" {
     const client_keypair: x25519.KeyPair = .generate();
     const session_id: [4]u8 = .{ 0xa0, 0xa1, 0xa2, 0xa3 };
     var ch1_buf: [512]u8 = undefined;
-    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key);
+    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key, null, &.{});
     var compat_ch1_buf: [544]u8 = undefined;
     const compat_ch1 = compatibilityClientHello(&compat_ch1_buf, ch1, &session_id);
     var hrr_ch1_buf: [544]u8 = undefined;
@@ -4569,7 +4590,7 @@ test "acceptClientHello: emits compatibility ChangeCipherSpec for non-empty lega
     const client_keypair: x25519.KeyPair = .generate();
     const session_id: [4]u8 = .{ 0xa0, 0xa1, 0xa2, 0xa3 };
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var compat_ch_buf: [544]u8 = undefined;
     const compat_ch = compatibilityClientHello(&compat_ch_buf, ch, &session_id);
 
@@ -4608,9 +4629,8 @@ test "sendAnonymousFlightForTest: client decrypts EncryptedExtensions and Finish
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try client_hello.encode(
+    const ch = try encodeClientHelloForTest(
         &ch_buf,
-        .zero,
         client_keypair.public_key,
         "example.com",
         &.{"h2"},
@@ -4672,9 +4692,8 @@ test "sendAnonymousFlightForTest: client decrypts EncryptedExtensions and Finish
 test "sendPreparedServerFlight: credentials and pending write are enforced" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try client_hello.encode(
+    const ch = try encodeClientHelloForTest(
         &ch_buf,
-        .zero,
         client_keypair.public_key,
         "example.com",
         &.{},
@@ -4791,9 +4810,8 @@ test "sendAuthenticatedFlight: client decrypts authenticated server flight" {
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try client_hello.encode(
+    const ch = try encodeClientHelloForTest(
         &ch_buf,
-        .zero,
         client_keypair.public_key,
         "example.com",
         &.{"h2"},
@@ -4857,7 +4875,7 @@ test "sendAuthenticatedFlight: optional client auth sends CertificateRequest" {
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -4948,7 +4966,7 @@ fn connectedTestServerConfigure(suites_patch: ?[6]u8) !ServerHandshake {
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     if (suites_patch) |patch| ch_buf[41..47].* = patch;
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
@@ -4991,7 +5009,7 @@ test "traffic secrets: server retains handshake and application secrets on reque
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -5054,7 +5072,7 @@ fn awaitingClientFinishedServer(
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -5219,7 +5237,7 @@ test "required extension: a server that requires one refuses a ClientHello witho
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x91)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x92)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -6180,9 +6198,8 @@ test "sendAuthenticatedFlight: client processes CertificateVerify and Finished" 
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try client_hello.encode(
+    const ch = try encodeClientHelloForTest(
         &ch_buf,
-        .zero,
         client_keypair.public_key,
         "ztls.server.test",
         &.{"h2"},
@@ -6234,7 +6251,7 @@ test "processClientFinished: verifies Finished and installs app keys" {
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -6273,7 +6290,7 @@ test "processClientFinished: verifies Finished and installs app keys" {
 fn advanceToClientFinishedForTest(server: *ServerHandshake) !void {
     const keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, keypair.public_key, null, &.{});
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
@@ -6391,7 +6408,7 @@ test "processClientFinished: rejects a client key above retention capacity" {
     defer server.deinit();
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -6433,7 +6450,7 @@ test "processClientFinished: rejects bad verify_data" {
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -6484,7 +6501,7 @@ test "processClientFinished: rejects EndOfEarlyData when 0-RTT was not accepted"
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -6516,7 +6533,7 @@ test "processClientFinished: rejects EndOfEarlyData when 0-RTT was not accepted"
 test "handleRecord: rejects second plaintext ClientHello before Finished" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -6580,7 +6597,7 @@ test "handleRecord: rejects protected ClientHello after connected" {
 test "handleRecord: rejects client KeyUpdate before Finished" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -11132,7 +11149,7 @@ test "in-memory HRR round trip reaches app data" {
 test "acceptClientHello: server suite preference" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
@@ -11154,9 +11171,8 @@ test "acceptClientHello: server suite preference" {
 test "acceptClientHello: exposes SNI via clientServerName" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try client_hello.encode(
+    const ch = try encodeClientHelloForTest(
         &ch_buf,
-        .zero,
         client_keypair.public_key,
         "example.com",
         &.{},
@@ -11177,7 +11193,7 @@ test "acceptClientHello: exposes SNI via clientServerName" {
 test "acceptClientHello: clientServerName is null when SNI absent" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
@@ -11193,7 +11209,7 @@ test "acceptClientHello: clientServerName is null when SNI absent" {
 test "acceptClientHello: rejects unsupported suite" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     // Patch offered suites to unknown values. Offsets are fixed by
     // ClientHello's fixed prefix: header(4)+version(2)+random(32)+sid_len(1).
     ch_buf[41..47].* = .{ 0x12, 0x34, 0x12, 0x35, 0x12, 0x36 };
@@ -11215,7 +11231,7 @@ test "acceptClientHello: rejects unsupported suite" {
 test "acceptClientHello: ignores unknown cipher suites in mixed list" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     // unknown, TLS_AES_256_GCM_SHA384, unknown
     ch_buf[41..47].* = .{ 0x12, 0x34, 0x13, 0x02, 0x56, 0x78 };
 
@@ -11238,7 +11254,7 @@ test "acceptClientHello: ignores unknown cipher suites in mixed list" {
 test "acceptClientHello: rejects ClientHello with no shared group" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var i: usize = 0;
     while (i + 1 < ch.len) : (i += 1) {
         if (ch_buf[i] == 0x00 and ch_buf[i + 1] == 0x1d) ch_buf[i..][0..2].* = .{ 0x6a, 0x6a };
@@ -11263,7 +11279,7 @@ test "acceptClientHello: rejects ClientHello with no shared group" {
 test "handleRecord: reassembles ClientHello split across records" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
 
     // Split the handshake message body after the 4-byte header.
     const split_at = handshake_header_len + (ch_msg.len - handshake_header_len) / 2;
@@ -11299,7 +11315,7 @@ test "handleRecord: reassembles ClientHello split across records" {
 test "handleRecord: reassembles ClientHello with header and body in separate records" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
 
     // Split immediately after the 4-byte handshake header.
     const split_at: usize = handshake_header_len;
@@ -11333,7 +11349,7 @@ test "handleRecord: reassembles ClientHello with header and body in separate rec
 test "handleRecord: rejects CCS while ClientHello fragment pending" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     const split_at = handshake_header_len + (ch_msg.len - handshake_header_len) / 2;
 
     var rec1: [1024]u8 = undefined;
@@ -11359,7 +11375,7 @@ test "handleRecord: rejects CCS while ClientHello fragment pending" {
 test "handleRecord: processes alert while ClientHello fragment pending" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     const split_at = handshake_header_len + (ch_msg.len - handshake_header_len) / 2;
 
     var rec1: [1024]u8 = undefined;
@@ -11453,7 +11469,7 @@ test "handleRecord: lastPeerAlert replaced by later alert, preserved by close/ma
 test "handleRecord: rejects fragmented ClientHello without reassembly buffer" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
 
     // Split after the 4-byte handshake header so the record is shorter
     // than the handshake message.
@@ -11480,7 +11496,7 @@ test "handleRecord: state reset after invalid fragmented ClientHello" {
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
 
     // Split halfway through the body.
     const split_at = handshake_header_len + (ch_msg.len - handshake_header_len) / 2;
@@ -11527,7 +11543,7 @@ test "handleRecord: rejects trailing bytes after fragmented ClientHello" {
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch_msg = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     const split_at = handshake_header_len + (ch_msg.len - handshake_header_len) / 2;
 
     var rec1: [1024]u8 = undefined;
@@ -11570,7 +11586,7 @@ test "handleRecord: reassembles ClientHello2 split across records after HRR" {
 
     // CH1 with a non-X25519 key share triggers HRR.
     var ch1_buf: [512]u8 = undefined;
-    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key);
+    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key, null, &.{});
     var hrr_ch1_buf: [512]u8 = undefined;
     const hrr_ch1 = clientHelloWithKeyShareGroup(
         &hrr_ch1_buf,
@@ -11599,7 +11615,7 @@ test "handleRecord: reassembles ClientHello2 split across records after HRR" {
 
     // CH2 with X25519 key share, split across records.
     var ch2_buf: [512]u8 = undefined;
-    const ch2 = try encodeClientHelloForTest(&ch2_buf, client_keypair.public_key);
+    const ch2 = try encodeClientHelloForTest(&ch2_buf, client_keypair.public_key, null, &.{});
     const split_at = handshake_header_len + (ch2.len - handshake_header_len) / 2;
 
     var rec1: [1024]u8 = undefined;
@@ -11627,7 +11643,7 @@ test "handleRecord: reassembles fragmented client Finished across encrypted reco
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const ch_header: frame.Header = .init(.handshake, @intCast(ch.len));
     ch_header.write(ch_record[0..frame.header_len]);
@@ -11684,7 +11700,7 @@ test "handleRecord: rejects interleaved alert during Finished fragment reassembl
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const ch_header: frame.Header = .init(.handshake, @intCast(ch.len));
     ch_header.write(ch_record[0..frame.header_len]);
@@ -11742,7 +11758,7 @@ test "handleRecord: rejects plaintext alert during Finished fragment reassembly"
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const ch_header: frame.Header = .init(.handshake, @intCast(ch.len));
     ch_header.write(ch_record[0..frame.header_len]);
@@ -11786,7 +11802,7 @@ test "handleRecord: encrypted fatal alert while waiting for Finished records det
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const ch_header: frame.Header = .init(.handshake, @intCast(ch.len));
     ch_header.write(ch_record[0..frame.header_len]);
@@ -11821,7 +11837,7 @@ test "handleRecord: rejects plaintext alert while waiting for Finished" {
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const ch_header: frame.Header = .init(.handshake, @intCast(ch.len));
     ch_header.write(ch_record[0..frame.header_len]);
@@ -11845,7 +11861,7 @@ test "handleRecord: rejects zero-length encrypted handshake while waiting for Fi
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key);
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
     var ch_record: [1024]u8 = undefined;
     const ch_header: frame.Header = .init(.handshake, @intCast(ch.len));
     ch_header.write(ch_record[0..frame.header_len]);
@@ -11877,9 +11893,8 @@ test "handleRecord: rejects zero-length encrypted handshake while waiting for Fi
 test "handleRecord: reassembles ClientHello when handshake header is split after 1 byte" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch_msg = try client_hello.encode(
+    const ch_msg = try encodeClientHelloForTest(
         &ch_buf,
-        .zero,
         client_keypair.public_key,
         "example.com",
         &.{"h2"},
