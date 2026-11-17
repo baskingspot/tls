@@ -151,6 +151,13 @@ fn encodeClientHelloForTest(buf: []u8, key: x25519.PublicKey) ![]u8 {
     return client_hello.encodeWithP256(buf, .zero, key, p256_key.public_key, null, &.{});
 }
 
+/// These tests rewrite an X25519 first flight or hand-build the default
+/// transcript, which an approved-only build does not produce. Their subject is
+/// the default profile, so they do not apply there.
+fn skipOutsideDefaultFirstFlight() error{SkipZigTest}!void {
+    if (!root.capabilities.supportsGroup(.client, .x25519)) return error.SkipZigTest;
+}
+
 test "traffic secrets: retained only when requested" {
     var store: traffic_secrets.TrafficSecrets = .init();
     defer store.secureZero();
@@ -4635,6 +4642,7 @@ test "processServerHello rejects selected PSK with incompatible cipher suite has
 // see a full authenticated flight), and still accepts the legitimate PSK
 // fast-path when the server does select it. Regression for #73.
 test "handleRecord: PSK-offering client rejects bare Finished unless server selected PSK" {
+    try skipOutsideDefaultFirstFlight();
     const psk_bytes: [32]u8 = @splat(0x42);
     const identity_bytes = [_]u8{ 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59 };
 
@@ -5989,6 +5997,7 @@ fn encodeHrrWithCookieForTest(
 // the transcript union collapsed, so the second ServerHello read the
 // inactive .buffering arm (ReleaseSafe panic, ReleaseFast UB).
 test "processServerHello: failed key exchange rolls back the transcript union" {
+    try skipOutsideDefaultFirstFlight();
     var hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
@@ -6088,6 +6097,7 @@ test "processHelloRetryRequest: BufferTooShort rolls back; retry succeeds" {
 // aes_128_gcm_sha256 ticket passes the hash check but must abort with
 // illegal_parameter once EncryptedExtensions accepts the early data.
 test "EncryptedExtensions: rejects accepted 0-RTT under a different same-hash suite" {
+    try skipOutsideDefaultFirstFlight();
     const psk: [32]u8 = @splat(0x42);
     const identity = [_]u8{0x01};
     var ticket: SessionTicket = .init(0, 0, .aes_128_gcm_sha256, 1024);
