@@ -3430,7 +3430,11 @@ test "acceptClientHello: emits ServerHello and installs handshake keys" {
     // P-256 case is generated inside the config.
     const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
     if (offers_x25519) {
-        try testing.expectEqualSlices(u8, &hs.keypairs.x25519.public_key.data, parsedShareBytes(sh));
+        try testing.expectEqualSlices(
+            u8,
+            &hs.keypairs.x25519.public_key.data,
+            parsedShareBytes(sh),
+        );
     } else {
         // The server derives its P-256 key lazily, so its public key is not
         // materialized here; check the echo's shape, and the client below
