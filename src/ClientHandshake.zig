@@ -130,6 +130,17 @@ pub const SessionTicket = struct {
     }
 };
 
+/// A hand-built ClientHello whose first flight carries a group this build
+/// advertises: X25519 with the X25519-only encoder, P-256 in an approved-only
+/// build, which does not advertise X25519.
+fn encodeClientHelloForTest(buf: []u8, key: x25519.PublicKey) ![]u8 {
+    if (comptime root.capabilities.supportsGroup(.client, .x25519))
+        return client_hello.encode(buf, .zero, key, null, &.{});
+    const seed: [32]u8 = @splat(0x5a);
+    const p256_key = try p256.KeyPair.generateDeterministic(.init(seed));
+    return client_hello.encodeWithP256(buf, .zero, key, p256_key.public_key, null, &.{});
+}
+
 test "traffic secrets: retained only when requested" {
     var store: traffic_secrets.TrafficSecrets = .init();
     defer store.secureZero();
@@ -2667,7 +2678,13 @@ test "processServerHello: accepts secp256r1 key_share" {
     hs.injectClientHello(ch);
 
     var sh_buf: [192]u8 = undefined;
-    const server_ks: server_hello.KeyShare = .{ .secp256r1 = server_p256.public_key };
+    // A group the client did not offer: X25519 in an approved-only build,
+    // P-256 in the default one.
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
+    var server_ks: server_hello.KeyShare = if (offers_x25519)
+        .{ .secp256r1 = server_p256.public_key }
+    else
+        .{ .x25519 = x25519.PublicKey.init(@splat(0x11)) };
     const sh = try server_hello.encodeWithKeyShare(
         &sh_buf,
         @splat(0xab),
@@ -2721,11 +2738,17 @@ test "processServerHello: rejects unoffered secp256r1 key_share" {
     var hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
-    const ch = try client_hello.encode(&ch_buf, .zero, hs.keypairs.x25519.public_key, null, &.{});
+    const ch = try encodeClientHelloForTest(&ch_buf, hs.keypairs.x25519.public_key);
     hs.injectClientHello(ch);
 
     var sh_buf: [192]u8 = undefined;
-    const server_ks: server_hello.KeyShare = .{ .secp256r1 = server_p256.public_key };
+    // A group the client did not offer: X25519 in an approved-only build,
+    // P-256 in the default one.
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
+    var server_ks: server_hello.KeyShare = if (offers_x25519)
+        .{ .secp256r1 = server_p256.public_key }
+    else
+        .{ .x25519 = x25519.PublicKey.init(@splat(0x11)) };
     const sh = try server_hello.encodeWithKeyShare(
         &sh_buf,
         @splat(0xab),
@@ -2781,7 +2804,7 @@ test "processServerHello: rejects unoffered cipher suite" {
     var hs: ClientHandshake = .init(try testConfig(.generate()));
     defer hs.deinit();
     var ch_buf: [512]u8 = undefined;
-    const ch = try client_hello.encode(&ch_buf, .zero, hs.keypairs.x25519.public_key, null, &.{});
+    const ch = try encodeClientHelloForTest(&ch_buf, hs.keypairs.x25519.public_key);
     // Keep TLS_AES_128_GCM_SHA256 and replace the other recognized suites with unknowns.
     ch_buf[43..47].* = .{ 0x12, 0x34, 0x56, 0x78 };
     hs.injectClientHello(ch);
@@ -4463,7 +4486,15 @@ fn advanceZeroRttClientToEe(
     selection: TestPskSelection,
     suite: CipherSuite,
 ) !void {
-    var key_share: server_hello.KeyShare = .{ .x25519 = server_keypair.public_key };
+    // The ServerHello repeats the group the client's first flight carried.
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
+    var key_share: server_hello.KeyShare = if (offers_x25519)
+        .{ .x25519 = server_keypair.public_key }
+    else blk: {
+        const seed: [32]u8 = @splat(0x5b);
+        const p256_key = try p256.KeyPair.generateDeterministic(.init(seed));
+        break :blk .{ .secp256r1 = p256_key.public_key };
+    };
     var sh_buf: [256]u8 = undefined;
     const sh = switch (selection) {
         .declined => try server_hello.encodeWithKeyShare(
@@ -4572,7 +4603,15 @@ test "processServerHello rejects selected PSK with incompatible cipher suite has
     var client_out: [1024]u8 = undefined;
     _ = try client.startWithPsk(&ticket, &client_out, false);
 
-    var key_share: server_hello.KeyShare = .{ .x25519 = server_keypair.public_key };
+    // The ServerHello repeats the group the client's first flight carried.
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
+    var key_share: server_hello.KeyShare = if (offers_x25519)
+        .{ .x25519 = server_keypair.public_key }
+    else blk: {
+        const seed: [32]u8 = @splat(0x5b);
+        const p256_key = try p256.KeyPair.generateDeterministic(.init(seed));
+        break :blk .{ .secp256r1 = p256_key.public_key };
+    };
     var server_hello_buf: [256]u8 = undefined;
     const sh = try server_hello.encodeWithKeyShareAndPsk(
         &server_hello_buf,
@@ -5228,11 +5267,19 @@ fn setupZeroRttClientForFuzz(
     // Build a ClientHello with PSK + early_data but no P-256 key_share entry,
     // so a HelloRetryRequest selecting secp256r1 is valid (RFC 8446 §4.2.8).
     var ch_buf: [2048]u8 = undefined;
+    // Omitting the P-256 share keeps a HelloRetryRequest that selects
+    // secp256r1 valid. An approved-only build has no X25519 share, so P-256
+    // has to carry the flight there and the HRR scenario does not apply.
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
+    const p256_share: ?p256.PublicKey = if (offers_x25519)
+        null
+    else
+        hs.keypairs.p256.public_key;
     const r = try client_hello.encodeWithPsk(
         &ch_buf,
         hs.random,
         hs.keypairs.x25519.public_key,
-        null, // no P-256 key_share
+        p256_share,
         null, // no P-384 key_share
         hs.policy.host_name,
         hs.alpn_protocols,
@@ -5433,7 +5480,11 @@ fn removeP256KeyShareForTest(buf: []u8, len: usize) ![]u8 {
     return buf[0..new_len];
 }
 
+/// ClientHello1 without the P-256 share, so an HRR selecting secp256r1 is legal.
+/// An approved-only build carries P-256 and nothing else, so there is no second
+/// group for the HRR to select; the tests that use this skip there.
 fn encodeClientHelloMissingP256ShareForTest(out: []u8, hs: *const ClientHandshake) ![]u8 {
+    if (comptime !root.capabilities.supportsGroup(.client, .x25519)) return error.SkipZigTest;
     const full = try client_hello.encodeWithP256(
         out,
         hs.random,
@@ -5474,7 +5525,11 @@ test "processHelloRetryRequest: rejects already-offered key_share group" {
     hs.injectClientHello(ch);
 
     var hrr_buf: [128]u8 = undefined;
-    const hrr = try encodeHrrForTest(&hrr_buf, &.{}, .aes_128_gcm_sha256, .x25519);
+    // The first flight carries X25519 by default and P-256 in an approved-only
+    // build; either way the selected group is one the client already offered.
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
+    const offered_group: NamedGroup = if (offers_x25519) .x25519 else .secp256r1;
+    const hrr = try encodeHrrForTest(&hrr_buf, &.{}, .aes_128_gcm_sha256, offered_group);
 
     var out: [512]u8 = undefined;
     try testing.expectError(error.IllegalParameter, hs.processHelloRetryRequest(hrr, &out));
@@ -5714,7 +5769,13 @@ test "processServerHello: post-HRR accepts matching ServerHello" {
 
     // Real ServerHello with secp256r1 key_share and the same cipher suite.
     var sh_buf: [192]u8 = undefined;
-    const server_ks: server_hello.KeyShare = .{ .secp256r1 = server_p256.public_key };
+    // A group the client did not offer: X25519 in an approved-only build,
+    // P-256 in the default one.
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
+    var server_ks: server_hello.KeyShare = if (offers_x25519)
+        .{ .secp256r1 = server_p256.public_key }
+    else
+        .{ .x25519 = x25519.PublicKey.init(@splat(0x11)) };
     const sh = try server_hello.encodeWithKeyShare(
         &sh_buf,
         @splat(0xab),

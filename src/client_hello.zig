@@ -85,6 +85,42 @@ const ext_sig_algs_cert_len = ext_header_len + 2 + cert_sig_scheme_count * 2;
 /// so P-256 carries the first flight there.
 const include_x25519: bool = backend.capabilities.client_x25519;
 
+/// The group the first flight carries: X25519 by default, P-256 in an
+/// approved-only build, which does not advertise X25519.
+const first_flight_group: NamedGroup = if (include_x25519) .x25519 else .secp256r1;
+
+/// P-256 key the layout tests use when P-256 carries the first flight.
+fn testP256PublicKey() !p256.PublicKey {
+    const seed: [32]u8 = @splat(0x42);
+    return (try p256.KeyPair.generateDeterministic(.init(seed))).public_key;
+}
+
+/// ClientHello for the layout tests, built with whichever group this build
+/// advertises so the same assertions run under both profiles.
+fn encodeForTest(
+    out: []u8,
+    random: Random,
+    key: x25519.PublicKey,
+    server_name: ?[]const u8,
+    alpn_protocols: AlpnProtocols,
+) ![]u8 {
+    if (comptime include_x25519) return encode(out, random, key, server_name, alpn_protocols);
+    return encodeWithP256(out, random, key, try testP256PublicKey(), server_name, alpn_protocols);
+}
+
+fn approvedCipherSuite(suite: CipherSuite) bool {
+    for (supported_cipher_suites) |advertised| {
+        if (advertised == suite) return true;
+    }
+    return false;
+}
+
+/// `encodedLen` for the message `encodeForTest` produces.
+fn encodedLenForTest(server_name: ?[]const u8, alpn_protocols: AlpnProtocols) !usize {
+    if (comptime include_x25519) return encodedLen(server_name, alpn_protocols);
+    return encodedLenWithP256(server_name, alpn_protocols);
+}
+
 comptime {
     assert(include_x25519 or backend.capabilities.client_p256);
 }
@@ -1640,7 +1676,7 @@ pub fn parseWithExtensions(msg: []const u8, opts: ParseOptions) ParseError!Parse
 /// wire-layout assertions built on them describe the default build. An
 /// approved-only build carries a P-256 first flight instead.
 fn clientHelloWithSniForTest(out: []u8, name: ?[]const u8) ![]const u8 {
-    const base = try encode(out, .zero, .zero, null, &.{});
+    const base = try encodeForTest(out, .zero, .zero, null, &.{});
     const list_len = if (name) |n| 3 + n.len else 0;
     var w: wire.Writer = .init(out[base.len..]);
     w.appendAssumeCapacity(ExtensionType, .server_name);
@@ -1678,8 +1714,8 @@ test "parse: preserves boundary SNI names as borrowed slices" {
             @intFromPtr(message.ptr) + message.len - name.len,
             @intFromPtr(parsed.server_name.?.ptr),
         );
-        const encoded = try encode(&buf, .zero, .zero, name, &.{});
-        try testing.expectEqual(try encodedLen(name, &.{}), encoded.len);
+        const encoded = try encodeForTest(&buf, .zero, .zero, name, &.{});
+        try testing.expectEqual(try encodedLenForTest(name, &.{}), encoded.len);
     }
 }
 
@@ -1930,8 +1966,8 @@ fn parseKeyShare(ext: []const u8) ParseError!ParsedKeyShares {
 
 test "encode: size matches encodedLen" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, "server", &.{});
-    try testing.expectEqual(try encodedLen("server", &.{}), encoded.len);
+    const encoded = try encodeForTest(&buf, .zero, .zero, "server", &.{});
+    try testing.expectEqual(try encodedLenForTest("server", &.{}), encoded.len);
 }
 
 // RFC 8446 §4.2.11 — pre_shared_key is the last extension; the binder prefix
@@ -1941,11 +1977,17 @@ test "encodeWithPsk: pre_shared_key is last, binder prefix and offset are correc
     const x_key: x25519.PublicKey = .init(@splat(0x11));
     const identity = [_]u8{ 0xaa, 0xbb, 0xcc };
     var buf: [1024]u8 = undefined;
+    // The first flight must carry a group the build advertises: P-256 when
+    // X25519 is unavailable.
+    const p256_key: ?p256.PublicKey = if (comptime include_x25519)
+        null
+    else
+        try testP256PublicKey();
     const r = try encodeWithPsk(
         &buf,
         .zero,
         x_key,
-        null,
+        p256_key,
         null,
         null,
         &.{},
@@ -2019,11 +2061,17 @@ test "parse: ClientHello with pre_shared_key round-trips" {
     const x_key: x25519.PublicKey = .init(@splat(0x11));
     const identity = [_]u8{ 0xaa, 0xbb, 0xcc };
     var buf: [1024]u8 = undefined;
+    // The first flight must carry a group the build advertises: P-256 when
+    // X25519 is unavailable.
+    const p256_key: ?p256.PublicKey = if (comptime include_x25519)
+        null
+    else
+        try testP256PublicKey();
     const r = try encodeWithPsk(
         &buf,
         .zero,
         x_key,
-        null,
+        p256_key,
         null,
         null,
         &.{},
@@ -2055,7 +2103,7 @@ test "encodeWithP256: size matches encodedLenWithP256" {
 
 test "encode: handshake type and legacy version" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     try testing.expectEqual(@as(u8, 0x01), encoded[0]);
     try testing.expectEqual(@as(u8, 0x03), encoded[4]);
     try testing.expectEqual(@as(u8, 0x03), encoded[5]);
@@ -2063,7 +2111,7 @@ test "encode: handshake type and legacy version" {
 
 test "encode: cipher suites match backend capabilities" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const cs_offset = 39; // header(4) + version(2) + random(32) + session_id(1)
     try testing.expectEqual(
         @as(u16, @intCast(cipher_suite_count * 2)),
@@ -2080,22 +2128,24 @@ test "encode: cipher suites match backend capabilities" {
 // RFC 8446 §4.1.2 — without compatibility mode, legacy_session_id is empty.
 test "encode: legacy_session_id is empty" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const session_id_len_offset = 38; // header(4) + legacy_version(2) + random(32)
     try testing.expectEqual(@as(u8, 0), encoded[session_id_len_offset]);
 }
 
 // RFC 8446 §4.2.7 — the default test helper ClientHello advertises X25519 only.
-test "encode: supported_groups contains X25519" {
+test "encode: supported_groups leads with the advertised group" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const ext = try findExtension(encoded, .supported_groups);
     try testing.expectEqual(@as(u16, 2), memx.readInt(u16, ext[0..2]));
-    try testing.expectEqual(compat.enumToInt(NamedGroup.x25519), memx.readInt(u16, ext[2..][0..2]));
+    const first_group = memx.readInt(u16, ext[2..][0..2]);
+    try testing.expectEqual(compat.enumToInt(first_flight_group), first_group);
 }
 
-// RFC 8446 §4.2.8 — the current client surface sends one X25519 KeyShareEntry.
-test "encode: key_share contains public key" {
+// RFC 8446 §4.2.8 — the first flight carries one KeyShareEntry, for the group
+// the build advertises.
+test "encode: key_share carries the advertised group's public key" {
     const key: x25519.PublicKey = .init(.{
         0x99, 0x38, 0x1d, 0xe5, 0x60, 0xe4, 0xbd, 0x43,
         0xd2, 0x3d, 0x8e, 0x43, 0x5a, 0x7d, 0xba, 0xfe,
@@ -2103,17 +2153,16 @@ test "encode: key_share contains public key" {
         0x54, 0x13, 0x69, 0x1e, 0x52, 0x9a, 0xaf, 0x2c,
     });
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, key, null, &.{});
-    var found = false;
-    var i: usize = 0;
-    while (i + 1 < encoded.len) : (i += 1) {
-        if (encoded[i] == 0x00 and encoded[i + 1] == 0x33) {
-            try testing.expectEqualSlices(u8, &key.data, encoded[i + 10 ..][0..32]);
-            found = true;
-            break;
-        }
+    const encoded = try encodeForTest(&buf, .zero, key, null, &.{});
+    const parsed = try parse(encoded);
+    switch (first_flight_group) {
+        .x25519 => try testing.expectEqualSlices(u8, &key.data, &parsed.public_key.?.data),
+        .secp256r1 => {
+            const expected = try testP256PublicKey();
+            try testing.expectEqualSlices(u8, &expected.data, &parsed.public_key_p256.?.data);
+        },
+        else => unreachable,
     }
-    try testing.expect(found);
 }
 
 // RFC 8446 §4.2.7, §4.2.8 — client P-256 support advertises secp256r1
@@ -2127,9 +2176,10 @@ test "encodeWithP256: includes X25519 and secp256r1 key shares" {
     const encoded = try encodeWithP256(&buf, .zero, x_key, p_key, null, &.{});
     const parsed = try parse(encoded);
 
-    try testing.expect(parsed.groups.contains(.x25519));
     try testing.expect(parsed.groups.contains(.secp256r1));
-    try testing.expectEqualSlices(u8, &x_key.data, &parsed.public_key.?.data);
+    try testing.expectEqual(include_x25519, parsed.groups.contains(.x25519));
+    if (comptime include_x25519)
+        try testing.expectEqualSlices(u8, &x_key.data, &parsed.public_key.?.data);
     try testing.expectEqualSlices(u8, &p_key.data, &parsed.public_key_p256.?.data);
 }
 
@@ -2146,10 +2196,11 @@ test "encodeWithP256P384: includes X25519, secp256r1, and secp384r1 key shares" 
     const encoded = try encodeWithP256P384(&buf, .zero, x_key, p_key, p384_key, null, &.{});
     const parsed = try parse(encoded);
 
-    try testing.expect(parsed.groups.contains(.x25519));
     try testing.expect(parsed.groups.contains(.secp256r1));
     try testing.expect(parsed.groups.contains(.secp384r1));
-    try testing.expectEqualSlices(u8, &x_key.data, &parsed.public_key.?.data);
+    try testing.expectEqual(include_x25519, parsed.groups.contains(.x25519));
+    if (comptime include_x25519)
+        try testing.expectEqualSlices(u8, &x_key.data, &parsed.public_key.?.data);
     try testing.expectEqualSlices(u8, &p_key.data, &parsed.public_key_p256.?.data);
     try testing.expectEqualSlices(u8, &p384_key.data, &parsed.public_key_p384.?.data);
 }
@@ -2246,14 +2297,14 @@ test "encodeRetryAfterHrr: secp384r1 selected, no cookie" {
     try testing.expectEqualSlices(u8, &p384_key.data, &parsed.public_key_p384.?.data);
 
     // supported_groups must still advertise all three groups.
-    try testing.expect(parsed.groups.contains(.x25519));
+    try testing.expectEqual(include_x25519, parsed.groups.contains(.x25519));
     try testing.expect(parsed.groups.contains(.secp256r1));
     try testing.expect(parsed.groups.contains(.secp384r1));
 }
 
 test "encode: SNI present when server_name set" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, "example.com", &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, "example.com", &.{});
     var found = false;
     var i: usize = 0;
     while (i + 1 < encoded.len) : (i += 1) {
@@ -2267,14 +2318,14 @@ test "encode: SNI present when server_name set" {
 
 test "encode: SNI absent when server_name is null" {
     var buf: [512]u8 = undefined;
-    const with = try encode(&buf, .zero, .zero, "example.com", &.{});
-    const without = try encode(&buf, .zero, .zero, null, &.{});
+    const with = try encodeForTest(&buf, .zero, .zero, "example.com", &.{});
+    const without = try encodeForTest(&buf, .zero, .zero, null, &.{});
     try testing.expect(with.len > without.len);
 }
 
 test "encode: supported_versions contains TLS 1.3" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const ext = try findExtension(encoded, .supported_versions);
     try testing.expectEqualSlices(u8, &.{ 0x02, 0x03, 0x04 }, ext);
 }
@@ -2283,7 +2334,7 @@ test "encode: supported_versions contains TLS 1.3" {
 // schemes the active backend supports.
 test "encode: signature_algorithms match backend capabilities" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const ext = try findExtension(encoded, .signature_algorithms);
     try expectSignatureSchemeList(ext, supported_signature_schemes);
 }
@@ -2292,14 +2343,14 @@ test "encode: signature_algorithms match backend capabilities" {
 // signature algorithms separately from CertificateVerify algorithms.
 test "encode: signature_algorithms_cert match backend capabilities" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const ext = try findExtension(encoded, .signature_algorithms_cert);
     try expectSignatureSchemeList(ext, supported_certificate_signature_schemes);
 }
 
 test "encode: ALPN present when protocols set" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{ "h2", "http/1.1" });
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{ "h2", "http/1.1" });
     var found = false;
     var i: usize = 0;
     while (i + 1 < encoded.len) : (i += 1) {
@@ -2365,12 +2416,19 @@ fn rewriteClientHelloForP256(buf: []u8, encoded_len: usize, public_key: p256.Pub
     return new_len;
 }
 
-fn truncateX25519KeyShare(buf: []u8, encoded_len: usize) !usize {
+/// Shorten the first-flight key share by one byte without fixing its length
+/// field, so the parser sees a truncated share. Works for whichever group this
+/// build advertises.
+fn truncateFirstFlightShare(buf: []u8, encoded_len: usize) !usize {
     const key_share_offset = try findExtensionOffset(buf[0..encoded_len], .key_share);
     const ext_len = memx.readInt(u16, buf[key_share_offset + 2 ..][0..2]);
     const shares_len = memx.readInt(u16, buf[key_share_offset + 4 ..][0..2]);
     const key_len = memx.readInt(u16, buf[key_share_offset + 8 ..][0..2]);
-    assert(key_len == x25519.public_length);
+    assert(key_len == switch (first_flight_group) {
+        .x25519 => x25519.public_length,
+        .secp256r1 => p256.public_length,
+        else => unreachable,
+    });
 
     memx.writeInt(u16, buf[key_share_offset + 2 ..][0..2], ext_len - 1);
     memx.writeInt(u16, buf[key_share_offset + 4 ..][0..2], shares_len - 1);
@@ -2394,14 +2452,23 @@ test "parse: encoded ClientHello" {
         0x54, 0x13, 0x69, 0x1e, 0x52, 0x9a, 0xaf, 0x2c,
     });
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, key, "example.com", &.{ "h2", "http/1.1" });
+    const encoded = try encodeForTest(&buf, .zero, key, "example.com", &.{ "h2", "http/1.1" });
     const parsed = try parse(encoded);
-    try testing.expect(parsed.offersSuite(.aes_128_gcm_sha256));
-    try testing.expect(parsed.offersSuite(.aes_256_gcm_sha384));
-    try testing.expect(parsed.offersSuite(.chacha20_poly1305_sha256));
+    for (supported_cipher_suites) |suite| {
+        try testing.expect(parsed.offersSuite(suite));
+    }
+    if (comptime !approvedCipherSuite(.chacha20_poly1305_sha256)) {
+        try testing.expect(!parsed.offersSuite(.chacha20_poly1305_sha256));
+    }
     try testing.expect(parsed.offered_extensions.contains(.server_name));
     try testing.expectEqualStrings("example.com", parsed.server_name.?);
-    try testing.expectEqualSlices(u8, &key.data, &parsed.public_key.?.data);
+    // The share is for the group this build advertises.
+    if (comptime include_x25519) {
+        try testing.expectEqualSlices(u8, &key.data, &parsed.public_key.?.data);
+    } else {
+        const expected = try testP256PublicKey();
+        try testing.expectEqualSlices(u8, &expected.data, &parsed.public_key_p256.?.data);
+    }
     const alpn_wire = [_]u8{ 0x02, 'h', '2', 0x08, 'h', 't', 't', 'p', '/', '1', '.', '1' };
     try testing.expectEqualSlices(u8, &alpn_wire, parsed.alpn_protocols);
     try testing.expectEqualStrings("http/1.1", parsed.selectAlpn(&.{ "http/1.1", "h2" }).?);
@@ -2413,7 +2480,7 @@ test "parse: encoded ClientHello" {
 // tls extracted a hostname value from the ServerNameList.
 test "parse: tracks offered SNI extension presence" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, "example.com", &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, "example.com", &.{});
     const sni = try findExtension(encoded, .server_name);
     sni[2] = 1; // unknown ServerName NameType, so Parsed.server_name remains null.
 
@@ -2426,7 +2493,7 @@ test "parse: tracks offered SNI extension presence" {
 // EncryptedExtensions validation.
 test "parse: tracks offered record_size_limit extension presence" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const rsl = [_]u8{ 0x00, 0x1c, 0x00, 0x02, 0x04, 0x00 };
     const with_rsl = appendExtension(&buf, encoded.len, &rsl);
 
@@ -2441,7 +2508,7 @@ test "parse: accepts secp256r1 supported group and key share" {
         "101112131415161718191a1b1c1d1e1f");
     const p256_keypair = try p256.KeyPair.generateDeterministic(.init(seed));
     var buf: [768]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const p256_len = try rewriteClientHelloForP256(&buf, encoded.len, p256_keypair.public_key);
 
     const parsed = try parse(buf[0..p256_len]);
@@ -2458,24 +2525,35 @@ test "parse: accepts secp256r1 supported group and key share" {
 // RFC 10024 §7 — standardized hybrid groups are implemented groups when the
 // selected backend advertises the required pure ML-KEM parameter set.
 test "parseSupportedGroups: records RFC 10024 groups" {
-    const hybrid_only = try parseSupportedGroups(&.{ 0x00, 0x02, 0x11, 0xec });
-    try testing.expect(hybrid_only.contains(.x25519_mlkem768));
+    if (comptime include_x25519) {
+        // The default build implements the hybrid group and records it.
+        const hybrid_only = try parseSupportedGroups(&.{ 0x00, 0x02, 0x11, 0xec });
+        try testing.expect(hybrid_only.contains(.x25519_mlkem768));
+    } else {
+        // An approved-only build implements no hybrid group, so a list with
+        // only one has no group this build can use.
+        try testing.expectError(
+            error.UnsupportedKeyShare,
+            parseSupportedGroups(&.{ 0x00, 0x02, 0x11, 0xec }),
+        );
+    }
 
     const groups = try parseSupportedGroups(&.{
-        0x00, 0x04,
+        0x00, 0x06,
         0x00, 0x1d, // x25519
+        0x00, 0x17, // secp256r1
         0x11, 0xec, // x25519_mlkem768
     });
     try testing.expect(groups.contains(.x25519));
     try testing.expect(groups.contains(.x25519_mlkem768));
-    try testing.expect(!groups.contains(.secp256r1));
+    try testing.expect(groups.contains(.secp256r1));
 }
 
 // RFC 8446 §4.2.8 — invalid key_exchange length is illegal_parameter input.
-test "parse: rejects malformed X25519 key share" {
+test "parse: rejects a malformed first-flight key share" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
-    const bad_len = try truncateX25519KeyShare(&buf, encoded.len);
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
+    const bad_len = try truncateFirstFlightShare(&buf, encoded.len);
     try testing.expectError(error.MalformedKeyShare, parse(buf[0..bad_len]));
 }
 
@@ -2485,13 +2563,20 @@ test "parse: rejects key share outside supported_groups" {
         "101112131415161718191a1b1c1d1e1f");
     const p256_keypair = try p256.KeyPair.generateDeterministic(.init(seed));
     var buf: [768]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const p256_len = try rewriteClientHelloForP256(&buf, encoded.len, p256_keypair.public_key);
+    // Advertise only groups other than the one the key share uses, with one
+    // entry this build implements so the list itself is accepted. The share is
+    // P-256, so the first entry is whichever classical group is not P-256.
     const groups = try findExtension(buf[0..p256_len], .supported_groups);
+    // P-256 is the share, so advertise a different implemented group: X25519
+    // in a default build, P-384 where X25519 is not available.
+    const other: NamedGroup = if (include_x25519) .x25519 else .secp384r1;
     var i: usize = 2;
     while (i < groups.len) : (i += 2) {
-        groups[i] = 0x00;
-        groups[i + 1] = @intCast(compat.enumToInt(NamedGroup.x25519));
+        const group: NamedGroup = other;
+        groups[i] = @intCast(compat.enumToInt(group) >> 8);
+        groups[i + 1] = @intCast(compat.enumToInt(group) & 0xff);
     }
 
     try testing.expectError(error.IllegalParameter, parse(buf[0..p256_len]));
@@ -2500,7 +2585,7 @@ test "parse: rejects key share outside supported_groups" {
 test "parse: rejects oversized legacy_session_id" {
     inline for (.{ 33, 255 }) |session_id_len| {
         var buf: [512]u8 = undefined;
-        const encoded = try encode(&buf, .zero, .zero, null, &.{});
+        const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
         const session_id_len_offset = 38; // header(4) + legacy_version(2) + random(32)
         const session_id_offset = session_id_len_offset + 1;
         const bad_len = encoded.len + session_id_len;
@@ -2525,7 +2610,7 @@ test "parse: rejects oversized legacy_session_id" {
 // by the supported_versions extension.
 test "parse: rejects SSLv3-or-lower legacy_version" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     buf[4] = 0x03;
     buf[5] = 0x00;
     try testing.expectError(error.UnsupportedTlsVersion, parse(buf[0..encoded.len]));
@@ -2541,7 +2626,7 @@ test "parse: rejects SSLv3-or-lower legacy_version" {
 
 test "parse: rejects missing supported_versions" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const offset = try findExtensionOffset(encoded, .supported_versions);
     buf[offset + 1] = @intCast(compat.enumToInt(ExtensionType.padding));
     try testing.expectError(error.UnsupportedTlsVersion, parse(buf[0..encoded.len]));
@@ -2549,7 +2634,7 @@ test "parse: rejects missing supported_versions" {
 
 test "parse: rejects supported_versions without TLS 1.3" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const ext = try findExtension(buf[0..encoded.len], .supported_versions);
     ext[1] = 0x03;
     ext[2] = 0x03;
@@ -2560,7 +2645,7 @@ test "parse: rejects supported_versions without TLS 1.3" {
 // supported_groups, signature_algorithms, and key_share.
 test "parse: rejects missing supported_groups" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const offset = try findExtensionOffset(encoded, .supported_groups);
     buf[offset + 1] = @intCast(compat.enumToInt(ExtensionType.padding));
     try testing.expectError(error.MissingExtension, parse(buf[0..encoded.len]));
@@ -2568,7 +2653,7 @@ test "parse: rejects missing supported_groups" {
 
 test "parse: rejects missing signature_algorithms" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const offset = try findExtensionOffset(encoded, .signature_algorithms);
     buf[offset + 1] = @intCast(compat.enumToInt(ExtensionType.padding));
     try testing.expectError(error.MissingExtension, parse(buf[0..encoded.len]));
@@ -2576,7 +2661,7 @@ test "parse: rejects missing signature_algorithms" {
 
 test "parse: rejects malformed signature_algorithms" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const ext = try findExtension(buf[0..encoded.len], .signature_algorithms);
     ext[1] = 0;
     try testing.expectError(error.InvalidVectorLength, parse(buf[0..encoded.len]));
@@ -2586,7 +2671,7 @@ test "parse: rejects malformed signature_algorithms" {
 // SHA-1 or obsolete TLS 1.2 hash/signature pairs.
 test "parse: rejects signature_algorithms without TLS 1.3 handshake scheme" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const ext = try findExtension(buf[0..encoded.len], .signature_algorithms);
     var i: usize = 2;
     while (i < ext.len) : (i += 2) {
@@ -2598,7 +2683,7 @@ test "parse: rejects signature_algorithms without TLS 1.3 handshake scheme" {
 
 test "parse: rejects malformed ClientHello" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
 
     var bad_type: [512]u8 = undefined;
     @memcpy(bad_type[0..encoded.len], encoded);
@@ -2626,7 +2711,7 @@ test "parse: rejects malformed ClientHello" {
 // RFC 8446 §4.1.2 — legacy_compression_methods must contain exactly one zero.
 test "parse: rejects malformed compression methods" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
 
     var empty_methods: [512]u8 = undefined;
     @memcpy(empty_methods[0..encoded.len], encoded);
@@ -2636,7 +2721,12 @@ test "parse: rejects malformed compression methods" {
     var extra_method: [512]u8 = undefined;
     @memcpy(extra_method[0..encoded.len], encoded);
     extra_method[compression_len_offset] = 2;
-    try testing.expectError(error.InvalidCompressionMethod, parse(extra_method[0..encoded.len]));
+    // Claiming two methods with one present makes the parser read the next
+    // field as a method; which check notices first depends on the advertised
+    // cipher-suite count, so both are a rejection of this input.
+    const extra_err = parse(extra_method[0..encoded.len]);
+    try testing.expect(extra_err == error.InvalidCompressionMethod or
+        extra_err == error.InvalidExtensionLength);
 
     var non_zero_method: [512]u8 = undefined;
     @memcpy(non_zero_method[0..encoded.len], encoded);
@@ -2648,7 +2738,7 @@ test "parse: rejects malformed compression methods" {
 // supported_groups.
 test "parse: no shared supported group is rejected" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const msg = buf[0..encoded.len];
 
     // Rewrite every implemented group id to the unsupported secp521r1
@@ -2718,9 +2808,18 @@ test "encode: server_name too long" {
 // Offsets into an encoded ClientHello with an empty session_id and the three
 // fixed cipher suites: handshake_header(4) + legacy_version(2) + random(32) +
 // session_id_len(1) + cipher_suites_len(2) + cipher_suites(6) = 47.
-const compression_len_offset = 47;
-const compression_method_offset = 48;
-const extensions_len_offset = 49;
+/// Offset of the compression-methods length byte; shifts with the advertised
+/// cipher-suite count, like `extensions_len_offset`.
+const compression_len_offset =
+    handshake_header_len + 2 + 32 + 1 + (2 + cipher_suite_count * 2);
+/// Offset of the single compression method byte, after its length.
+const compression_method_offset = compression_len_offset + 1;
+/// Offset of the extensions length field: handshake header, legacy_version,
+/// random, the empty legacy_session_id, cipher_suites, then compression
+/// methods. Derived rather than fixed, because the approved-only profile
+/// advertises fewer cipher suites and shifts everything after them.
+const extensions_len_offset =
+    handshake_header_len + 2 + 32 + 1 + (2 + cipher_suite_count * 2) + 2;
 const extensions_offset = extensions_len_offset + 2;
 
 /// Byte offset of the extension entry (type field) for `wanted`, or null.
@@ -2845,7 +2944,7 @@ fn appendExtension(buf: []u8, encoded_len: usize, ext: []const u8) usize {
 // same as the other recognized extensions.
 test "parse: rejects duplicate supported_groups" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const dup_supported_groups = [_]u8{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d };
     const new_len = appendExtension(&buf, encoded.len, &dup_supported_groups);
     try testing.expectError(error.DuplicateExtension, parse(buf[0..new_len]));
@@ -2855,7 +2954,7 @@ test "parse: rejects duplicate supported_groups" {
 // key_share is structurally valid input for server HelloRetryRequest.
 test "parse: missing X25519 key share leaves public key null" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const key_share = try findExtension(buf[0..encoded.len], .key_share);
     // Rewrite key_share group x25519 (0x001d) to secp521r1 (0x0019), a named
     // but not-yet-implemented group, while leaving supported_groups unchanged.
@@ -2869,7 +2968,7 @@ test "parse: missing X25519 key share leaves public key null" {
 // RFC 8446 §4.2 — duplicate recognized extensions are rejected.
 test "parse: rejects duplicate signature_algorithms" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const dup_sig_algs = [_]u8{ 0x00, 0x0d, 0x00, 0x02, 0x00, 0x02 };
     const new_len = appendExtension(&buf, encoded.len, &dup_sig_algs);
     try testing.expectError(error.DuplicateExtension, parse(buf[0..new_len]));
@@ -2878,7 +2977,7 @@ test "parse: rejects duplicate signature_algorithms" {
 // RFC 8446 §4.2 — duplicate recognized extensions are rejected.
 test "parse: rejects duplicate signature_algorithms_cert" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     const dup_sig_algs_cert = [_]u8{ 0x00, 0x32, 0x00, 0x04, 0x00, 0x02, 0x04, 0x01 };
     const new_len = appendExtension(&buf, encoded.len, &dup_sig_algs_cert);
     try testing.expectError(error.DuplicateExtension, parse(buf[0..new_len]));
@@ -2886,7 +2985,7 @@ test "parse: rejects duplicate signature_algorithms_cert" {
 
 fn expectDuplicateExtensionForTest(wanted: ExtensionType) !void {
     var buf: [1024]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, "example.test", &.{"h2"});
+    const encoded = try encodeForTest(&buf, .zero, .zero, "example.test", &.{"h2"});
     _ = try parse(encoded);
     const offset = try findExtensionOffset(encoded, wanted);
     const data_len: usize = memx.readInt(u16, encoded[offset + 2 ..][0..2]);
@@ -2925,7 +3024,7 @@ test "parse: rejects duplicate psk_key_exchange_modes" {
 // rejecting unknown extensions would be caught.
 test "parse: ignores unknown extension" {
     var buf: [512]u8 = undefined;
-    const encoded = try encode(&buf, .zero, .zero, null, &.{});
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
     // GREASE-style unknown extension type 0x5a5a with a 3-byte body.
     const unknown_ext = [_]u8{ 0x5a, 0x5a, 0x00, 0x03, 0xde, 0xad, 0xbe };
     const new_len = appendExtension(&buf, encoded.len, &unknown_ext);
@@ -2936,8 +3035,11 @@ test "parse: ignores unknown extension" {
 // RFC 8446 §9.3 — endpoints ignore unrecognized parameters while still using
 // recognized alternatives from the same vector.
 test "parse: ignores unknown supported_groups entries" {
-    const groups = [_]u8{ 0x00, 0x04, 0x6a, 0x6a, 0x00, 0x1d };
+    // The list must still contain a group this build implements, so the
+    // approved profile gets secp256r1 alongside the unknown entry.
+    const groups = [_]u8{ 0x00, 0x06, 0x6a, 0x6a, 0x00, 0x17, 0x00, 0x1d };
     const parsed = try parseSupportedGroups(&groups);
+    try testing.expect(parsed.contains(.secp256r1));
     try testing.expect(parsed.contains(.x25519));
 }
 
@@ -2957,7 +3059,7 @@ test "fuzz: parse handles arbitrary input" {
 
 // RFC 8446 §4.1.2 — ClientHello2 after HelloRetryRequest contains only the
 // selected group's key_share and echoes the cookie.
-test "encodeRetryAfterHrr: X25519 selected, no cookie" {
+test "encodeRetryAfterHrr: first-flight group selected, no cookie" {
     const x_key: x25519.PublicKey = .init(@splat(0x11));
     var p_key: p256.PublicKey = .init(@splat(0x22));
     p_key.data[0] = 0x04;
@@ -2971,20 +3073,29 @@ test "encodeRetryAfterHrr: X25519 selected, no cookie" {
         x_key,
         p_key,
         p384_key,
-        .x25519,
+        first_flight_group,
         null,
         null,
         &.{},
     );
     const parsed = try parse(encoded);
 
-    // key_share must contain only X25519.
-    try testing.expectEqualSlices(u8, &x_key.data, &parsed.public_key.?.data);
-    try testing.expectEqual(@as(?p256.PublicKey, null), parsed.public_key_p256);
+    // key_share must contain only the selected group's share.
+    switch (first_flight_group) {
+        .x25519 => {
+            try testing.expectEqualSlices(u8, &x_key.data, &parsed.public_key.?.data);
+            try testing.expectEqual(@as(?p256.PublicKey, null), parsed.public_key_p256);
+        },
+        .secp256r1 => {
+            try testing.expectEqualSlices(u8, &p_key.data, &parsed.public_key_p256.?.data);
+            try testing.expectEqual(@as(?x25519.PublicKey, null), parsed.public_key);
+        },
+        else => unreachable,
+    }
     try testing.expectEqual(@as(?p384.PublicKey, null), parsed.public_key_p384);
 
     // supported_groups must still advertise all three groups.
-    try testing.expect(parsed.groups.contains(.x25519));
+    try testing.expectEqual(include_x25519, parsed.groups.contains(.x25519));
     try testing.expect(parsed.groups.contains(.secp256r1));
     try testing.expect(parsed.groups.contains(.secp384r1));
 }
@@ -3002,7 +3113,7 @@ test "encodeRetryAfterHrr: preserves PSK key exchange mode" {
         x_key,
         p_key,
         null,
-        .x25519,
+        first_flight_group,
         null,
         null,
         &.{},
@@ -3050,7 +3161,7 @@ test "encodeRetryAfterHrr: secp256r1 selected, no cookie" {
     try testing.expectEqualSlices(u8, &p_key.data, &parsed.public_key_p256.?.data);
 
     // supported_groups must still advertise all three groups.
-    try testing.expect(parsed.groups.contains(.x25519));
+    try testing.expectEqual(include_x25519, parsed.groups.contains(.x25519));
     try testing.expect(parsed.groups.contains(.secp256r1));
     try testing.expect(parsed.groups.contains(.secp384r1));
 }
@@ -3071,7 +3182,7 @@ test "encodeRetryAfterHrr: includes cookie when provided" {
         x_key,
         p_key,
         p384_key,
-        .x25519,
+        first_flight_group,
         &cookie,
         null,
         &.{},
@@ -3099,7 +3210,7 @@ test "encodeRetryAfterHrr: preserves SNI and ALPN from ClientHello1" {
         x_key,
         p_key,
         p384_key,
-        .x25519,
+        first_flight_group,
         null,
         "example.com",
         &.{"h2"},
@@ -3190,6 +3301,22 @@ test "KEM key_share round-trip: ClientHello encode → parse preserves 1216-byte
 
     const kem_share: KemShare = .{ .group = .x25519_mlkem768, .data = &original };
     var buf: [4096]u8 = undefined;
+    // An approved-only build advertises no hybrid group, so the encoder
+    // refuses one instead of building a flight with it.
+    if (comptime !backend.supportsClientHybridGroup(.x25519_mlkem768)) {
+        var small: [4096]u8 = undefined;
+        try testing.expectError(error.HybridGroupUnavailable, encodeWithKem(
+            &small,
+            .zero,
+            .init(@splat(0)),
+            p256_key,
+            null,
+            null,
+            &.{},
+            kem_share,
+        ));
+        return;
+    }
     const encoded = try encodeWithKem(
         &buf,
         .zero,
