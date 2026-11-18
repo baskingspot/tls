@@ -82,6 +82,72 @@ performs no transport I/O.
 The HTTP readiness consumer and its TLS `h2spec` runs are outside this evidence.
 Issue #167 remains open until that consumer passes on Linux and macOS.
 
+## 2026-11-18 caller-driven readiness client (#190)
+
+Scope: `tls_nonblocking.SocketClient` against OpenSSL 3.6.5 on Linux arm64 with
+Zig 0.17.0. The base revision is `cd58fea`. The external process is `openssl
+s_server`; no in-tree TLS peer participates in these tests.
+
+The normal integration test gate runs both new tests without a skip. One
+generates a certificate with a `ztls.server.test` SAN, loads its PEM as the
+client's trust anchor, and requires hostname verification and `h2` ALPN. An
+`Io` operation wrapper caps reads at seven bytes and writes at three bytes
+during the handshake and application exchange. OpenSSL prints two exact client
+messages that the test waits for, so the peer decrypts both directions.
+
+OpenSSL receives `K` on stdin and emits `KeyUpdate(update_requested)`. The
+client consumed only three bytes of an earlier application record at that
+point. A socket-readiness wait forces the KeyUpdate to precede the next server
+plaintext write. The test drains the old plaintext tail, decrypts new-epoch
+plaintext, and sends a new client message. OpenSSL's trace must record the
+client's later `KeyUpdate(update_not_requested)`. The same connection then
+sends the client's `close_notify`, receives the peer's authenticated close,
+and exits zero.
+
+The alert test offers only `http/1.1` to a server restricted to `h2`. The
+client fails initialization with `PeerAlert` and retains the exact
+`no_application_protocol` description after cleanup. This is OpenSSL's alert,
+not the synthetic alert in the loopback suite.
+
+Root `just integrations-ci` passed. It includes the nonblocking package's
+`just ci`, which runs lint, 52 integration tests plus five module tests, and
+the footprint report. The same 52 and five tests passed separately in
+ReleaseSafe and ReleaseFast. Root `just lint` also passed. The new socket tests
+were therefore green in Debug, ReleaseSafe, and ReleaseFast with zero skips.
+Ten more consecutive Debug runs each passed all 52 integration tests.
+
+Root `just ci` did not complete on this base. Its initial `zig build test`
+failed at `src/crypto/backend_primitive_tests.zig:1026` because
+`backend.sign.supportsDeterministicNonce` does not exist. `origin/main`
+`cd58fea` has the same failure in GitHub run 44363233997. The integration gates
+above ran independently and passed.
+
+Mutation checks against the new assertions:
+
+- Changing the KeyUpdate response request bit made the new-epoch read fail.
+- Replacing the client's `close_notify` with `user_canceled` made the clean-close
+  assertion fail with a truncation error.
+- Replacing the retained peer alert with `unexpected_message` failed the
+  OpenSSL `no_application_protocol` equality check.
+- Disabling the seven-byte and three-byte caps failed the capped-read assertion.
+
+Every mutation restored its original code. The three optimization-mode suites
+above ran after restoration. `zig build footprint` reported these Linux arm64
+sizes:
+
+| Component | Bytes |
+| --- | ---: |
+| `Client` | 3,712 |
+| Client RX record buffer | 16,645 |
+| Client TX record buffer | 16,645 |
+| Client handshake reassembly | 65,536 |
+| Client slot with alignment | 102,544 |
+| `SocketClient`, including buffers and reassembly | 102,816 |
+
+The socket size excludes trust anchors, credentials, and backend allocations.
+The downstream HTTP client suite did not run against this revision. Its
+existing loopback evidence remains bound to its pinned TLS revision.
+
 ## How this document works
 
 - **The evidence log.** The status page states the claim. This file records

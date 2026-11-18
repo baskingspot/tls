@@ -610,3 +610,317 @@ test "SocketClient: a caller-supplied trust store is the one consulted" {
         client.deinit();
     }
 }
+
+const ShortSocketIo = struct {
+    threadlocal var read_limit: usize = 0;
+    threadlocal var write_limit: usize = 0;
+    threadlocal var capped_reads: usize = 0;
+    threadlocal var capped_writes: usize = 0;
+
+    fn reset(read: usize, write: usize) void {
+        read_limit = read;
+        write_limit = write;
+        capped_reads = 0;
+        capped_writes = 0;
+    }
+
+    fn operate(
+        userdata: ?*anyopaque,
+        operation: Io.Operation,
+    ) Io.Cancelable!Io.Operation.Result {
+        // Keep testing.io's userdata: every other vtable entry still belongs
+        // to that implementation. Only the two socket operations are capped.
+        const base: Io = .{ .userdata = userdata, .vtable = testing.io.vtable };
+        switch (operation) {
+            .net_read => |read| {
+                std.debug.assert(read.data.len == 1);
+                var bounded = read;
+                var data: [1][]u8 = read.data[0..1].*;
+                if (read_limit < data[0].len) {
+                    data[0] = data[0][0..read_limit];
+                    capped_reads += 1;
+                }
+                bounded.data = &data;
+                return base.operate(.{ .net_read = bounded });
+            },
+            .net_write => |write| {
+                std.debug.assert(write.data.len == 1);
+                std.debug.assert(write.splat == 1);
+                var bounded = write;
+                var data: [1][]const u8 = write.data[0..1].*;
+                if (write_limit < data[0].len) {
+                    data[0] = data[0][0..write_limit];
+                    capped_writes += 1;
+                }
+                bounded.data = &data;
+                return base.operate(.{ .net_write = bounded });
+            },
+            else => return base.operate(operation),
+        }
+    }
+};
+
+const OpenSslCredentials = struct {
+    cert_path: []const u8,
+    key_path: []const u8,
+    pem: []const u8,
+    now_sec: i64,
+
+    fn init(allocator: std.mem.Allocator, tmp: anytype) !OpenSslCredentials {
+        var path_buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+        const path_len = try tmp.dir.realPath(testing.io, &path_buffer);
+        const dir = try allocator.dupe(u8, path_buffer[0..path_len]);
+        const cert_path: []const u8 = try Io.Dir.path.join(
+            allocator,
+            &.{ dir, "cert.pem" },
+        );
+        const key_path: []const u8 = try Io.Dir.path.join(
+            allocator,
+            &.{ dir, "key.pem" },
+        );
+        var child = try std.process.spawn(testing.io, .{
+            .argv = &.{
+                "timeout",                 "10",
+                "openssl",                 "req",
+                "-x509",                   "-newkey",
+                "ec",                      "-pkeyopt",
+                "ec_paramgen_curve:P-256", "-keyout",
+                key_path,                  "-out",
+                cert_path,                 "-days",
+                "2",                       "-nodes",
+                "-subj",                   "/CN=ztls.server.test",
+                "-addext",                 "subjectAltName=DNS:ztls.server.test",
+            },
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        const term = try child.wait(testing.io);
+        if (term != .exited or term.exited != 0)
+            return error.CertificateGenerationFailed;
+        const pem = try Io.Dir.cwd().readFileAlloc(
+            testing.io,
+            cert_path,
+            allocator,
+            .limited(16 * 1024),
+        );
+        const now = Io.Timestamp.now(testing.io, .real).nanoseconds;
+        return .{
+            .cert_path = cert_path,
+            .key_path = key_path,
+            .pem = pem,
+            .now_sec = @intCast(@divFloor(now, std.time.ns_per_s)),
+        };
+    }
+};
+
+fn startOpenSslServer(
+    allocator: std.mem.Allocator,
+    credentials: *const OpenSslCredentials,
+    trace_path: []const u8,
+    port: u16,
+    alpn_protocol: []const u8,
+) !std.process.Child {
+    const accept = try allocator.print("127.0.0.1:{d}", .{port});
+    return std.process.spawn(testing.io, .{
+        .argv = &.{
+            "timeout",      "15",
+            "openssl",      "s_server",
+            "-accept",      accept,
+            "-cert",        credentials.cert_path,
+            "-key",         credentials.key_path,
+            "-tls1_3",      "-alpn",
+            alpn_protocol,  "-trace",
+            "-msgfile",     trace_path,
+            "-num_tickets", "0",
+            "-naccept",     "1",
+        },
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
+}
+
+fn openSslFreePort() !u16 {
+    var listener = try listen();
+    defer listener.deinit(testing.io);
+    return listener.socket.address.getPort();
+}
+
+fn connectToOpenSsl(port: u16) !Io.net.Stream {
+    const address: Io.net.IpAddress = try .parse("127.0.0.1", port);
+    for (0..250) |_| {
+        return address.connect(testing.io, .{ .mode = .stream }) catch |err| switch (err) {
+            error.ConnectionRefused => {
+                testing.io.sleep(.fromMilliseconds(20), .awake) catch return err;
+                continue;
+            },
+            else => return err,
+        };
+    }
+    return error.OpenSslServerNeverCameUp;
+}
+
+const OpenSslOutput = struct {
+    bytes: [32 * 1024]u8 = undefined,
+    len: usize = 0,
+
+    fn expect(self: *OpenSslOutput, child: *const std.process.Child, needle: []const u8) !void {
+        while (std.mem.find(u8, self.bytes[0..self.len], needle) == null) {
+            if (self.len == self.bytes.len) return error.OpenSslOutputTooLong;
+            try wait(child.stdout.?.handle, c.POLL.IN);
+            const count = try std.posix.read(child.stdout.?.handle, self.bytes[self.len..]);
+            if (count == 0) return error.OpenSslOutputClosed;
+            self.len += count;
+        }
+    }
+};
+
+fn sendOpenSslInput(child: *std.process.Child, bytes: []const u8) !void {
+    try child.stdin.?.writeStreamingAll(testing.io, bytes);
+}
+
+fn expectKeyUpdateTrace(trace: []const u8) !void {
+    const requested = std.mem.find(
+        u8,
+        trace,
+        "KeyUpdate, Length=1\n      update_requested (1)",
+    ) orelse return error.OpenSslDidNotRequestKeyUpdate;
+    _ = std.mem.find(
+        u8,
+        trace[requested + 1 ..],
+        "KeyUpdate, Length=1\n      update_not_requested (0)",
+    ) orelse return error.OpenSslDidNotReceiveKeyUpdateResponse;
+}
+
+fn exerciseOpenSslExchange(
+    client: *SocketClient,
+    socket: Io.net.Stream,
+    server: *std.process.Child,
+) !void {
+    const old_plaintext = "old-epoch-server-data\n";
+    try sendOpenSslInput(server, old_plaintext);
+    var prefix: [3]u8 = undefined;
+    try client.reader().readSliceAll(&prefix);
+    try testing.expectEqualStrings("old", &prefix);
+    try client.writer().writeAll("client-before-key-update\n");
+    var output: OpenSslOutput = .{};
+    try output.expect(server, "client-before-key-update\n");
+
+    // The old plaintext tail stays pinned while OpenSSL sends KeyUpdate and
+    // new-epoch application data. The next read must answer the update first.
+    try sendOpenSslInput(server, "K\n");
+    // Do not let one stdin read combine the command and new application data.
+    try wait(socket.socket.handle, c.POLL.IN);
+    const new_plaintext = "new-epoch-server-data\n";
+    try sendOpenSslInput(server, new_plaintext);
+    var old_tail: [old_plaintext.len - prefix.len]u8 = undefined;
+    try client.reader().readSliceAll(&old_tail);
+    try testing.expectEqualStrings(old_plaintext[prefix.len..], &old_tail);
+    var received_new: [new_plaintext.len]u8 = undefined;
+    try client.reader().readSliceAll(&received_new);
+    try testing.expectEqualStrings(new_plaintext, &received_new);
+    try client.writer().writeAll("client-after-key-update\n");
+    try output.expect(server, "client-after-key-update\n");
+
+    try client.closeWrite();
+    var end: [1]u8 = undefined;
+    try testing.expectError(error.EndOfStream, client.reader().readSliceAll(&end));
+    try testing.expect(client.readError() == null);
+    try testing.expect(client.peerAlert() == null);
+    try output.expect(server, "DONE\n");
+}
+
+// RFC 8446 §4.1, §4.4.4, §4.6.3, §6.1, §7.2 and RFC 7301 §3.2.
+// The independent peer checks ClientHello ALPN, Finished, application
+// keys, a requested KeyUpdate response, and the client's close_notify. The
+// client checks the peer's certificate, both application epochs, and the
+// authenticated peer close. Seven-byte reads and three-byte writes fragment
+// every flight rather than just application data.
+test "SocketClient: OpenSSL fragmented exchange, KeyUpdate, and close_notify" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const credentials: OpenSslCredentials = try .init(allocator, &tmp);
+    const dir_end = std.mem.findScalarLast(u8, credentials.cert_path, '/').?;
+    const trace_path = try Io.Dir.path.join(
+        allocator,
+        &.{ credentials.cert_path[0..dir_end], "trace.txt" },
+    );
+    const port = try openSslFreePort();
+    var server = try startOpenSslServer(allocator, &credentials, trace_path, port, "h2");
+    defer server.kill(testing.io);
+
+    const socket = try connectToOpenSsl(port);
+    defer socket.close(testing.io);
+    ShortSocketIo.reset(7, 3);
+    var vtable = testing.io.vtable.*;
+    vtable.operate = ShortSocketIo.operate;
+    const short_io: Io = .{ .userdata = testing.io.userdata, .vtable = &vtable };
+    var client: SocketClient = undefined;
+    try client.init(testing.allocator, short_io, socket, .{
+        .trust = .{ .pem = credentials.pem },
+        .host_name = "ztls.server.test",
+        .now_sec = credentials.now_sec,
+        .alpn = &.{"h2"},
+    });
+    defer client.deinit();
+    try testing.expectEqualStrings("h2", client.selectedAlpn().?);
+    try testing.expect(ShortSocketIo.capped_reads != 0);
+    try testing.expect(ShortSocketIo.capped_writes != 0);
+
+    try exerciseOpenSslExchange(&client, socket, &server);
+    const term = try server.wait(testing.io);
+    try testing.expect(term == .exited);
+    try testing.expectEqual(@as(u8, 0), term.exited);
+
+    const trace = try Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        trace_path,
+        allocator,
+        .limited(256 * 1024),
+    );
+    try expectKeyUpdateTrace(trace);
+}
+
+// RFC 8446 §6.2 and RFC 7301 §3.2. OpenSSL generates this alert, and its exact
+// description survives failed-init cleanup in SocketClient.
+test "SocketClient: OpenSSL no_application_protocol is a fatal peer alert" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const credentials: OpenSslCredentials = try .init(allocator, &tmp);
+    const dir_end = std.mem.findScalarLast(u8, credentials.cert_path, '/').?;
+    const trace_path = try Io.Dir.path.join(
+        allocator,
+        &.{ credentials.cert_path[0..dir_end], "trace.txt" },
+    );
+    const port = try openSslFreePort();
+    var server = try startOpenSslServer(allocator, &credentials, trace_path, port, "h2");
+    defer server.kill(testing.io);
+
+    const socket = try connectToOpenSsl(port);
+    defer socket.close(testing.io);
+    var client: SocketClient = undefined;
+    try testing.expectError(error.PeerAlert, client.init(
+        testing.allocator,
+        testing.io,
+        socket,
+        .{
+            .trust = .{ .pem = credentials.pem },
+            .host_name = "ztls.server.test",
+            .now_sec = credentials.now_sec,
+            .alpn = &.{"http/1.1"},
+        },
+    ));
+    const peer_alert = client.peerAlert().?;
+    try testing.expectEqual(tls.alert.Description.no_application_protocol, peer_alert.description);
+    try testing.expect(!client.expired());
+    client.deinit();
+
+    const term = try server.wait(testing.io);
+    try testing.expect(term == .exited);
+}
