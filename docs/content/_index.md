@@ -119,7 +119,7 @@ The evidence sits in
 and is recorded per commit. The protocol is checked against RFC 8448 vectors,
 Wycheproof boundary vectors, OpenSSL interop in both directions, and the
 TLS-Anvil and tlsfuzzer conformance suites. The parser and record-decrypt
-surfaces are fuzzed with `zig build test --fuzz`. A merge runs three crypto
+surfaces are fuzzed with `just fuzz`. A merge runs three crypto
 backends (OpenSSL, AWS-LC, BoringSSL), four transport examples, the C ABI
 example, a distribution smoke test, and valgrind.
 

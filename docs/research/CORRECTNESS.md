@@ -55,7 +55,7 @@ Fuzz targets are ordinary Zig tests using `std.testing.fuzz`. Run with Zig's fuz
 mode, for example:
 
 ```sh
-zig build test -- --fuzz
+just fuzz 100K
 ```
 
 Remaining fuzz gaps are tracked in GitHub issues; add a target here when it

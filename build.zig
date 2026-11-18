@@ -33,8 +33,9 @@ pub fn build(b: *Build) void {
             "algorithm policy, not a FIPS 140-3 validation claim.",
     ) orelse false;
     // Fuzz mode uses the default test runner, which speaks the server protocol
-    // that `zig build test --fuzz` needs. testingx's `.mode = .simple` bypasses
-    // that protocol, so it is only used for normal (non-fuzz) test runs.
+    // that `zig build test --fuzz` needs; `-Dfuzz=true` selects it. testingx's
+    // `.mode = .simple` bypasses that protocol, so it is only used for normal
+    // (non-fuzz) test runs.
     const fuzz_mode =
         b.option(bool, "fuzz", "Enable fuzzing (uses the default test runner)") orelse false;
 
