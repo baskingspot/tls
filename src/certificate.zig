@@ -8,6 +8,7 @@ const Sha384 = std.crypto.hash.sha2.Sha384;
 const Sha512 = std.crypto.hash.sha2.Sha512;
 const testing = std.testing;
 const mem = std.mem;
+const assert = std.debug.assert;
 const fixtures = @import("fixtures");
 const fuzz_compat = @import("fuzz_compat.zig");
 const compat = @import("compat.zig");
@@ -2898,4 +2899,194 @@ test "fuzz: parse handles arbitrary input" {
     try fuzz_compat.fuzzBytes(fuzzParse, {}, .{
         .corpus = &.{buildCertMsg(&buf, fixtureCertDer())},
     });
+}
+
+// Fuzz target: CertificateVerify signature verification. Every full handshake
+// takes a peer-chosen key, scheme, signature, and transcript hash through
+// `verifyServerSignature` or `verifyClientSignature`, so all four are fuzz
+// dimensions and a mutation in one leaves the framing of the others intact:
+//
+//   byte 0     scheme tag, indexing `fuzz_verify_schemes`
+//   bytes 1-2  public-key length, big-endian u16
+//   bytes 3-4  signature length, big-endian u16
+//   the rest   public key, signature, transcript hash
+//
+// The verifier holds no secrets, so success or an error is the only legal
+// answer to any input and a panic is the bug. The target stops at the
+// SubjectPublicKey bits, which is what the verifier takes, so discovery needs
+// no valid certificate chain in front of it. Run with:
+//   zig build test -Dfuzz=true --fuzz=100K
+const fuzz_verify_schemes = [_]SignatureScheme{
+    .ecdsa_secp256r1_sha256,
+    .ecdsa_secp384r1_sha384,
+    .rsa_pss_rsae_sha256,
+    .rsa_pss_rsae_sha384,
+    .rsa_pss_rsae_sha512,
+    .ed25519,
+};
+
+/// Largest signature the target frames into a CertificateVerify message. The
+/// widest signature any accepted scheme produces is a 512-octet RSA-4096 PSS
+/// signature; anything longer is past every key the verifier takes.
+const fuzz_verify_sig_max = 1024;
+const fuzz_verify_header_len = 5;
+/// The CertificateVerify frame `certificateVerifyEncodedLen` reports for a
+/// signature of `fuzz_verify_sig_max` octets.
+const fuzz_verify_frame_max = certificateVerifyEncodedLen("") + fuzz_verify_sig_max;
+
+const FuzzVerifyInput = struct {
+    scheme: SignatureScheme,
+    pub_key: []const u8,
+    sig: []const u8,
+    transcript_hash: []const u8,
+};
+
+fn decodeFuzzVerifyInput(input: []const u8) ?FuzzVerifyInput {
+    if (input.len < fuzz_verify_header_len) return null;
+    const pub_len = mem.readInt(u16, input[1..3], .big);
+    const sig_len = mem.readInt(u16, input[3..5], .big);
+    var rest = input[fuzz_verify_header_len..];
+    // A length past the end clamps to what arrived, so a mutated length byte
+    // still reaches the verifier instead of discarding the input.
+    const pub_key = rest[0..@min(rest.len, pub_len)];
+    rest = rest[pub_key.len..];
+    const sig = rest[0..@min(rest.len, sig_len)];
+    rest = rest[sig.len..];
+    if (sig.len > fuzz_verify_sig_max) return null;
+    return .{
+        .scheme = fuzz_verify_schemes[input[0] % fuzz_verify_schemes.len],
+        .pub_key = pub_key,
+        .sig = sig,
+        .transcript_hash = rest,
+    };
+}
+
+fn encodeFuzzVerifyInput(
+    buf: []u8,
+    scheme: SignatureScheme,
+    pub_key: []const u8,
+    sig: []const u8,
+    transcript_hash: []const u8,
+) []const u8 {
+    const total = fuzz_verify_header_len + pub_key.len + sig.len + transcript_hash.len;
+    assert(buf.len >= total);
+    assert(total <= std.math.maxInt(u16));
+    buf[0] = @intCast(mem.findScalar(SignatureScheme, &fuzz_verify_schemes, scheme) orelse
+        unreachable);
+    mem.writeInt(u16, buf[1..3], @intCast(pub_key.len), .big);
+    mem.writeInt(u16, buf[3..5], @intCast(sig.len), .big);
+    var w: usize = fuzz_verify_header_len;
+    for ([_][]const u8{ pub_key, sig, transcript_hash }) |part| {
+        @memcpy(buf[w..][0..part.len], part);
+        w += part.len;
+    }
+    return buf[0..total];
+}
+
+fn fuzzVerifyCertificateVerify(_: void, input: []const u8) anyerror!void {
+    const fields = decodeFuzzVerifyInput(input) orelse return;
+    var cv_buf: [fuzz_verify_frame_max]u8 = undefined;
+    const cv = encodeCertificateVerify(&cv_buf, fields.scheme, fields.sig) catch return;
+    // Every verdict is legal for attacker-shaped input: the contract is that
+    // neither role panics on any of the four fuzzed fields. One invariant does
+    // hold — RFC 8446 §4.4.3 puts a different context string in front of each
+    // role's signed content, so one signature cannot satisfy both.
+    const as_server = verifyServerSignature(cv, fields.pub_key, fields.transcript_hash);
+    const as_client = verifyClientSignature(cv, fields.pub_key, fields.transcript_hash);
+    const server_ok = if (as_server) |_| true else |_| false;
+    const client_ok = if (as_client) |_| true else |_| false;
+    assert(!(server_ok and client_ok));
+}
+
+// The verifier's verdict for one encoded target input, for pinning what a
+// seed reaches. Seeds that all fail in the first octet are decoration.
+fn verifyFuzzSeed(input: []const u8) VerifyError!void {
+    const fields = decodeFuzzVerifyInput(input) orelse return error.UnexpectedEof;
+    var cv_buf: [fuzz_verify_frame_max]u8 = undefined;
+    const cv = encodeCertificateVerify(&cv_buf, fields.scheme, fields.sig) catch unreachable;
+    return verifyServerSignature(cv, fields.pub_key, fields.transcript_hash);
+}
+
+// RFC 8446 §4.4.3 — the CertificateVerify verifier must reject arbitrary
+// keys, schemes, signatures, and transcript hashes with an error, never a
+// panic. The seeds are the shapes that reach deepest: two valid chains from
+// the fixtures (P-256 and RSA-PSS-2048), the same signature with one bit
+// flipped, the same signature truncated, the P-256 key under a P-384 scheme,
+// and the three key encodings the policy rejects (e = 1, a 2041-bit modulus,
+// an off-curve point).
+test "fuzz: verifyServerSignature handles arbitrary CertificateVerify input" {
+    var cert_buf: [2048]u8 = undefined;
+    var rsa_cert_buf: [2048]u8 = undefined;
+    const p256_pub = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{
+        .insecure_no_chain_anchor = true,
+    }));
+    const rsa_pub = try parse(buildCertMsg(&rsa_cert_buf, fixtureRsaPssCertDer()), testPolicy(.{
+        .insecure_no_chain_anchor = true,
+    }));
+
+    const cv_sig = fixtureCvSig();
+    const rsa_sig = fixtureRsaPssCvSig();
+    var bad_sig_storage: [128]u8 = undefined;
+    const bad_sig = bad_sig_storage[0..cv_sig.len];
+    @memcpy(bad_sig, cv_sig);
+    bad_sig[cv_sig.len - 1] ^= 0xff;
+    // RFC 8017 §3.3.1 — e = 1 makes the public operation the identity, so any
+    // well-formed PSS encoding verifies without a private key (#157).
+    const exponent_one_key = stdx.fmt.comptimeHex(
+        rsaPubKeyDerHex(wycheproof_rsa_n_2048_hex, "020101"),
+    );
+    // A full-width modulus whose leading octet is 0x01 has 2041 bits, so
+    // EMSA-PSS-VERIFY's emLen is one octet shorter than the modulus (#183).
+    // The signature below the modulus is what keeps the RSA operation running
+    // far enough to reach that slice: the fixture signature starts above n.
+    const mod_2041_hex = comptime "01" ++ compat.repeatString("ff", 255);
+    const short_emlen_key = stdx.fmt.comptimeHex(rsaPubKeyDerHex(mod_2041_hex, "0203010001"));
+    var short_emlen_sig: [256]u8 = @splat(0);
+    @memcpy(short_emlen_sig[1..], rsa_sig[1..]);
+    var off_curve_key: [65]u8 = @splat(0);
+    off_curve_key[0] = 0x04;
+
+    var seed_buf: [8][1200]u8 = undefined;
+    var corpus: [8][]const u8 = undefined;
+    const Seed = struct {
+        scheme: SignatureScheme,
+        pub_key: []const u8,
+        sig: []const u8,
+    };
+    const seeds = [_]Seed{
+        .{ .scheme = .ecdsa_secp256r1_sha256, .pub_key = p256_pub, .sig = cv_sig },
+        .{ .scheme = .rsa_pss_rsae_sha256, .pub_key = rsa_pub, .sig = rsa_sig },
+        .{ .scheme = .ecdsa_secp256r1_sha256, .pub_key = p256_pub, .sig = bad_sig },
+        .{
+            .scheme = .ecdsa_secp256r1_sha256,
+            .pub_key = p256_pub,
+            .sig = cv_sig[0 .. cv_sig.len / 2],
+        },
+        .{ .scheme = .ecdsa_secp384r1_sha384, .pub_key = p256_pub, .sig = cv_sig },
+        .{ .scheme = .rsa_pss_rsae_sha256, .pub_key = &exponent_one_key, .sig = rsa_sig },
+        .{ .scheme = .rsa_pss_rsae_sha256, .pub_key = &short_emlen_key, .sig = &short_emlen_sig },
+        .{ .scheme = .ecdsa_secp256r1_sha256, .pub_key = &off_curve_key, .sig = cv_sig },
+    };
+    for (seeds, &seed_buf, &corpus) |seed, *buf, *corpus_entry| {
+        corpus_entry.* = encodeFuzzVerifyInput(
+            buf,
+            seed.scheme,
+            seed.pub_key,
+            seed.sig,
+            &test_transcript_hash,
+        );
+    }
+
+    // Each seed must fail at the arm it was built for, not earlier, and the
+    // two fixture seeds must verify outright.
+    try verifyFuzzSeed(corpus[0]);
+    try verifyFuzzSeed(corpus[1]);
+    try testing.expectError(error.SignatureVerificationFailed, verifyFuzzSeed(corpus[2]));
+    try testing.expectError(error.SignatureVerificationFailed, verifyFuzzSeed(corpus[3]));
+    try testing.expectError(error.InvalidEncoding, verifyFuzzSeed(corpus[4]));
+    try testing.expectError(error.InvalidEncoding, verifyFuzzSeed(corpus[5]));
+    try testing.expectError(error.SignatureVerificationFailed, verifyFuzzSeed(corpus[6]));
+    try testing.expectError(error.InvalidEncoding, verifyFuzzSeed(corpus[7]));
+
+    try fuzz_compat.fuzzBytes(fuzzVerifyCertificateVerify, {}, .{ .corpus = &corpus });
 }
