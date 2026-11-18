@@ -1911,16 +1911,24 @@ each passing the same correctness and interop gates.
   build was verified by cross-target semantic analysis only — linking it
   needs a darwin libcrypto, so it has not been executed on macOS. `PrivateKey` also
   carries a `nonce_mode` option (`NonceMode`, RFC 6979, baskingspot/tls#82):
-  default `.random`; `.deterministic` makes an ECDSA CertificateVerify
-  byte-reproducible. Capability is compiled support only
-  (`supportsDeterministicNonce()`: not BoringSSL-family and the nonce-type
-  macro in the headers); the provider can still reject, and unsupported
-  requests fail loudly (`DeterministicNonceUnsupported`, or
-  `LibcryptoFailed` on a provider set-params rejection) — never a silently
-  random nonce. Proven by the RFC 6979 §A.2.5 and §A.2.6 KATs (A.2.6
-  mutation-checked red under a random nonce) plus the AWS-LC rejection
-  assertions; pre-3.2-header compile behavior validated by header-overlay
-  simulation only, not an actual OpenSSL 3.0 runtime.
+  default `.random` adds fresh OS entropy under §3.6, and `.deterministic`
+  makes an ECDSA CertificateVerify byte-reproducible on every backend (#183).
+  ECDSA P-256/P-384 signs in `src/crypto/ecdsa.zig` over std.crypto curve
+  arithmetic; libcrypto only parses and stores the key and exports the scalar.
+  Non-ECDSA deterministic requests still fail with
+  `DeterministicNonceUnsupported`. The RFC 6979 §A.2.5 and §A.2.6 exact DER
+  vectors and repeat-signing byte assertions run on all three backends.
+  Random and deterministic signatures on both curves also verify through the
+  public in-tree CertificateVerify path and libcrypto `ECDSA_verify`. Forcing
+  random nonces in deterministic mode turns both exact vectors and both
+  repeat-signing assertions red. Removing the curve check turns the
+  cross-curve rejection test red with `TestExpectedError`. `just ci` passed,
+  followed by a restored-tree `just check` and `just check-backends`. The
+  1004-test suite passes on OpenSSL, AWS-LC, and BoringSSL. Normalized `nm -D`
+  comparison on OpenSSL moves the test binary from 86 to 84 libcrypto
+  relocations. Five provider-param functions leave, `EC_KEY_get0_private_key`
+  and `BN_bn2binpad` enter the production scalar export, and `ECDSA_verify` is
+  test-only. The production source-level count therefore moves from 81 to 78.
 - **Known absent:** the RFC 8446 §4.2.3 `rsa_pss_pss_*` CertificateVerify
   schemes are neither named in `SignatureScheme` nor advertised by any
   backend. Automatic loading therefore rejects rsassaPss-OID keys with

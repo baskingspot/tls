@@ -30,12 +30,12 @@ Everything else is ours.
   SHA-256, and record scanning are all candidates. Measure first, then apply.
 - **Use libcrypto-family for provider-sensitive production primitives.** Do not
   implement our own AES-GCM, ChaCha20-Poly1305, X25519/P-256, post-quantum KEX,
-  or signature primitives. OpenSSL/libcrypto is the first concrete backend
-  target; AWS-LC remains first-class in the architecture rather than an
-  accidental drop-in. stdlib hashing/HMAC/HKDF and utility crypto helpers remain
-  acceptable where they do not create a competing AEAD/KEX/signature backend.
-  ztls owns TLS framing, transcripts, alerts, record sequencing, and
-  caller-buffer discipline.
+  or RSA-PSS signing. OpenSSL/libcrypto is the first concrete backend target.
+  AWS-LC remains first-class in the architecture. Certificate signature
+  verification and ECDSA P-256/P-384 signing run in-tree over `std.crypto`
+  (#183). stdlib hashing/HMAC/HKDF and utility crypto helpers remain acceptable
+  where they do not create a competing AEAD/KEX/RSA-PSS backend. ztls owns TLS
+  framing, transcripts, alerts, record sequencing, and caller-buffer discipline.
 - **Linux and macOS only.** No Windows. Design for real targets.
 - **Higher-level wrappers are separate.** If someone wants a `net.Stream`
   adapter or an async wrapper, that's a thin layer on top, not baked in.
@@ -50,9 +50,11 @@ Everything else is ours.
 ## What We Are Not Doing (Yet)
 
 - Our own AES, GCM, ChaCha20-Poly1305, X25519/P-256, post-quantum KEX, or
-  signature primitive implementations. The production path for those is
-  libcrypto-family/provider-backed primitives. stdlib hashing/HMAC/HKDF and
-  small constant-time/zeroing/random helpers are not excluded by this rule.
+  RSA-PSS primitive implementations. The production path for those is
+  libcrypto-family/provider-backed primitives. Certificate signature
+  verification and ECDSA signing are explicit in-tree exceptions (#183).
+  stdlib hashing/HMAC/HKDF and small constant-time/zeroing/random helpers are
+  not excluded by this rule.
 - TLS 1.2 or earlier.
 - DTLS.
 - Post-handshake client authentication.
@@ -293,9 +295,10 @@ benchmark coverage. AWS-LC remains a first-class architecture target, not an
 afterthought hidden behind an accidental OpenSSL-only design. BoringSSL may be a
 later backend if its API differences are worth supporting directly.
 
-There is no parallel `std.crypto` AEAD/KEX/signature backend. This is new
-pre-alpha software, so there is no compatibility burden that justifies
-preserving a second product path for provider-sensitive primitives. That does
+There is no parallel `std.crypto` AEAD/KEX/RSA-PSS backend. ECDSA signing and
+certificate signature verification run in-tree (#183). This is new pre-alpha
+software, so there is no compatibility burden that justifies preserving a
+second product path for provider-sensitive primitives. That does
 not make every `std.crypto` use implementation debt: timing-safe comparison,
 secure zeroing, and randomness are acceptable where they keep the code smaller
 and do not create backend policy or algorithm agility divergence. The
@@ -316,8 +319,8 @@ EVP/provider paths as no-allocation.
 
 The Sans-I/O boundary is preserved. The backend supplies provider-sensitive
 primitive operations: AEAD, classical key exchange, pure ML-KEM for ztls-owned
-RFC 10024 hybrid KEX, and signing. Signature verification is in-tree for both
-certificate chains and CertificateVerify (#183). Hashing/HMAC/HKDF may stay
+RFC 10024 hybrid KEX, and RSA-PSS signing. ECDSA signing and signature
+verification are in-tree (#183). Hashing/HMAC/HKDF may stay
 on Zig stdlib unless measurement or provider-policy requirements justify a
 facade. The backend does not own sockets, BIOs, trust-store loading,
 certificate policy I/O, application buffers, or handshake state-machine

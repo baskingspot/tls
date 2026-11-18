@@ -22,6 +22,11 @@ All notable changes to tls are recorded here. The format follows
   build sends a P-256 first flight instead. Certificate-chain signature
   schemes in the approved table now include RSASSA-PKCS1-v1_5 and Ed25519,
   which FIPS 186-5 approves.
+- ECDSA P-256/P-384 signing now runs in-tree on OpenSSL, AWS-LC, and
+  BoringSSL. `PrivateKey.nonce_mode = .deterministic` no longer depends on an
+  OpenSSL 3 provider and produces the same RFC 6979 signatures on each backend.
+  The default `.random` mode keeps randomized nonces by adding fresh OS entropy
+  under RFC 6979 §3.6. RSA-PSS signing still uses libcrypto (#82, #183).
 
 ### Changed
 

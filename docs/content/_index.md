@@ -486,8 +486,7 @@ Unlike the client, which only needs a certificate policy, the server must send a
 var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
 defer signer.deinit();
 // RFC 6979 deterministic nonces (baskingspot/tls#82): reproducible
-// CertificateVerify bytes for seeded test harnesses; see "Signing and key
-// exchange" for the capability contract.
+// CertificateVerify bytes for seeded test harnesses on every backend.
 // signer.nonce_mode = .deterministic;
 server.setCredentials(&.{leaf_cert_der}, signer.signer());
 ```

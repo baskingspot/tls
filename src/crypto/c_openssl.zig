@@ -27,10 +27,8 @@ else
 // exposes the OpenSSL 3.x provider API (core.h, core_names.h). BoringSSL
 // does ship openssl/params.h but the provider symbols (OSSL_PARAM,
 // EVP_PKEY_fromdata, EVP_PKEY_CTX_new_from_name) are absent, so we exclude
-// it the same as AWS-LC — the legacy EC_KEY/EVP_DigestSign path is the only
-// key-construction/signature path. Pub so backend code can comptime-gate
-// provider-parameter features (e.g. the RFC 6979 nonce-type,
-// baskingspot/tls#82).
+// it the same as AWS-LC. ECDSA signing itself is in-tree (#183); the legacy
+// EC_KEY/EVP_DigestSign path remains for EC key handling and RSA-PSS signing.
 pub const is_boringssl_family = family != .openssl;
 
 pub const openssl = translated;

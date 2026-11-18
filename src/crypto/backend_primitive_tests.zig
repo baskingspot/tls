@@ -657,9 +657,9 @@ test "backend.p384: Wycheproof tcId 1 shared secret" {
 //
 // Verification left this facade in #183: every scheme CertificateVerify
 // accepts verifies natively, so a peer cannot reach libcrypto through a
-// signature. The tests below sign with libcrypto and check the result through
-// the public CertificateVerify path, which is both the shipped verifier and a
-// differential between the C signer and the in-tree one.
+// signature. RSA-PSS signs with libcrypto. ECDSA signs in-tree and checks the
+// same DER bytes through both the public CertificateVerify verifier and
+// libcrypto's independent ECDSA verifier.
 
 const rsa_pss_key_pem = @import("fixtures").rsa_pss_key_pem;
 
@@ -693,6 +693,61 @@ fn verifyAsServerCertificateVerify(
     var cv_buf: [640]u8 = undefined;
     const cv = try certificate.encodeCertificateVerify(&cv_buf, scheme, sig);
     try certificate.verifyServerSignature(cv, pub_key, transcript_hash);
+}
+
+fn verifyEcdsaDigestWithLibcrypto(
+    key: *backend.sign.pkey,
+    digest: []const u8,
+    sig: []const u8,
+) !void {
+    _ = c.ERR_set_mark();
+    defer _ = c.ERR_pop_to_mark();
+    const ec = c.EVP_PKEY_get0_EC_KEY(key) orelse return error.LibcryptoFailed;
+    // OpenSSL's legacy declaration omits const from a key it only reads.
+    const result = c.ECDSA_verify(
+        0,
+        digest.ptr,
+        @intCast(digest.len),
+        sig.ptr,
+        @intCast(sig.len),
+        @constCast(ec),
+    );
+    if (result != 1) return error.SignatureVerificationFailed;
+}
+
+/// Verify the signature through the native path and through libcrypto's
+/// separate implementation of the ECDSA equation over the same digest.
+fn verifyEcdsaWithLibcrypto(
+    key: *backend.sign.pkey,
+    scheme: SignatureScheme,
+    msg: []const u8,
+    sig: []const u8,
+) !void {
+    switch (scheme) {
+        .ecdsa_secp256r1_sha256 => {
+            var digest: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(msg, &digest, .{});
+            try verifyEcdsaDigestWithLibcrypto(key, &digest, sig);
+        },
+        .ecdsa_secp384r1_sha384 => {
+            var digest: [48]u8 = undefined;
+            std.crypto.hash.sha2.Sha384.hash(msg, &digest, .{});
+            try verifyEcdsaDigestWithLibcrypto(key, &digest, sig);
+        },
+        else => unreachable,
+    }
+}
+
+fn verifyEcdsaBoth(
+    key: *backend.sign.pkey,
+    sig: []const u8,
+    scheme: SignatureScheme,
+    pub_key: []const u8,
+    transcript_hash: []const u8,
+    signed_content: []const u8,
+) !void {
+    try verifyAsServerCertificateVerify(sig, scheme, pub_key, transcript_hash);
+    try verifyEcdsaWithLibcrypto(key, scheme, signed_content, sig);
 }
 
 // RFC 8446 §4.4.3 — CertificateVerify signs caller-assembled bytes; the
@@ -756,8 +811,9 @@ test "backend.sign: RSA-PSS SHA-384 signature verifies natively and tamper is re
     );
 }
 
-// RFC 8446 §4.4.3 — ECDSA P-256 SHA-256 round-trip with a deterministic scalar.
-test "backend.sign: ECDSA P-256 SHA-256 signature verifies natively" {
+// RFC 8446 §4.4.3 + RFC 6979 §3.2 — random and deterministic in-tree P-256
+// signatures verify through both independent implementations.
+test "backend.sign: ECDSA P-256 signatures verify natively and through libcrypto" {
     const scalar: [32]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     );
@@ -774,8 +830,22 @@ test "backend.sign: ECDSA P-256 SHA-256 signature verifies natively" {
     const content = serverSignedContent(&content_buf, &transcript_hash);
 
     var sig_buf: [128]u8 = undefined;
-    const sig = try backend.sign.sign(priv, .ecdsa_secp256r1_sha256, content, &sig_buf, .random);
-    try verifyAsServerCertificateVerify(sig, .ecdsa_secp256r1_sha256, &pub_bytes, &transcript_hash);
+    const scheme: SignatureScheme = .ecdsa_secp256r1_sha256;
+    const sig = try backend.sign.sign(priv, scheme, content, &sig_buf, .random);
+    try verifyEcdsaBoth(priv, sig, scheme, &pub_bytes, &transcript_hash, content);
+
+    var deterministic_buf: [128]u8 = undefined;
+    const deterministic = try backend.sign.sign(
+        priv,
+        scheme,
+        content,
+        &deterministic_buf,
+        .deterministic,
+    );
+    try verifyEcdsaBoth(priv, deterministic, scheme, &pub_bytes, &transcript_hash, content);
+    var again_buf: [128]u8 = undefined;
+    const again = try backend.sign.sign(priv, scheme, content, &again_buf, .deterministic);
+    try testing.expectEqualSlices(u8, deterministic, again);
 }
 
 // RFC 8446 §4.4.3 — ECDSA signature verification must reject a tampered signature.
@@ -801,10 +871,16 @@ test "backend.sign: ECDSA P-256 SHA-256 tampered signature is rejected natively"
         error.SignatureVerificationFailed,
         verifyAsServerCertificateVerify(sig, .ecdsa_secp256r1_sha256, &pub_bytes, &transcript_hash),
     );
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        verifyEcdsaWithLibcrypto(priv, .ecdsa_secp256r1_sha256, content, sig),
+    );
 }
 
-// RFC 8446 §4.4.3 — ECDSA P-384 SHA-384 round-trip and tamper rejection.
-test "backend.sign: ECDSA P-384 SHA-384 signature verifies natively and tamper is rejected" {
+// RFC 8446 §4.4.3 + RFC 6979 §3.2 — random and deterministic in-tree P-384
+// signatures verify through both independent implementations, and tampering
+// with the native signature still fails native verification.
+test "backend.sign: ECDSA P-384 signatures verify natively and through libcrypto" {
     const scalar: [48]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f" ++
             "101112131415161718191a1b1c1d1e1f" ++
@@ -821,8 +897,22 @@ test "backend.sign: ECDSA P-384 SHA-384 signature verifies natively and tamper i
     const content = serverSignedContent(&content_buf, &transcript_hash);
 
     var sig_buf: [160]u8 = undefined;
-    const sig = try backend.sign.sign(priv, .ecdsa_secp384r1_sha384, content, &sig_buf, .random);
-    try verifyAsServerCertificateVerify(sig, .ecdsa_secp384r1_sha384, &pub_bytes, &transcript_hash);
+    const scheme: SignatureScheme = .ecdsa_secp384r1_sha384;
+    const sig = try backend.sign.sign(priv, scheme, content, &sig_buf, .random);
+    try verifyEcdsaBoth(priv, sig, scheme, &pub_bytes, &transcript_hash, content);
+
+    var deterministic_buf: [160]u8 = undefined;
+    const deterministic = try backend.sign.sign(
+        priv,
+        scheme,
+        content,
+        &deterministic_buf,
+        .deterministic,
+    );
+    try verifyEcdsaBoth(priv, deterministic, scheme, &pub_bytes, &transcript_hash, content);
+    var again_buf: [160]u8 = undefined;
+    const again = try backend.sign.sign(priv, scheme, content, &again_buf, .deterministic);
+    try testing.expectEqualSlices(u8, deterministic, again);
 
     sig_buf[0] ^= 0xff;
     try testing.expectError(
@@ -860,6 +950,22 @@ test "backend.sign: BufferTooShort on undersized output" {
     try testing.expectError(
         error.BufferTooShort,
         backend.sign.sign(key, .rsa_pss_rsae_sha256, "test message", &sig_buf, .random),
+    );
+}
+
+// RFC 8446 §4.2.3 — the ECDSA scheme names both the curve and hash. A P-256
+// key cannot sign as P-384, even though its scalar fits in either width.
+test "backend.sign: ECDSA curve mismatch is a named failure" {
+    const scalar: [32]u8 = @splat(0);
+    var fixed: [32]u8 = scalar;
+    fixed[31] = 1;
+    const priv = try backend.sign.privateKeyFromP256Scalar(&fixed);
+    defer backend.sign.freeKey(priv);
+
+    var sig_buf: [104]u8 = undefined;
+    try testing.expectError(
+        error.LibcryptoFailed,
+        backend.sign.sign(priv, .ecdsa_secp384r1_sha384, "test message", &sig_buf, .deterministic),
     );
 }
 
