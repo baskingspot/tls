@@ -945,7 +945,7 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
             pub fn init(s: *Self) Reader {
                 return .{
                     .interface = .{
-                        .vtable = &.{ .stream = streamImpl },
+                        .vtable = &.{ .stream = streamImpl, .readVec = readVecImpl },
                         .buffer = &s.read_storage.data,
                         .seek = 0,
                         .end = 0,
@@ -989,6 +989,34 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
                 };
                 s.pending = s.pending[n..];
                 return n;
+            }
+
+            /// Fill caller slices directly instead of letting the default
+            /// implementation fill `Reader.buffer` and return zero. One read
+            /// stays bounded by the current record, as it is in `streamImpl`.
+            fn readVecImpl(io_r: *Io.Reader, data: [][]u8) ReaderError!usize {
+                // A zero-length first slice is the caller asking for the
+                // reader's own buffer, as the Io.Reader contract specifies.
+                if (data[0].len == 0) return Io.Reader.defaultReadVec(io_r, data);
+
+                const r: *Reader = @alignCast(@fieldParentPtr("interface", io_r));
+                const s: *Self = @alignCast(@fieldParentPtr("reader_impl", r));
+                s.assertPinned();
+                s.acquireHalf(.rx_busy);
+                defer s.releaseHalf(.rx_busy);
+
+                if (s.hasFlag(.aborted)) return s.failRead(error.TlsAborted);
+                if (s.pending.len == 0) s.pending = try nextApplicationData(s);
+
+                var copied: usize = 0;
+                for (data) |destination| {
+                    if (s.pending.len == 0) break;
+                    const n = @min(destination.len, s.pending.len);
+                    @memcpy(destination[0..n], s.pending[0..n]);
+                    s.pending = s.pending[n..];
+                    copied += n;
+                }
+                return copied;
             }
 
             /// Drive the record loop until the peer sends application data.
