@@ -362,8 +362,8 @@ Every error path is tested. Fuzzing is not optional.
   independent vectors where RFC 8448 has no trace (e.g. SHA-384 suite support).
 - Handshake parsing: valid and malformed messages for every handshake type.
 - Fuzz targets: parser/state-machine byte surfaces (`server_hello.parse`,
-  Certificate parsing, HandshakeReader, decrypted processFlight) must reject
-  arbitrary bytes without panics. Run with `zig build test --fuzz --webui=127.0.0.1:<port>` on Linux.
+  Certificate parsing, CertificateVerify verification, HandshakeReader,
+  decrypted processFlight) must reject arbitrary bytes without panics. Run with `zig build test --fuzz --webui=127.0.0.1:<port>` on Linux.
 
 ### Integration Tests
 
