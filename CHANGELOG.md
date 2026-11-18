@@ -33,6 +33,13 @@ All notable changes to tls are recorded here. The format follows
   `error.DeadlineUnsupported` is removed; an Io implementation that cannot wait
   concurrently reports `error.ConcurrencyUnavailable`.
 
+### Fixed
+
+- `tls_std` fills every eligible `Io.Reader.readVec` destination slice from the
+  pending TLS record. A small first slice no longer makes std buffer that record
+  and return zero to the caller. Direct single-slice reads and the `read_buffer`
+  capacity are unchanged (#189).
+
 ## [0.4.4] - 2026-11-16
 
 ### Added

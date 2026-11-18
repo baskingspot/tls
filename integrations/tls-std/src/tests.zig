@@ -1295,6 +1295,110 @@ test "reader: a line longer than read_buffer reports StreamTooLong" {
     if (sctx.err) |err| return err;
 }
 
+// A short read leaves fewer than read_buffer bytes in the caller's first
+// slice. The default readVec fills its own buffer and returns zero in that
+// shape, even though the next decrypted record is sitting in that buffer.
+test "reader: readVec fills a small remainder instead of returning zero with a record buffered" {
+    const io = testIo();
+    const fds = try socketPair();
+    defer _ = std.c.close(fds[0]);
+
+    var sctx: ServerCtx = .{
+        .fd = fds[1],
+        .steps = &.{
+            .{ .send = "GET" },
+            .{ .pause_ms = 50 },
+            .{ .send = " /" },
+            .drain,
+        },
+    };
+    const server = try spawnServer(&sctx);
+
+    var conn: tls.Client = undefined;
+    try conn.connect(io, streamFor(fds[0]), .{ .host = test_host, .verify = .insecure });
+    defer conn.deinit();
+
+    const r = conn.reader();
+    var request: [frame.max_plaintext_len]u8 = undefined;
+    var first_vec: [1][]u8 = .{&request};
+    const first = try r.readVec(&first_vec);
+    try testing.expectEqual(@as(usize, 3), first);
+
+    var rest_vec: [1][]u8 = .{request[first..]};
+    const second = try r.readVec(&rest_vec);
+    if (second == 0) {
+        // This is the old failure, not EOF: both bytes are already buffered.
+        try testing.expectEqualStrings(" /", r.buffered());
+    }
+    try testing.expectEqual(@as(usize, 2), second);
+    try testing.expectEqualStrings("GET /", request[0 .. first + second]);
+
+    conn.close();
+    server.join();
+    if (sctx.err) |err| return err;
+}
+
+// One record can satisfy every caller slice. The read remains short at the
+// record boundary rather than waiting for the destination's last spare byte.
+test "reader: readVec splits a record across caller slices" {
+    const io = testIo();
+    const fds = try socketPair();
+    defer _ = std.c.close(fds[0]);
+
+    var sctx: ServerCtx = .{
+        .fd = fds[1],
+        .steps = &.{ .{ .send = "abcdef" }, .drain },
+    };
+    const server = try spawnServer(&sctx);
+
+    var conn: tls.Client = undefined;
+    try conn.connect(io, streamFor(fds[0]), .{ .host = test_host, .verify = .insecure });
+    defer conn.deinit();
+
+    var first: [2]u8 = undefined;
+    var second: [1]u8 = undefined;
+    var third: [4]u8 = undefined;
+    var data: [3][]u8 = .{ &first, &second, &third };
+    const n = try conn.reader().readVec(&data);
+    try testing.expectEqual(@as(usize, 6), n);
+    try testing.expectEqualStrings("ab", &first);
+    try testing.expectEqualStrings("c", &second);
+    try testing.expectEqualStrings("def", third[0..3]);
+
+    conn.close();
+    server.join();
+    if (sctx.err) |err| return err;
+}
+
+// A destination at least as large as the reader's free space already took the
+// direct path through the default implementation. Its result stays unchanged.
+test "reader: readVec preserves the ordinary direct read" {
+    const io = testIo();
+    const fds = try socketPair();
+    defer _ = std.c.close(fds[0]);
+
+    var sctx: ServerCtx = .{
+        .fd = fds[1],
+        .steps = &.{ .{ .send = "plain" }, .drain },
+    };
+    const server = try spawnServer(&sctx);
+
+    var conn: tls.Client = undefined;
+    try conn.connect(io, streamFor(fds[0]), .{ .host = test_host, .verify = .insecure });
+    defer conn.deinit();
+
+    var buf: [frame.max_plaintext_len]u8 = undefined;
+    var data: [1][]u8 = .{&buf};
+    const n = try conn.reader().readVec(&data);
+    try testing.expectEqual(@as(usize, 5), n);
+    try testing.expectEqualStrings("plain", buf[0..n]);
+    try testing.expectEqual(@as(usize, 0), conn.reader().bufferedLen());
+
+    conn.close();
+    server.join();
+    if (sctx.err) |err| return err;
+}
+
 // Streaming straight to another writer moves record bytes to the sink without
 // an intermediate copy through the reader's buffer.
 test "reader: stream to a writer drains the connection" {
