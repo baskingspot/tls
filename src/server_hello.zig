@@ -1007,7 +1007,7 @@ test "parse: rejects non-zero compression method" {
 }
 
 // Fuzz target: parse must reject arbitrary bytes with an error, never crash
-// (no panic/overflow/OOB). Run with `zig build test --fuzz`.
+// (no panic/overflow/OOB). Run with `just fuzz 100K`.
 fn fuzzParse(_: void, input: []const u8) anyerror!void {
     _ = parse(input) catch return;
 }

@@ -2889,7 +2889,7 @@ test "parse: extracts non-critical name constraints" {
 
 // Fuzz target: parse must reject arbitrary Certificate bytes with an error,
 // never crash. Exercises our framing plus certificate_parser's X.509 parser.
-// Run with `zig build test --fuzz`.
+// Run with `just fuzz 100K`.
 fn fuzzParse(_: void, input: []const u8) anyerror!void {
     _ = parse(input, .init) catch return;
 }

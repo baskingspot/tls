@@ -5221,7 +5221,7 @@ test "HandshakeReader: truncated body is UnexpectedEof" {
     try testing.expectError(error.UnexpectedEof, hr.next());
 }
 
-// Fuzz targets (run with `zig build test --fuzz`): the inbound parsers must
+// Fuzz targets (run with `just fuzz 100K`): the inbound parsers must
 // reject arbitrary bytes with an error, never crash.
 
 fn fuzzHandshakeReader(_: void, input: []const u8) anyerror!void {

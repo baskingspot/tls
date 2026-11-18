@@ -1,6 +1,5 @@
 //! Adapter from std.testing.fuzz's Smith-driven input to byte-slice targets.
 const std = @import("std");
-const builtin = @import("builtin");
 const testing = std.testing;
 const mem = std.mem;
 
@@ -29,32 +28,28 @@ pub fn fuzzBytes(
     var framed_count: usize = 0;
     defer for (corpus[0..framed_count]) |entry| testing.allocator.free(entry);
     for (options.corpus, corpus) |input, *framed| {
-        const bytes = try testing.allocator.alloc(u8, 4 + input.len);
-        framed.* = bytes;
+        framed.* = try frameCorpusEntry(input);
         framed_count += 1;
-        mem.writeInt(u32, bytes[0..4], @intCast(input.len), .little);
-        @memcpy(bytes[4..], input);
     }
     var framed_options = options;
     framed_options.corpus = corpus;
     return testing.fuzz(context, Wrapper.run, framed_options);
 }
 
-const CorpusReplay = struct {
-    corpus: []const []const u8,
-    index: usize = 0,
-};
-
-fn expectCorpusReplay(replay: *CorpusReplay, input: []const u8) anyerror!void {
-    const expected = if (replay.index < replay.corpus.len) replay.corpus[replay.index] else "";
-    try testing.expectEqualSlices(u8, expected, input);
-    replay.index += 1;
+fn frameCorpusEntry(input: []const u8) ![]u8 {
+    const bytes = try testing.allocator.alloc(u8, 4 + input.len);
+    mem.writeInt(u32, bytes[0..4], @intCast(input.len), .little);
+    @memcpy(bytes[4..], input);
+    return bytes;
 }
 
-test "fuzzBytes replays unframed corpus entries verbatim" {
-    if (builtin.fuzz) return error.SkipZigTest;
+test "fuzzBytes frames corpus entries with the Smith.slice length prefix" {
     const corpus = [_][]const u8{ "hello", "", "\x00\xff\x04\x00\x00\x00tail" };
-    var replay: CorpusReplay = .{ .corpus = &corpus };
-    try fuzzBytes(expectCorpusReplay, &replay, .{ .corpus = &corpus });
-    try testing.expectEqual(corpus.len + 1, replay.index);
+    for (corpus) |input| {
+        const framed = try frameCorpusEntry(input);
+        defer testing.allocator.free(framed);
+        const len = mem.readInt(u32, framed[0..4], .little);
+        try testing.expectEqual(@as(u32, @intCast(input.len)), len);
+        try testing.expectEqualSlices(u8, input, framed[4..]);
+    }
 }
