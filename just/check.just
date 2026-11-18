@@ -17,6 +17,13 @@ test-release-fast:
 [group("check")]
 check: test test-release-safe test-release-fast
 
+# Zig 0.17 returns success after a fuzz-time failure (baskingspot/testingx#9).
+# Read the output. Do not use this recipe as a CI gate.
+[doc("Fuzz the unit-test suite for RUNS runs")]
+[group("dev")]
+fuzz RUNS="100K":
+    zig build test -Dfuzz=true --fuzz={{ RUNS }} --summary all
+
 [doc("Check unit and handshake-replay ownership with Linux Memcheck")]
 [group("check")]
 check-memory $OUTPUT="":

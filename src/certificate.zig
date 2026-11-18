@@ -2901,9 +2901,15 @@ test "fuzz: parse handles arbitrary input" {
     });
 }
 
-// Fuzz target: CertificateVerify signature verification. Every full handshake
-// takes a peer-chosen key, scheme, signature, and transcript hash through
-// `verifyServerSignature` or `verifyClientSignature`, so all four are fuzz
+// Fuzz target: CertificateVerify signature verification only. Every input is
+// wrapped in a well-formed CertificateVerify message with a scheme from the
+// fixed list below. Arbitrary CertificateVerify message parsing is outside
+// this target. Certificate message parsing has the separate `fuzz: parse
+// handles arbitrary input` target above.
+//
+// Every full handshake takes a peer-chosen key, scheme, signature, and
+// transcript hash through `verifyServerSignature` or `verifyClientSignature`,
+// so all four are fuzz
 // dimensions and a mutation in one leaves the framing of the others intact:
 //
 //   byte 0     scheme tag, indexing `fuzz_verify_schemes`
@@ -2914,8 +2920,7 @@ test "fuzz: parse handles arbitrary input" {
 // The verifier holds no secrets, so success or an error is the only legal
 // answer to any input and a panic is the bug. The target stops at the
 // SubjectPublicKey bits, which is what the verifier takes, so discovery needs
-// no valid certificate chain in front of it. Run with:
-//   zig build test -Dfuzz=true --fuzz=100K
+// no valid certificate chain in front of it. Run with `just fuzz 100K`.
 const fuzz_verify_schemes = [_]SignatureScheme{
     .ecdsa_secp256r1_sha256,
     .ecdsa_secp384r1_sha384,
@@ -3014,7 +3019,7 @@ fn verifyFuzzSeed(input: []const u8) VerifyError!void {
 // flipped, the same signature truncated, the P-256 key under a P-384 scheme,
 // and the three key encodings the policy rejects (e = 1, a 2041-bit modulus,
 // an off-curve point).
-test "fuzz: verifyServerSignature handles arbitrary CertificateVerify input" {
+test "fuzz: CertificateVerify verification only with well-formed messages" {
     var cert_buf: [2048]u8 = undefined;
     var rsa_cert_buf: [2048]u8 = undefined;
     const p256_pub = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{

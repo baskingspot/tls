@@ -363,7 +363,8 @@ Every error path is tested. Fuzzing is not optional.
 - Handshake parsing: valid and malformed messages for every handshake type.
 - Fuzz targets: parser/state-machine byte surfaces (`server_hello.parse`,
   Certificate parsing, CertificateVerify verification, HandshakeReader,
-  decrypted processFlight) must reject arbitrary bytes without panics. Run with `zig build test --fuzz --webui=127.0.0.1:<port>` on Linux.
+  decrypted processFlight) must reject arbitrary bytes without panics. Run
+  `just fuzz` on Linux and inspect its output for failures.
 
 ### Integration Tests
 

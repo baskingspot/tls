@@ -894,7 +894,7 @@ test "backend.sign: key/scheme mismatch is a libcrypto failure" {
 // Input: a case selector byte, then the private-key seed for the ECDSA cases
 // (32 octets for P-256, 48 for P-384; the RSA cases use the fixture key), then
 // the transcript hash, clamped to the 64 octets the signed-content buffer holds.
-// Run with `zig build test -Dfuzz=true --fuzz=100K`.
+// Run with `just fuzz 100K`.
 const differential_schemes = [_]SignatureScheme{
     .ecdsa_secp256r1_sha256,
     .ecdsa_secp384r1_sha384,
@@ -967,7 +967,9 @@ fn fuzzSignVerifyDifferential(_: void, input: []const u8) anyerror!void {
     var sig_buf: [512]u8 = undefined;
     switch (scheme) {
         .ecdsa_secp256r1_sha256 => {
-            const key = try backend.sign.privateKeyFromP256Scalar(input[1..33]);
+            // Zero and out-of-range scalars cannot form a key. Skip them
+            // instead of reporting an expected key-construction error.
+            const key = backend.sign.privateKeyFromP256Scalar(input[1..33]) catch return;
             defer backend.sign.freeKey(key);
             const pub_key = try backend.p256.rawPublicKeyFromPrivate(key);
             try expectSignerVerifierAgreement(
@@ -980,7 +982,7 @@ fn fuzzSignVerifyDifferential(_: void, input: []const u8) anyerror!void {
             );
         },
         .ecdsa_secp384r1_sha384 => {
-            const key = try backend.p384.privateKeyFromSecret(input[1..49]);
+            const key = backend.p384.privateKeyFromSecret(input[1..49]) catch return;
             defer backend.sign.freeKey(key);
             const pub_key = try backend.p384.rawPublicKeyFromPrivate(key);
             try expectSignerVerifierAgreement(
@@ -1024,9 +1026,9 @@ fn encodeDifferentialInput(
     return buf[0..total];
 }
 
-// RFC 8446 §4.4.3 — one seed per case, over the same deterministic scalars the
-// hand-written tests use. The corpus also runs in the ordinary (non-fuzzing)
-// build, where it is the only thing that runs.
+// RFC 8446 §4.4.3 — one valid seed per case uses the deterministic scalars
+// from the hand-written tests. Zero and all-ones scalars must return without a
+// finding. The ordinary test build replays the whole corpus.
 test "fuzz: libcrypto-signed CertificateVerify verifies in-tree" {
     const p256_scalar: [32]u8 = stdx.fmt.comptimeHex(
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -1040,8 +1042,13 @@ test "fuzz: libcrypto-signed CertificateVerify verifies in-tree" {
     const sha384_hash: [48]u8 = @splat(0x66);
     const sha512_hash: [64]u8 = @splat(0x11);
 
-    var storage: [5][160]u8 = undefined;
-    var corpus: [5][]const u8 = undefined;
+    const zero_p256: [32]u8 = @splat(0);
+    const max_p256: [32]u8 = @splat(0xff);
+    const zero_p384: [48]u8 = @splat(0);
+    const max_p384: [48]u8 = @splat(0xff);
+
+    var storage: [9][160]u8 = undefined;
+    var corpus: [9][]const u8 = undefined;
     corpus[0] = encodeDifferentialInput(
         &storage[0],
         .ecdsa_secp256r1_sha256,
@@ -1057,6 +1064,10 @@ test "fuzz: libcrypto-signed CertificateVerify verifies in-tree" {
     corpus[2] = encodeDifferentialInput(&storage[2], .rsa_pss_rsae_sha256, "", &sha256_hash);
     corpus[3] = encodeDifferentialInput(&storage[3], .rsa_pss_rsae_sha384, "", &sha384_hash);
     corpus[4] = encodeDifferentialInput(&storage[4], .rsa_pss_rsae_sha512, "", &sha512_hash);
+    corpus[5] = encodeDifferentialInput(&storage[5], .ecdsa_secp256r1_sha256, &zero_p256, "");
+    corpus[6] = encodeDifferentialInput(&storage[6], .ecdsa_secp256r1_sha256, &max_p256, "");
+    corpus[7] = encodeDifferentialInput(&storage[7], .ecdsa_secp384r1_sha384, &zero_p384, "");
+    corpus[8] = encodeDifferentialInput(&storage[8], .ecdsa_secp384r1_sha384, &max_p384, "");
 
     try fuzz_compat.fuzzBytes(fuzzSignVerifyDifferential, {}, .{ .corpus = &corpus });
 }
