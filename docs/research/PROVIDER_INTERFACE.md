@@ -201,14 +201,15 @@ pub fn verify(scheme: SignatureScheme, pubkey: PublicKey,
 // signing stays behind the existing Signer vtable
 ```
 
-Signing schemes required for TLS 1.3 server auth: rsa_pss_rsae_sha256/384/512
-and ECDSA P-256/384, through `EVP_DigestSign`. Verification does not cross this
-seam any more (#183): CertificateVerify accepts rsa_pss_rsae_sha256/384/512 and
-ECDSA P-256/384, verified in-tree, and Ed25519 is a certificate-chain scheme
-only, never a CertificateVerify one.
+RSA-PSS signing uses `EVP_DigestSign`. ECDSA P-256/P-384 signing runs in-tree
+over std.crypto curve arithmetic, with RFC 6979 nonces on every backend (#82,
+#183). Verification also stays in-tree: CertificateVerify accepts
+rsa_pss_rsae_sha256/384/512 and ECDSA P-256/384. Ed25519 is a
+certificate-chain scheme only, never a CertificateVerify one.
 
-The key-construction caveat below therefore applies to the signing path alone,
-which still needs an `EVP_PKEY` for the caller's private key. Backend caveat:
+The key-construction caveat below applies to RSA-PSS signing and to private-key
+parsing and storage. ECDSA borrows the scalar from the stored `EVP_PKEY`.
+Backend caveat:
 OpenSSL-3-deprecated key-construction APIs such as `EC_KEY_*`,
 `EVP_PKEY_assign_EC_KEY`, `d2i_RSAPublicKey`, and `EVP_PKEY_assign_RSA` must not
 appear above the backend seam. They may still be the correct backend-local choice

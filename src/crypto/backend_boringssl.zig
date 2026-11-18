@@ -1,14 +1,13 @@
 //! BoringSSL backend primitive wrappers.
 //!
 //! X25519 uses BoringSSL's flat `curve25519.h` API. AEAD uses BoringSSL's
-//! `EVP_AEAD` one-shot API. The remaining primitives (EC P-256/P-384 key
-//! construction, ECDH, RSA-PSS/ECDSA sign+verify) delegate to the
-//! OpenSSL-compatible implementation in `backend_openssl.zig`, which uses the
+//! `EVP_AEAD` one-shot API. EC P-256/P-384 key construction, ECDH, and RSA-PSS
+//! signing delegate to the OpenSSL-compatible `backend_openssl.zig`, which uses
 //! legacy `EC_KEY_*` / `EVP_PKEY_assign_*` / `d2i_*` / `EVP_DigestSign*` API
 //! family. BoringSSL does not expose the OpenSSL 3.x provider API —
 //! `EVP_PKEY_fromdata`, `OSSL_PARAM`, `OSSL_PROVIDER`,
 //! `EVP_PKEY_CTX_new_from_name` are absent from the BoringSSL headers. The
-//! legacy API is the only key-construction/signature path BoringSSL provides.
+//! legacy API remains for EC key handling and RSA-PSS. ECDSA signs in-tree.
 //! The translate-c wrapper (`openssl_c.h`) excludes `core.h`, `core_names.h`,
 //! and `params.h` from the BoringSSL translation (#145).
 //!
@@ -348,7 +347,6 @@ pub fn aeadDecrypt(
 pub const SignatureError = compat.SignatureError;
 pub const SignError = compat.SignError;
 pub const NonceMode = compat.NonceMode;
-pub const supports_deterministic_nonce = compat.supports_deterministic_nonce;
 
 pub inline fn privateKeyFromDer(der: []const u8) SignatureError!*pkey {
     return compat.privateKeyFromDer(der);

@@ -353,9 +353,6 @@ pub const sign = struct {
     pub const SignError = sign_impl.SignError;
     pub const NonceMode = sign_impl.NonceMode;
 
-    pub inline fn supportsDeterministicNonce() bool {
-        return sign_impl.supports_deterministic_nonce;
-    }
     pub const pkey = sign_impl.pkey;
     pub inline fn privateKeyFromDer(der: []const u8) Error!*pkey {
         return sign_impl.privateKeyFromDer(der);

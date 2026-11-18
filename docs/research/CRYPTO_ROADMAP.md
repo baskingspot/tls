@@ -49,18 +49,18 @@ The AEAD seam is already clean enough to preserve:
 - HKDF derives byte-array traffic keys and constructs `RecordLayer` values.
 
 The non-AEAD seams are mixed. HKDF and HMAC are ztls code, and their SHA-2
-runs on the backend (see §4). X25519, ML-KEM, AEAD, and server signing are real
-backend boundaries and need a `src/crypto/` facade so provider decisions do not
-leak through the handshake state machines. Signature verification is no longer
-one of them: it runs in-tree for certificate chains and CertificateVerify alike
-(#183), so the facade does not carry a verify entry point.
+runs on the backend (see §4). X25519, ML-KEM, AEAD, and RSA-PSS signing are
+real backend boundaries and need a `src/crypto/` facade so provider decisions
+do not leak through the handshake state machines. ECDSA signing and signature
+verification run in-tree (#183). The facade keeps its signing entry point, but
+ECDSA calls no provider signature primitive.
 
 The backend facade should target the libcrypto family first, not a native rewrite
 first. Required facade areas:
 
 - AEAD for AES-GCM and ChaCha20-Poly1305;
 - X25519/P-256 key exchange where supported by the selected backend;
-- server signing;
+- RSA-PSS signing;
 - future provider-backed PQ or hybrid KEX/signature algorithms without changing
   the TLS engine API shape every time a provider adds an algorithm.
 
@@ -166,11 +166,12 @@ advertisement and server selection.
 
 ### 6. Signatures and certificates
 
-TLS `CertificateVerify` signing uses OpenSSL EVP and verification runs
-in-tree, while trust policy and I/O stay outside ztls. Verification moved off
-the backend in #183: `certificate.verifySignedContent` dispatches to
-std.crypto for ECDSA and to the RSA module in `certificate_parser.zig` for
-RSA-PSS, the way chain verification already worked:
+TLS `CertificateVerify` RSA-PSS signing uses libcrypto EVP. ECDSA signing and
+all verification run in-tree (#183). `crypto/ecdsa.zig` signs over std.crypto
+curve arithmetic, with deterministic RFC 6979 nonces on every backend.
+`certificate.verifySignedContent` dispatches to std.crypto for ECDSA and to the
+RSA module in `certificate_parser.zig` for RSA-PSS, the way chain verification
+already worked:
 
 - expand EVP private-key loading beyond unencrypted DER/PEM when needed;
 - decide whether the ztls-owned X.509 parser/chain validation remains an

@@ -29,12 +29,10 @@ pub const PrivateKey = struct {
     key: *backend.sign.pkey,
     /// RFC 6979 nonce strategy (baskingspot/tls#82): `.deterministic`
     /// makes identical key and message yield identical signature bytes for
-    /// byte-reproducible seeded transcripts. Requires compiled nonce-type
-    /// provider support and an ECDSA scheme; unsupported requests fail
-    /// loudly — error.DeterministicNonceUnsupported for a missing
-    /// capability or non-ECDSA scheme, error.LibcryptoFailed when the
-    /// provider rejects the parameter — rather than silently signing with
-    /// a random nonce. Production signing keeps the default `.random`.
+    /// byte-reproducible seeded transcripts on every backend. Non-ECDSA
+    /// schemes fail loudly with error.DeterministicNonceUnsupported rather
+    /// than silently signing with a random nonce. Production signing keeps
+    /// the default `.random`, which adds fresh OS entropy (RFC 6979 §3.6).
     nonce_mode: NonceMode,
 
     pub fn fromDer(scheme: SignatureScheme, der: []const u8) SignError!PrivateKey {
@@ -169,15 +167,6 @@ test "PrivateKey.sign: deterministic ECDSA matches the RFC 6979 vector" {
     defer key.deinit();
     key.nonce_mode = .deterministic;
 
-    // A backend compiled without nonce-type provider support has no
-    // deterministic path; its contract is the loud rejection, never a
-    // silently random nonce.
-    if (comptime !backend.sign.supportsDeterministicNonce()) {
-        var sig: [96]u8 = undefined;
-        try testing.expectError(error.DeterministicNonceUnsupported, key.sign("sample", &sig));
-        return;
-    }
-
     // DER SEQUENCE of the vector's r and s; both have the high bit set, so
     // each carries a leading zero pad byte.
     var expected: [72]u8 = undefined;
@@ -188,6 +177,7 @@ test "PrivateKey.sign: deterministic ECDSA matches the RFC 6979 vector" {
     var sig: [96]u8 = undefined;
     const out = try key.sign("sample", &sig);
     try testing.expectEqualSlices(u8, &expected, out);
+    try testing.expectError(error.BufferTooShort, key.sign("sample", sig[0..1]));
 
     var again: [96]u8 = undefined;
     try testing.expectEqualSlices(u8, out, try key.sign("sample", &again));
@@ -213,15 +203,6 @@ test "PrivateKey.sign: deterministic ECDSA P-384 matches the RFC 6979 A.2.6 vect
     };
     defer key.deinit();
     key.nonce_mode = .deterministic;
-
-    // A backend compiled without nonce-type provider support has no
-    // deterministic path; its contract is the loud rejection, never a
-    // silently random nonce.
-    if (comptime !backend.sign.supportsDeterministicNonce()) {
-        var sig: [106]u8 = undefined;
-        try testing.expectError(error.DeterministicNonceUnsupported, key.sign("sample", &sig));
-        return;
-    }
 
     // DER SEQUENCE of the vector's r and s; both have the high bit set,
     // so each carries a leading zero pad byte.

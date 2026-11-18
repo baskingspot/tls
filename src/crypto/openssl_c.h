@@ -25,10 +25,6 @@
 #define OPENSSL_CLANG_PRAGMA(arg)
 #include <openssl/aead.h>
 #include <openssl/curve25519.h>
-#else
-#include <openssl/core.h>
-#include <openssl/core_names.h>
-#include <openssl/params.h>
 #endif
 
 #include <openssl/bio.h>

@@ -4,7 +4,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const c_openssl = @import("c_openssl.zig");
 const c = c_openssl.openssl;
-const is_boringssl_family = c_openssl.is_boringssl_family;
+const ecdsa = @import("ecdsa.zig");
 const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 const ParameterSet = @import("mlkem_parameters.zig").ParameterSet;
 const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
@@ -740,16 +740,7 @@ pub const SignError = SignatureError || error{DeterministicNonceUnsupported};
 
 /// ECDSA nonce strategy for the sign seam (baskingspot/tls#82):
 /// `.random` (default) or `.deterministic` RFC 6979 deterministic-k.
-pub const NonceMode = enum {
-    random,
-    deterministic,
-};
-
-/// Whether the translated headers carry the nonce-type signature parameter
-/// (OpenSSL 3.2+; absent from BoringSSL-family headers). Compiled support
-/// only — the provider can still reject the parameter at runtime.
-pub const supports_deterministic_nonce = !is_boringssl_family and
-    @hasDecl(c, "OSSL_SIGNATURE_PARAM_NONCE_TYPE");
+pub const NonceMode = ecdsa.NonceMode;
 
 fn signatureDigest(scheme: SignatureScheme) SignatureError!*const c.EVP_MD {
     return switch (scheme) {
@@ -888,30 +879,33 @@ pub fn privateKeyFromP256Scalar(scalar: *const [32]u8) SignatureError!*pkey {
     };
 }
 
-// RFC 6979 deterministic ECDSA nonces (baskingspot/tls#82). The comptime
-// gate prunes the provider-parameter path when the headers lack the macro;
-// the per-key settable-params probe stays because compiled support does not
-// bind the provider, and a silently random nonce is the failure this option
-// exists to prevent.
-fn configureDeterministicNonce(
-    pctx: ?*c.EVP_PKEY_CTX,
-    scheme: SignatureScheme,
-) SignError!void {
-    if (comptime !supports_deterministic_nonce)
-        return error.DeterministicNonceUnsupported;
-    switch (scheme) {
-        .ecdsa_secp256r1_sha256, .ecdsa_secp384r1_sha384 => {},
-        else => return error.DeterministicNonceUnsupported,
-    }
-    const settable = c.EVP_PKEY_CTX_settable_params(pctx);
-    if (c.OSSL_PARAM_locate_const(settable, c.OSSL_SIGNATURE_PARAM_NONCE_TYPE) == null)
-        return error.DeterministicNonceUnsupported;
-    var nonce_type: c_uint = 1; // 1 = deterministic-k (RFC 6979).
-    var params = [_]c.OSSL_PARAM{
-        c.OSSL_PARAM_construct_uint(c.OSSL_SIGNATURE_PARAM_NONCE_TYPE, &nonce_type),
-        c.OSSL_PARAM_construct_end(),
+/// ECDSA uses the in-tree signer on every backend (#183). Libcrypto still
+/// owns key parsing and storage; this call borrows its scalar and checks the
+/// curve before handing fixed-width bytes to the signer. The Zig copy is
+/// wiped when signing returns, while the loaded EVP_PKEY retains its existing
+/// lifetime and libcrypto cleanse semantics.
+fn signatureSignEcdsa(
+    comptime Curve: type,
+    comptime Hash: type,
+    expected_nid: c_int,
+    key: *pkey,
+    msg: []const u8,
+    out: []u8,
+    nonce_mode: NonceMode,
+) SignError![]const u8 {
+    const ec = c.EVP_PKEY_get0_EC_KEY(key) orelse return error.LibcryptoFailed;
+    const group = c.EC_KEY_get0_group(ec) orelse return error.LibcryptoFailed;
+    if (c.EC_GROUP_get_curve_name(group) != expected_nid) return error.LibcryptoFailed;
+    const private = c.EC_KEY_get0_private_key(ec) orelse return error.LibcryptoFailed;
+
+    var scalar: [Curve.scalar.encoded_length]u8 = undefined;
+    defer std.crypto.secureZero(u8, &scalar);
+    if (c.BN_bn2binpad(private, &scalar, @intCast(scalar.len)) != scalar.len)
+        return error.LibcryptoFailed;
+    return ecdsa.Ecdsa(Curve, Hash).sign(&scalar, msg, out, nonce_mode) catch |err| switch (err) {
+        error.BufferTooShort => error.BufferTooShort,
+        error.InvalidPrivateKey => error.LibcryptoFailed,
     };
-    if (c.EVP_PKEY_CTX_set_params(pctx, &params) != 1) return error.LibcryptoFailed;
 }
 
 pub fn signatureSign(
@@ -923,14 +917,36 @@ pub fn signatureSign(
 ) SignError![]const u8 {
     errqEnter();
     defer errqExit();
+    switch (scheme) {
+        .ecdsa_secp256r1_sha256 => return signatureSignEcdsa(
+            std.crypto.ecc.P256,
+            std.crypto.hash.sha2.Sha256,
+            c.NID_X9_62_prime256v1,
+            key,
+            msg,
+            out,
+            nonce_mode,
+        ),
+        .ecdsa_secp384r1_sha384 => return signatureSignEcdsa(
+            std.crypto.ecc.P384,
+            std.crypto.hash.sha2.Sha384,
+            c.NID_secp384r1,
+            key,
+            msg,
+            out,
+            nonce_mode,
+        ),
+        else => {},
+    }
+
     const md = try signatureDigest(scheme);
+    if (nonce_mode == .deterministic) return error.DeterministicNonceUnsupported;
     const ctx = c.EVP_MD_CTX_new() orelse return error.LibcryptoFailed;
     defer c.EVP_MD_CTX_free(ctx);
 
     var pctx: ?*c.EVP_PKEY_CTX = null;
     if (c.EVP_DigestSignInit(ctx, &pctx, md, null, key) != 1) return error.LibcryptoFailed;
     try configureRsaPss(pctx, scheme, md);
-    if (nonce_mode == .deterministic) try configureDeterministicNonce(pctx, scheme);
     if (c.EVP_DigestSignUpdate(ctx, msg.ptr, msg.len) != 1) return error.LibcryptoFailed;
 
     var required_len: usize = 0;

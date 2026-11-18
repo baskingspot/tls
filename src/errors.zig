@@ -176,10 +176,9 @@ pub fn classify(err: HandshakeError) Class {
         => .buffer,
 
         // ── Caller-supplied options ──
-        // DeterministicNonceUnsupported is the caller asking a backend for
-        // RFC 6979 nonces it cannot produce — an unusable option, not a
-        // backend malfunction. Classifying it `.internal` would blame the
-        // libcrypto for honestly declining.
+        // DeterministicNonceUnsupported is the caller requesting RFC 6979
+        // for a non-ECDSA scheme — an unusable option, not a backend
+        // malfunction. Classifying it `.internal` would blame libcrypto.
         error.AlpnProtocolTooLong,
         error.DeterministicNonceUnsupported,
         error.EmptyAlpnProtocol,

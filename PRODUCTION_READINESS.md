@@ -43,13 +43,16 @@ run. The engine itself, meaning parsing, framing, transcript, and record
 sequencing, allocates nothing. The backends allocate during setup and inside
 their own routines, and that is stated rather than hidden.
 
-Signature verification is not part of that seam. CertificateVerify and
-certificate-chain signatures both verify in-tree, with no backend call: ECDSA
-through `std.crypto`, RSA-PSS and RSA PKCS#1 v1.5 through the module in
+Certificate signature verification and ECDSA signature arithmetic are not
+part of that seam. CertificateVerify and certificate-chain signatures verify
+in-tree:
+ECDSA through `std.crypto`, RSA-PSS and RSA PKCS#1 v1.5 through the module in
 `certificate_parser.zig`, and Ed25519 chain signatures through `std.crypto`.
-CertificateVerify accepts ECDSA P-256/P-384 and RSA-PSS only; Ed25519 is a
+ECDSA P-256/P-384 signing uses `crypto/ecdsa.zig` over `std.crypto` curve
+arithmetic, with RFC 6979 nonces on every backend (#82, #183).
+CertificateVerify accepts ECDSA P-256/P-384 and RSA-PSS only. Ed25519 is a
 chain-signature scheme here. The backend covers AEAD, SHA-2, key exchange,
-ML-KEM, and signing (#183).
+ML-KEM, and RSA-PSS signing (#183).
 
 ## How a claim gets proven
 
@@ -105,8 +108,9 @@ The row is reported on its own.
 - **No FIPS 140-3 claim, and the approved-only build cannot support one.**
   `-Dcrypto-approved-only=true` narrows negotiation to approved algorithms; it
   is an algorithm policy, not a validation. These operations run outside the
-  linked module in every build: signature verification for certificate chains
-  and CertificateVerify (#183), the TLS key schedule (`hmac.zig`, `hkdf.zig`),
+  linked module in every build: ECDSA signing and signature verification for
+  certificate chains and CertificateVerify (#183), the TLS key schedule
+  (`hmac.zig`, `hkdf.zig`),
   all randomness (`entropy.zig` fills ephemeral scalars and Hello randoms from
   the OS, so the module's DRBG is never used), and on OpenSSL the transcript
   hash (`SHA*_Init` bypasses the provider) and EC key construction
