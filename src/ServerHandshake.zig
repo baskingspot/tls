@@ -425,6 +425,14 @@ fn parsedShareBytes(sh: server_hello.ServerHello) []const u8 {
     };
 }
 
+fn testP256KeyPair() !p256.KeyPair {
+    return .generateDeterministic(.init(@splat(0x5a)));
+}
+
+fn firstFlightGroupForTest() NamedGroup {
+    return if (comptime root.capabilities.supportsGroup(.client, .x25519)) .x25519 else .secp256r1;
+}
+
 fn encodeClientHelloForTest(
     buf: []u8,
     key: x25519.PublicKey,
@@ -433,9 +441,39 @@ fn encodeClientHelloForTest(
 ) ![]u8 {
     if (comptime root.capabilities.supportsGroup(.client, .x25519))
         return client_hello.encode(buf, .zero, key, server_name, alpn);
-    const seed: [32]u8 = @splat(0x5a);
-    const p256_key = try p256.KeyPair.generateDeterministic(.init(seed));
+    const p256_key = try testP256KeyPair();
     return client_hello.encodeWithP256(buf, .zero, key, p256_key.public_key, server_name, alpn);
+}
+
+fn encodeClientHelloWithPskForTest(
+    buf: []u8,
+    key: x25519.PublicKey,
+    server_name: ?[]const u8,
+    alpn: root.AlpnProtocols,
+    psk_mode: client_hello.PskKeyExchangeMode,
+    identity: []const u8,
+    obfuscated_ticket_age: u32,
+    binder_len: u8,
+    offer_early_data: bool,
+) !client_hello.PskEncodeResult {
+    const p256_key: ?p256.PublicKey = if (comptime firstFlightGroupForTest() == .x25519)
+        null
+    else
+        (try testP256KeyPair()).public_key;
+    return client_hello.encodeWithPsk(
+        buf,
+        .zero,
+        key,
+        p256_key,
+        null,
+        server_name,
+        alpn,
+        psk_mode,
+        identity,
+        obfuscated_ticket_age,
+        binder_len,
+        offer_early_data,
+    );
 }
 
 /// These tests rewrite an X25519 first flight or hand-build the default
@@ -3113,123 +3151,6 @@ fn clientHelloWithP256KeyShare(
     return out[0..new_len];
 }
 
-fn clientHelloWithP384KeyShare(
-    out: []u8,
-    client_hello_msg: []const u8,
-    public_key: p384.PublicKey,
-) []const u8 {
-    @memcpy(out[0..client_hello_msg.len], client_hello_msg);
-    var i: usize = 0;
-    while (i + 4 < client_hello_msg.len) : (i += 1) {
-        if (out[i] == 0x00 and out[i + 1] == 0x0a and out[i + 2] == 0x00 and out[i + 3] == 0x04) {
-            out[i + 6] = 0x00;
-            out[i + 7] = @intCast(compat.enumToInt(NamedGroup.secp384r1));
-            break;
-        }
-    } else unreachable;
-
-    i = 0;
-    while (i + 4 < client_hello_msg.len) : (i += 1) {
-        if (out[i] == 0x00 and out[i + 1] == 0x33 and
-            out[i + 2] == 0x00 and out[i + 3] == 0x26) break;
-    } else unreachable;
-
-    const old_total: usize = 4 + 0x26;
-    const new_ext_len: u16 = 2 + 2 + 2 + p384.public_length;
-    const new_total: usize = 4 + new_ext_len;
-    const delta = new_total - old_total;
-    const tail_src = i + old_total;
-    @memmove(
-        out[tail_src + delta .. client_hello_msg.len + delta],
-        out[tail_src..client_hello_msg.len],
-    );
-    out[i..][0..10].* = .{
-        0x00, 0x33,
-        0x00, @intCast(new_ext_len),
-        0x00, @intCast(2 + 2 + p384.public_length),
-        0x00, @intCast(compat.enumToInt(NamedGroup.secp384r1)),
-        0x00, @intCast(p384.public_length),
-    };
-    @memcpy(out[i + 10 ..][0..p384.public_length], &public_key.data);
-
-    const new_len = client_hello_msg.len + delta;
-    const body_len: u24 = @intCast(new_len - handshake_header_len);
-    memx.writeInt(u24, out[1..4], body_len);
-    const extensions_len_offset = clientHelloExtensionsLenOffset(out[0..new_len]);
-    const ext_len = memx.readInt(u16, out[extensions_len_offset..][0..2]);
-    memx.writeInt(u16, out[extensions_len_offset..][0..2], ext_len + @as(u16, @intCast(delta)));
-    return out[0..new_len];
-}
-
-fn clientHelloWithBothKeyShares(
-    out: []u8,
-    client_hello_msg: []const u8,
-    p256_public_key: p256.PublicKey,
-) []const u8 {
-    @memcpy(out[0..client_hello_msg.len], client_hello_msg);
-    var len = client_hello_msg.len;
-    const extensions_len_offset = clientHelloExtensionsLenOffset(client_hello_msg);
-
-    var i: usize = 0;
-    while (i + 8 <= len) : (i += 1) {
-        if (out[i] == 0x00 and out[i + 1] == 0x0a and
-            out[i + 2] == 0x00 and out[i + 3] == 0x04) break;
-    } else unreachable;
-
-    const groups_delta = 2;
-    const groups_old_total = 4 + 4;
-    @memmove(
-        out[i + groups_old_total + groups_delta .. len + groups_delta],
-        out[i + groups_old_total .. len],
-    );
-    out[i..][0..10].* = .{
-        0x00, 0x0a,
-        0x00, 0x06,
-        0x00, 0x04,
-        0x00, @intCast(compat.enumToInt(NamedGroup.x25519)),
-        0x00, @intCast(compat.enumToInt(NamedGroup.secp256r1)),
-    };
-    len += groups_delta;
-
-    i = 0;
-    while (i + 10 <= len) : (i += 1) {
-        if (out[i] == 0x00 and out[i + 1] == 0x33 and
-            out[i + 2] == 0x00 and out[i + 3] == 0x26) break;
-    } else unreachable;
-
-    var x25519_public_key: [x25519.public_length]u8 = undefined;
-    @memcpy(&x25519_public_key, out[i + 10 ..][0..x25519.public_length]);
-
-    const old_total: usize = 4 + 0x26;
-    const new_ext_len: u16 = 2 + 2 + 2 + x25519.public_length + 2 + 2 + p256.public_length;
-    const new_total: usize = 4 + new_ext_len;
-    const key_share_delta = new_total - old_total;
-    const tail_src = i + old_total;
-    @memmove(out[tail_src + key_share_delta .. len + key_share_delta], out[tail_src..len]);
-    out[i..][0..10].* = .{
-        0x00, 0x33,
-        0x00, @intCast(new_ext_len),
-        0x00, @intCast(new_ext_len - 2),
-        0x00, @intCast(compat.enumToInt(NamedGroup.x25519)),
-        0x00, @intCast(x25519.public_length),
-    };
-    @memcpy(out[i + 10 ..][0..x25519.public_length], &x25519_public_key);
-    const p256_offset = i + 10 + x25519.public_length;
-    out[p256_offset..][0..4].* = .{
-        0x00, @intCast(compat.enumToInt(NamedGroup.secp256r1)),
-        0x00, @intCast(p256.public_length),
-    };
-    @memcpy(out[p256_offset + 4 ..][0..p256.public_length], &p256_public_key.data);
-    len += key_share_delta;
-
-    const delta: u16 = @intCast(groups_delta + key_share_delta);
-    const body_len: u24 = @intCast(len - handshake_header_len);
-    memx.writeInt(u24, out[1..4], body_len);
-    const ext_len = memx.readInt(u16, out[extensions_len_offset..][0..2]);
-    memx.writeInt(u16, out[extensions_len_offset..][0..2], ext_len + delta);
-    return out[0..len];
-}
-
 fn clientHelloExtensionsLenOffset(client_hello_msg: []const u8) usize {
     var offset: usize = handshake_header_len + 2 + 32;
     offset += 1 + client_hello_msg[offset];
@@ -3275,7 +3196,26 @@ fn compatibilityClientHello(
 }
 
 fn testConfig(keypair: x25519.KeyPair) !Config {
-    return .{ .keypairs = try .init(keypair), .random = .zero };
+    var keypairs: KeyPairs = try .init(keypair);
+    keypairs.p256 = try .generateDeterministic(.init(@splat(0x54)));
+    return .{ .keypairs = keypairs, .random = .zero };
+}
+
+fn clientHelloCipherSuites(client_hello_msg: []u8) []u8 {
+    const suites_len_offset = handshake_header_len + 2 + 32 + 1;
+    const suites_len = memx.readInt(u16, client_hello_msg[suites_len_offset..][0..2]);
+    return client_hello_msg[suites_len_offset + 2 ..][0..suites_len];
+}
+
+fn patchClientHelloCipherSuites(client_hello_msg: []u8, recognized: ?CipherSuite) void {
+    const suites = clientHelloCipherSuites(client_hello_msg);
+    for (0..suites.len / 2) |i| {
+        memx.writeInt(u16, suites[i * 2 ..][0..2], @intCast(0x1234 + i));
+    }
+    if (recognized) |suite| {
+        const entry = suites.len / 4;
+        memx.writeInt(u16, suites[entry * 2 ..][0..2], compat.enumToInt(suite));
+    }
 }
 
 // RFC 8446 §6 — alerts before handshake protection are plaintext records.
@@ -3398,7 +3338,6 @@ test "handleRecord: rejects application_data before connected" {
 }
 
 test "acceptClientHello: emits ServerHello and installs handshake keys" {
-    try skipOutsideDefaultFirstFlight();
     const client_keypair: x25519.KeyPair = .generate();
     const server_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
@@ -3444,7 +3383,7 @@ test "acceptClientHello: emits ServerHello and installs handshake keys" {
     }
 
     var client_hs: ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
+        .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
         .host_name = "ztls.server.test",
         .now_sec = 0,
         .random = .zero,
@@ -3603,7 +3542,6 @@ test "acceptClientHello: an invalid deferred P-256 scalar is redrawn" {
 // RFC 8446 §4.2.8.2, §7.1 — client and server derive matching handshake keys
 // when the only offered key share is secp384r1.
 test "acceptClientHello: negotiates secp384r1 key share" {
-    try skipOutsideDefaultFirstFlight();
     const client_x25519: x25519.KeyPair = .generate();
     const server_x25519: x25519.KeyPair = .generate();
     const client_p256 = try p256.KeyPair.generateDeterministic(.init(test_p256_seed_a));
@@ -3611,10 +3549,18 @@ test "acceptClientHello: negotiates secp384r1 key share" {
     const client_p384 = try p384.KeyPair.generateDeterministic(.init(test_p384_seed_a));
     const server_p384 = try p384.KeyPair.generateDeterministic(.init(test_p384_seed_b));
 
-    var ch_buf: [512]u8 = undefined;
-    const ch = try encodeClientHelloForTest(&ch_buf, client_x25519.public_key, null, &.{});
     var p384_ch_buf: [768]u8 = undefined;
-    const p384_ch = clientHelloWithP384KeyShare(&p384_ch_buf, ch, client_p384.public_key);
+    const p384_ch = try client_hello.encodeRetryAfterHrr(
+        &p384_ch_buf,
+        .zero,
+        client_x25519.public_key,
+        client_p256.public_key,
+        client_p384.public_key,
+        .secp384r1,
+        null,
+        null,
+        &.{},
+    );
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(p384_ch.len));
     header.write(record[0..frame.header_len]);
@@ -3710,9 +3656,8 @@ test "acceptClientHello: rejects ClientHello2 with changed SNI or ALPN after HRR
     for (cases) |case| {
         const client_keypair: x25519.KeyPair = .generate();
         var ch1_buf: [512]u8 = undefined;
-        const ch1 = try client_hello.encode(
+        const ch1 = try encodeClientHelloForTest(
             &ch1_buf,
-            .zero,
             client_keypair.public_key,
             case.ch1_sni,
             case.ch1_alpn,
@@ -3733,9 +3678,8 @@ test "acceptClientHello: rejects ClientHello2 with changed SNI or ALPN after HRR
         try testing.expectEqualStrings("h2", server.selectedAlpnProtocol().?);
 
         var ch2_buf: [512]u8 = undefined;
-        const ch2 = try client_hello.encode(
+        const ch2 = try encodeClientHelloForTest(
             &ch2_buf,
-            .zero,
             client_keypair.public_key,
             case.ch2_sni,
             case.ch2_alpn,
@@ -3799,12 +3743,9 @@ test "acceptClientHello: rejects early_data in ClientHello2 after HRR" {
     try testing.expect(server.early_rx == null);
 
     var ch2_buf: [1024]u8 = undefined;
-    const ch2_result = try client_hello.encodeWithPsk(
+    const ch2_result = try encodeClientHelloWithPskForTest(
         &ch2_buf,
-        .zero,
         client_keypair.public_key,
-        null,
-        null,
         null,
         &.{},
         .psk_dhe_ke,
@@ -3852,12 +3793,9 @@ const RetryPskHarness = struct {
     fn encodeBase(buf: []u8, keypair: x25519.KeyPair) !client_hello.PskEncodeResult {
         // Identity "x" is a placeholder: clientHelloWithPskIdentities
         // replaces the whole pre_shared_key extension.
-        return client_hello.encodeWithPsk(
+        return encodeClientHelloWithPskForTest(
             buf,
-            .zero,
             keypair.public_key,
-            null,
-            null,
             null,
             &.{},
             .psk_dhe_ke,
@@ -4345,7 +4283,7 @@ test "acceptClientHello: bounded PSK identity admission before HelloRetryRequest
         client_keypair,
         &identities,
         0,
-        compat.enumToInt(NamedGroup.x25519),
+        compat.enumToInt(firstFlightGroupForTest()),
     );
     _ = try server2.acceptClientHello(ch1_usable, &harness.out);
     try testing.expectEqual(.wait_client_finished, server2.state);
@@ -4468,7 +4406,7 @@ test "acceptClientHello: PSK selection rejects a slack-byte identities vector" {
         client_keypair,
         &.{.{ .identity = "a" }},
         1,
-        compat.enumToInt(NamedGroup.x25519),
+        compat.enumToInt(firstFlightGroupForTest()),
     );
     try testing.expectError(
         error.UnexpectedEof,
@@ -4480,35 +4418,53 @@ test "acceptClientHello: PSK selection rejects a slack-byte identities vector" {
 // by the HelloRetryRequest.
 test "acceptClientHello: rejects ClientHello2 that ignores HRR selected group" {
     const client_keypair: x25519.KeyPair = .generate();
-    var ch1_buf: [512]u8 = undefined;
-    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key, null, &.{});
-    var hrr_ch1_buf: [512]u8 = undefined;
-    const hrr_ch1 = clientHelloWithKeyShareGroup(
-        &hrr_ch1_buf,
-        ch1,
-        0x6a6a,
+    const client_p256 = try p256.KeyPair.generateDeterministic(.init(test_p256_seed_a));
+    const client_p384 = try p384.KeyPair.generateDeterministic(.init(test_p384_seed_a));
+    const first_group = firstFlightGroupForTest();
+    var ch1_buf: [768]u8 = undefined;
+    const ch1 = try client_hello.encodeRetryAfterHrr(
+        &ch1_buf,
+        .zero,
+        client_keypair.public_key,
+        client_p256.public_key,
+        client_p384.public_key,
+        first_group,
+        null,
+        null,
+        &.{},
     );
+    patchClientHelloKeyShareGroup(ch1, 0x6a6a);
     var ch1_record: [1024]u8 = undefined;
-    const ch1_header: frame.Header = .init(.handshake, @intCast(hrr_ch1.len));
+    const ch1_header: frame.Header = .init(.handshake, @intCast(ch1.len));
     ch1_header.write(ch1_record[0..frame.header_len]);
-    @memcpy(ch1_record[frame.header_len..][0..hrr_ch1.len], hrr_ch1);
+    @memcpy(ch1_record[frame.header_len..][0..ch1.len], ch1);
 
     var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var out: [512]u8 = undefined;
-    _ = try server.acceptClientHello(ch1_record[0 .. frame.header_len + hrr_ch1.len], &out);
+    _ = try server.acceptClientHello(ch1_record[0 .. frame.header_len + ch1.len], &out);
 
-    const client_p256 = try p256.KeyPair.generateDeterministic(.init(test_p256_seed_a));
-    var p256_ch2_buf: [768]u8 = undefined;
-    const p256_ch2 = clientHelloWithP256KeyShare(&p256_ch2_buf, ch1, client_p256.public_key);
+    const wrong_group: NamedGroup = if (first_group == .x25519) .secp256r1 else .secp384r1;
+    var ch2_buf: [768]u8 = undefined;
+    const ch2 = try client_hello.encodeRetryAfterHrr(
+        &ch2_buf,
+        .zero,
+        client_keypair.public_key,
+        client_p256.public_key,
+        client_p384.public_key,
+        wrong_group,
+        null,
+        null,
+        &.{},
+    );
     var ch2_record: [1024]u8 = undefined;
-    const ch2_header: frame.Header = .init(.handshake, @intCast(p256_ch2.len));
+    const ch2_header: frame.Header = .init(.handshake, @intCast(ch2.len));
     ch2_header.write(ch2_record[0..frame.header_len]);
-    @memcpy(ch2_record[frame.header_len..][0..p256_ch2.len], p256_ch2);
+    @memcpy(ch2_record[frame.header_len..][0..ch2.len], ch2);
 
     try testing.expectError(
         error.IllegalParameter,
-        server.acceptClientHello(ch2_record[0 .. frame.header_len + p256_ch2.len], &out),
+        server.acceptClientHello(ch2_record[0 .. frame.header_len + ch2.len], &out),
     );
 }
 
@@ -4516,27 +4472,41 @@ test "acceptClientHello: rejects ClientHello2 that ignores HRR selected group" {
 // KeyShareEntry matching the group selected by HelloRetryRequest.
 test "acceptClientHello: rejects ClientHello2 with extra key share" {
     const client_keypair: x25519.KeyPair = .generate();
-    var ch1_buf: [512]u8 = undefined;
-    const ch1 = try encodeClientHelloForTest(&ch1_buf, client_keypair.public_key, null, &.{});
-    var hrr_ch1_buf: [512]u8 = undefined;
-    const hrr_ch1 = clientHelloWithKeyShareGroup(
-        &hrr_ch1_buf,
-        ch1,
-        0x6a6a,
+    const client_p256 = try p256.KeyPair.generateDeterministic(.init(test_p256_seed_a));
+    const client_p384 = try p384.KeyPair.generateDeterministic(.init(test_p384_seed_a));
+    var ch1_buf: [768]u8 = undefined;
+    const ch1 = try client_hello.encodeRetryAfterHrr(
+        &ch1_buf,
+        .zero,
+        client_keypair.public_key,
+        client_p256.public_key,
+        client_p384.public_key,
+        firstFlightGroupForTest(),
+        null,
+        null,
+        &.{},
     );
+    patchClientHelloKeyShareGroup(ch1, 0x6a6a);
     var ch1_record: [1024]u8 = undefined;
-    const ch1_header: frame.Header = .init(.handshake, @intCast(hrr_ch1.len));
+    const ch1_header: frame.Header = .init(.handshake, @intCast(ch1.len));
     ch1_header.write(ch1_record[0..frame.header_len]);
-    @memcpy(ch1_record[frame.header_len..][0..hrr_ch1.len], hrr_ch1);
+    @memcpy(ch1_record[frame.header_len..][0..ch1.len], ch1);
 
     var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
     var out: [512]u8 = undefined;
-    _ = try server.acceptClientHello(ch1_record[0 .. frame.header_len + hrr_ch1.len], &out);
+    _ = try server.acceptClientHello(ch1_record[0 .. frame.header_len + ch1.len], &out);
 
-    const client_p256 = try p256.KeyPair.generateDeterministic(.init(test_p256_seed_a));
     var ch2_buf: [1024]u8 = undefined;
-    const ch2 = clientHelloWithBothKeyShares(&ch2_buf, ch1, client_p256.public_key);
+    const ch2 = try client_hello.encodeWithP256P384(
+        &ch2_buf,
+        .zero,
+        client_keypair.public_key,
+        client_p256.public_key,
+        client_p384.public_key,
+        null,
+        &.{},
+    );
     var ch2_record: [1536]u8 = undefined;
     const ch2_header: frame.Header = .init(.handshake, @intCast(ch2.len));
     ch2_header.write(ch2_record[0..frame.header_len]);
@@ -4582,7 +4552,7 @@ test "acceptClientHello: HRR sends at most one compatibility ChangeCipherSpec" {
         hrr_record[frame.header_len..][0..hrr_hdr.length()],
         &session_id,
     );
-    try testing.expectEqual(NamedGroup.x25519, hrr.selected_group.?);
+    try testing.expectEqual(firstFlightGroupForTest(), hrr.selected_group.?);
     const hrr_ccs_offset = frame.header_len + @as(usize, hrr_hdr.length());
     try testing.expectEqual(hrr_ccs_offset + compatibility_ccs_len, hrr_record.len);
 
@@ -4679,7 +4649,7 @@ test "sendAnonymousFlightForTest: client decrypts EncryptedExtensions and Finish
     );
 
     var client: ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
+        .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
         .host_name = "ztls.server.test",
         .now_sec = 0,
         .random = .zero,
@@ -4875,7 +4845,7 @@ test "sendAuthenticatedFlight: client decrypts authenticated server flight" {
     );
 
     var client: ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
+        .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
         .host_name = "ztls.server.test",
         .now_sec = 0,
         .random = .zero,
@@ -4936,7 +4906,7 @@ test "sendAuthenticatedFlight: optional client auth sends CertificateRequest" {
     );
 
     var client: ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
+        .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
         .host_name = "ztls.server.test",
         .now_sec = 0,
         .random = .zero,
@@ -4987,14 +4957,14 @@ fn connectedTestServer() !ServerHandshake {
     return connectedTestServerConfigure(null);
 }
 
-/// `suites_patch`, when set, overwrites the ClientHello cipher-suite vector
-/// (fixed 6-byte, three-suite layout) before acceptance.
-fn connectedTestServerConfigure(suites_patch: ?[6]u8) !ServerHandshake {
+/// `recognized_suite`, when set, replaces the offered vector with unknown
+/// code points around that suite before acceptance.
+fn connectedTestServerConfigure(recognized_suite: ?CipherSuite) !ServerHandshake {
     const client_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x11)));
     const server_keypair: x25519.KeyPair = try .generateDeterministic(.init(@splat(0x22)));
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
-    if (suites_patch) |patch| ch_buf[41..47].* = patch;
+    if (recognized_suite != null) patchClientHelloCipherSuites(ch, recognized_suite);
     var ch_record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(ch_record[0..frame.header_len]);
@@ -5172,7 +5142,7 @@ test "processClientFinishedMessage: the bare entry reaches the same state" {
 /// offered vector keeps its length and carries one recognized SHA-384 suite
 /// plus unknown code points the server ignores (RFC 8446 §4.1.2, §9.3).
 fn connectedTestServerSha384() !ServerHandshake {
-    return connectedTestServerConfigure(.{ 0x12, 0x34, 0x13, 0x02, 0x56, 0x78 });
+    return connectedTestServerConfigure(.aes_256_gcm_sha384);
 }
 
 const ConnectedTestPair = struct {
@@ -6258,7 +6228,7 @@ test "sendAuthenticatedFlight: client processes CertificateVerify and Finished" 
     );
 
     var client: ClientHandshake = .init(.{
-        .keypairs = try .init(client_keypair),
+        .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
         .host_name = "ztls.server.test",
         .now_sec = 0,
         .random = .zero,
@@ -6396,7 +6366,7 @@ test "public Finished paths reject trailing and non-Finished handshake messages"
 test "handleRecord: rejects disjoint ALPN offers with the required alert" {
     const keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
-    const ch = try client_hello.encode(&ch_buf, .zero, keypair.public_key, null, &.{"h2"});
+    const ch = try encodeClientHelloForTest(&ch_buf, keypair.public_key, null, &.{"h2"});
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
@@ -7948,9 +7918,9 @@ test "in-memory authenticated client-server handshake reaches app data" {
 
 // RFC 8446 §9.1 — all mandatory TLS 1.3 cipher suites complete the full handshake.
 test "in-memory authenticated client-server handshake suite matrix" {
-    try expectInMemoryAuthenticatedHandshake(.aes_128_gcm_sha256);
-    try expectInMemoryAuthenticatedHandshake(.aes_256_gcm_sha384);
-    try expectInMemoryAuthenticatedHandshake(.chacha20_poly1305_sha256);
+    for (root.capabilities.cipher_suites) |suite| {
+        try expectInMemoryAuthenticatedHandshake(suite);
+    }
 }
 
 // RFC 8446 §4.6.3, §7.2 — server-initiated KeyUpdate(update_requested) over a
@@ -7962,9 +7932,9 @@ test "in-memory authenticated client-server handshake suite matrix" {
 // BoringSSL-specific failure under ChaCha20 that the AES-only unit tests
 // missed (#71).
 test "in-memory KeyUpdate round trip across all cipher suites" {
-    try expectInMemoryKeyUpdateRoundTrip(.aes_128_gcm_sha256);
-    try expectInMemoryKeyUpdateRoundTrip(.aes_256_gcm_sha384);
-    try expectInMemoryKeyUpdateRoundTrip(.chacha20_poly1305_sha256);
+    for (root.capabilities.cipher_suites) |suite| {
+        try expectInMemoryKeyUpdateRoundTrip(suite);
+    }
 }
 
 // RFC 8446 §4.2.11 — selectPsk parses a PSK ClientHello, looks up the PSK,
@@ -9138,10 +9108,13 @@ test "0-RTT: failed ClientHello after PSK selection resets negotiation state" {
     ticket.identity.appendSliceAssumeCapacity(&identity);
     ticket.psk.appendSliceAssumeCapacity(&psk.data);
 
-    // All-zero X25519 key share: the binder verifies and the 0-RTT key is
-    // installed, then the shared-secret computation fails late on the
-    // identity element.
-    client1.keypairs.x25519.public_key = .zero;
+    // An all-zero share fails after PSK selection and early-key installation.
+    if (comptime root.capabilities.supportsGroup(.client, .x25519)) {
+        client1.keypairs.x25519.public_key = .zero;
+    } else {
+        client1.keypairs.p256.public_key = .zero;
+        client1.keypairs.p256.public_key.data[0] = 0x04;
+    }
     var client1_out: [4096]u8 = undefined;
     const ch1_record = try client1.startWithPsk(&ticket, &client1_out, true);
     client1.completeWrite();
@@ -9246,7 +9219,12 @@ test "0-RTT: ticket suite mismatch declines early data" {
         .random = .zero,
     });
     defer client.deinit();
-    var ticket: ClientHandshake.SessionTicket = .init(0x262a6494, 0, .aes_128_gcm_sha256, 16384);
+    var ticket: ClientHandshake.SessionTicket = .init(
+        0x262a6494,
+        0,
+        .chacha20_poly1305_sha256,
+        16384,
+    );
     ticket.identity.appendSliceAssumeCapacity(&identity);
     ticket.psk.appendSliceAssumeCapacity(&psk.data);
 
@@ -9266,7 +9244,7 @@ test "0-RTT: ticket suite mismatch declines early data" {
             if (mem.eql(u8, id, self.identity))
                 return .{
                     .psk = self.psk,
-                    .cipher_suite = .aes_128_gcm_sha256,
+                    .cipher_suite = .chacha20_poly1305_sha256,
                     .max_early_data_size = 16384,
                     .alpn = null,
                 };
@@ -9277,11 +9255,12 @@ test "0-RTT: ticket suite mismatch declines early data" {
 
     // The server no longer enables the ticket's suite: same hash family, so
     // the binder verifies and the PSK is selected, but the exact-suite
-    // precondition of §4.2.10 fails.
+    // precondition of §4.2.10 fails. The old suite represents a ticket that
+    // predates the current profile when ChaCha20-Poly1305 is unavailable.
     var server: ServerHandshake = .init(
         .{
             .psk_lookup = .{ .context = &lookup_ctx, .lookup = Lookup.l },
-            .supported_suites = &.{.chacha20_poly1305_sha256},
+            .supported_suites = &.{.aes_128_gcm_sha256},
         },
         .{
             .keypairs = try .init(.generate()),
@@ -9291,7 +9270,7 @@ test "0-RTT: ticket suite mismatch declines early data" {
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     _ = try server.acceptClientHello(ch_record, &server_out);
-    try testing.expectEqual(.chacha20_poly1305_sha256, server.suite);
+    try testing.expectEqual(.aes_128_gcm_sha256, server.suite);
     try testing.expect(server.selected_psk != null);
     try testing.expect(server.early_rx == null);
     try testing.expectEqual(@as(?u32, null), server.early_data_limit);
@@ -10828,10 +10807,9 @@ fn finishInMemoryHandshake(
     try testing.expectEqualStrings("pong", app_ev.application_data);
 }
 
-// RFC 8446 §4.2.8, §7.4.2 — a client that offers X25519 and P-256 shares
-// gets X25519. The server derives that one deferred key, and the handshake
-// reaches application data on it.
-test "in-memory X25519 handshake on deferred keypairs reaches app data" {
+// RFC 8446 §4.2.8, §7.4.2 — the server derives only the classical group the
+// client selected, and the handshake reaches application data on it.
+test "in-memory classical handshake on deferred keypairs reaches app data" {
     var client: ClientHandshake = .init(.{
         .keypairs = try .init(.generate()),
         .host_name = null,
@@ -10854,13 +10832,31 @@ test "in-memory X25519 handshake on deferred keypairs reaches app data" {
     defer server.deinit();
     var server_out: [4096]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_out);
-    try testing.expectEqual(NamedGroup.x25519, server.negotiated_group);
-    try testing.expect(server.keypairs.derived.eql(.init(.{ .x25519 = true })));
-    try testing.expectEqualSlices(u8, &test_x25519_public, &server.keypairs.x25519.public_key.data);
+    const first_group = firstFlightGroupForTest();
+    try testing.expectEqual(first_group, server.negotiated_group);
+    const expected_derived: std.EnumSet(KeyPairs.Public) = if (first_group == .x25519)
+        .init(.{ .x25519 = true })
+    else
+        .init(.{ .p256 = true });
+    try testing.expect(server.keypairs.derived.eql(expected_derived));
 
     try finishInMemoryHandshake(&client, &server, server_out[0..sh_record.len]);
-    // Derived once: the finished handshake still holds the RFC 7748 key.
-    try testing.expectEqualSlices(u8, &test_x25519_public, &server.keypairs.x25519.public_key.data);
+    // Derivation happened once, and the selected public key survives the
+    // handshake.
+    if (first_group == .x25519) {
+        try testing.expectEqualSlices(
+            u8,
+            &test_x25519_public,
+            &server.keypairs.x25519.public_key.data,
+        );
+    } else {
+        const expected = try p256.KeyPair.generateDeterministic(.init(test_p256_seed_b));
+        try testing.expectEqualSlices(
+            u8,
+            &expected.public_key.data,
+            &server.keypairs.p256.public_key.data,
+        );
+    }
 }
 
 // RFC 10024 §4 — every standardized hybrid group completes an in-memory
@@ -11066,13 +11062,14 @@ test "in-memory HRR round trip reaches app data" {
     // server has no matching key_share and must HRR. The client still has its
     // real x25519/p256 keypairs for ClientHello2.
     var ch1_buf: [512]u8 = undefined;
+    const first_group = firstFlightGroupForTest();
     const ch1 = try client_hello.encodeRetryAfterHrr(
         &ch1_buf,
         .zero,
         client.keypairs.x25519.public_key,
         client.keypairs.p256.public_key,
         null,
-        .x25519,
+        first_group,
         null,
         null,
         &.{},
@@ -11107,7 +11104,7 @@ test "in-memory HRR round trip reaches app data" {
     const hrr = try server_hello.parseHelloRetryRequest(
         hrr_record[frame.header_len..][0..hrr_hdr.length()],
     );
-    try testing.expectEqual(NamedGroup.x25519, hrr.selected_group.?);
+    try testing.expectEqual(first_group, hrr.selected_group.?);
     try testing.expectEqual(.wait_ch, server.state);
     try testing.expect(server.keypairs.derived.eql(.empty));
 
@@ -11133,7 +11130,11 @@ test "in-memory HRR round trip reaches app data" {
     // Server accepts ClientHello2 and emits ServerHello.
     const sh_record = try server.acceptClientHello(ch2_record[0..ch2_msg.len], &server_out);
     try testing.expectEqual(.wait_client_finished, server.state);
-    try testing.expect(server.keypairs.derived.eql(.init(.{ .x25519 = true })));
+    const expected_derived: std.EnumSet(KeyPairs.Public) = if (first_group == .x25519)
+        .init(.{ .x25519 = true })
+    else
+        .init(.{ .p256 = true });
+    try testing.expect(server.keypairs.derived.eql(expected_derived));
     // Client processes the real ServerHello (post-HRR).
     try client.processServerHello(sh_record[frame.header_len..]);
 
@@ -11184,13 +11185,13 @@ test "acceptClientHello: server suite preference" {
 
     var hs: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer hs.deinit();
-    const suites = [_]CipherSuite{.chacha20_poly1305_sha256};
+    const suites = [_]CipherSuite{.aes_256_gcm_sha384};
     hs.supportSuites(&suites);
     var out: [256]u8 = undefined;
     const sh_record = try hs.acceptClientHello(record[0 .. frame.header_len + ch.len], &out);
     const hdr = try frame.parseHeader(sh_record);
     const sh = try server_hello.parse(sh_record[frame.header_len..][0..hdr.length()]);
-    try testing.expectEqual(.chacha20_poly1305_sha256, sh.cipher_suite);
+    try testing.expectEqual(.aes_256_gcm_sha384, sh.cipher_suite);
 }
 
 // RFC 6066 §3 — server_name extension: server must be able to read the
@@ -11237,9 +11238,7 @@ test "acceptClientHello: rejects unsupported suite" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
-    // Patch offered suites to unknown values. Offsets are fixed by
-    // ClientHello's fixed prefix: header(4)+version(2)+random(32)+sid_len(1).
-    ch_buf[41..47].* = .{ 0x12, 0x34, 0x12, 0x35, 0x12, 0x36 };
+    patchClientHelloCipherSuites(ch, null);
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(record[0..frame.header_len]);
@@ -11259,8 +11258,8 @@ test "acceptClientHello: ignores unknown cipher suites in mixed list" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
-    // unknown, TLS_AES_256_GCM_SHA384, unknown
-    ch_buf[41..47].* = .{ 0x12, 0x34, 0x13, 0x02, 0x56, 0x78 };
+    // Unknown code points surround one recognized alternative.
+    patchClientHelloCipherSuites(ch, .aes_256_gcm_sha384);
 
     var record: [1024]u8 = undefined;
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
@@ -11282,9 +11281,12 @@ test "acceptClientHello: rejects ClientHello with no shared group" {
     const client_keypair: x25519.KeyPair = .generate();
     var ch_buf: [512]u8 = undefined;
     const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
+    const first_group = compat.enumToInt(firstFlightGroupForTest());
     var i: usize = 0;
     while (i + 1 < ch.len) : (i += 1) {
-        if (ch_buf[i] == 0x00 and ch_buf[i + 1] == 0x1d) ch_buf[i..][0..2].* = .{ 0x6a, 0x6a };
+        if (memx.readInt(u16, ch_buf[i..][0..2]) == first_group) {
+            ch_buf[i..][0..2].* = .{ 0x6a, 0x6a };
+        }
     }
 
     var record: [1024]u8 = undefined;
@@ -12326,9 +12328,10 @@ test "wire goldens: record output for a deterministic handshake" {
     var cbuf: [4096]u8 = undefined;
     var sbuf: [4096]u8 = undefined;
 
+    const offers_x25519 = comptime root.capabilities.supportsGroup(.client, .x25519);
     const ch = try client.start(&cbuf);
     client.completeWrite();
-    try expectHex(ch, golden_client_hello);
+    try expectHex(ch, if (offers_x25519) golden_client_hello else golden_client_hello_p256);
 
     var server_config = try testConfig(server_keypair);
     server_config.keypairs.p256 = try .generateDeterministic(.init(@splat(0x54)));
@@ -12336,13 +12339,13 @@ test "wire goldens: record output for a deterministic handshake" {
     defer server.deinit();
 
     const sh = try server.acceptClientHello(ch, &sbuf);
-    try expectHex(sh, golden_server_hello);
+    try expectHex(sh, if (offers_x25519) golden_server_hello else golden_server_hello_p256);
 
     const flight = try server.sendAnonymousFlightForTest(&sbuf);
-    try expectHex(flight, golden_server_flight);
+    try expectHex(flight, if (offers_x25519) golden_server_flight else golden_server_flight_p256);
 
     const al = try server.sendAlert(.close_notify, &sbuf);
-    try expectHex(al, golden_alert);
+    try expectHex(al, if (offers_x25519) golden_alert else golden_alert_p256);
 }
 
 fn expectHex(actual: []const u8, comptime expected_hex: []const u8) !void {
@@ -12371,3 +12374,24 @@ const golden_server_flight =
 
 const golden_alert =
     "1703030013ed6c49d952551265b4237a8a8fc4d467246447";
+
+const golden_client_hello_p256 =
+    "16030300b1010000ad0303000000000000000000000000000000000000000000" ++
+    "00000000000000000000000000041301130201000080002b0003020304000a00" ++
+    "0400020017000d000a000804030503080408050032000e000c04010501060104" ++
+    "0305030807002d000201010033004700450017004104d797737d4081542dfe11" ++
+    "1a9a6cba6a52e91118f27a814f8e831e8f72d5165f9308da9652224eaf39f459" ++
+    "098b545d520900d372da6e73cf33c4032a8264e7bae4";
+
+const golden_server_hello_p256 =
+    "160303007b020000770303000000000000000000000000000000000000000000" ++
+    "000000000000000000000000130100004f0033004500170041042c2bad3ccb8d" ++
+    "89257282c1b82b0d4016f19c3f5d32c1f8907c943df795472e312dc827c92b69" ++
+    "d030230da8a212793e13209e48d5e6de1d218fd9cd2bae83dfed002b00020304";
+
+const golden_server_flight_p256 =
+    "170303003bfd326c4126780c4d1d5f92ba567984241945f9ae4a92d3514edae6" ++
+    "526a60701c2274d8403df2d32394074098659d854a9751cfec45773d91276e41";
+
+const golden_alert_p256 =
+    "1703030013615955fa4c0b80d743cea14f6ccd55c1325878";
