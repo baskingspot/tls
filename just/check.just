@@ -101,7 +101,7 @@ check-backends:
     PKG_CONFIG_PATH="$boringssl_pkg_config_path" scripts/assert-libcrypto-family.sh boringssl
     ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build test --summary all --cache-dir "$cache_dir/boringssl"
 
-[doc("Build the approved-algorithm profile, run a handshake in it, and reject BoringSSL")]
+[doc("Test the approved-algorithm profile, run a handshake in it, and reject BoringSSL")]
 [group("check")]
 check-approved-builds:
     #!/usr/bin/env bash
@@ -116,12 +116,11 @@ check-approved-builds:
     global_cache_dir=$(mktemp -d)
     log=$(mktemp)
     trap 'rm -rf "$cache_dir" "$global_cache_dir" "$log"' EXIT
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" zig build test-bin -Dcrypto-approved-only=true --cache-dir "$cache_dir/openssl"
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build test-bin -Dcrypto-approved-only=true --cache-dir "$cache_dir/aws-lc"
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" zig build test -Dcrypto-approved-only=true --summary all --cache-dir "$cache_dir/openssl"
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build test -Dcrypto-approved-only=true --summary all --cache-dir "$cache_dir/aws-lc"
     # A compile alone cannot prove the profile negotiates: the errq check drives
     # a full client/server handshake and a record path under the restricted
-    # table. The rest of the suite asserts the default X25519 first-flight
-    # layout, which this profile does not use (baskingspot/tls#188).
+    # table.
     ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" zig build errq-alloc-check -Dcrypto-approved-only=true --cache-dir "$cache_dir/openssl-errq"
     ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build errq-alloc-check -Dcrypto-approved-only=true --cache-dir "$cache_dir/aws-lc-errq"
     set +e
