@@ -116,11 +116,14 @@ ReleaseSafe and ReleaseFast. Root `just lint` also passed. The new socket tests
 were therefore green in Debug, ReleaseSafe, and ReleaseFast with zero skips.
 Ten more consecutive Debug runs each passed all 52 integration tests.
 
-Root `just ci` did not complete on this base. Its initial `zig build test`
-failed at `src/crypto/backend_primitive_tests.zig:1026` because
+The first root `just ci` attempt failed at
+`src/crypto/backend_primitive_tests.zig:1026` because
 `backend.sign.supportsDeterministicNonce` does not exist. `origin/main`
-`cd58fea` has the same failure in GitHub run 44363233997. The integration gates
-above ran independently and passed.
+`cd58fea` had the same failure in GitHub run 44363233997. A follow-up in this
+change selects deterministic ECDSA directly by signature scheme. RSA-PSS stays
+in random mode. OpenSSL `just test` then passed 1,002 tests with five skips.
+The BoringSSL backend check passed 996 tests with eleven skips. Root `just ci`
+then passed, including AWS-LC with 1,003 passes and four skips.
 
 Mutation checks against the new assertions:
 
