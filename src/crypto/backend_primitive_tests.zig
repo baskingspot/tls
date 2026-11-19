@@ -11,6 +11,8 @@ const assert = std.debug.assert;
 
 const backend = @import("backend.zig");
 const backend_native = @import("backend_native.zig");
+const hmac = @import("../hmac.zig");
+const Hkdf = @import("../hkdf.zig").Hkdf;
 const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 
 test {
@@ -384,39 +386,45 @@ test "backend.native differential: X25519 shared secret matches libcrypto" {
 // all three TLS 1.3 AEAD suites, not just on decrypting their own output.
 test "backend.native differential: AEAD ciphertext and tags match libcrypto" {
     if (comptime backend.native_selected) return error.SkipZigTest;
+    const lengths = [_]usize{ 0, 1, 15, 16, 17, 127, 128, 129, 255, 256, 300 };
+    var source: [300]u8 = undefined;
+    for (&source, 0..) |*byte, i| byte.* = @truncate(i);
+
     inline for (backend_native.capabilities.cipher_suites) |suite| {
-        const key: [keyLenForSuite(suite)]u8 = @splat(0xa5);
-        const nonce: [backend.aead.nonce_len]u8 = @splat(0x5a);
-        const plaintext = "native and libcrypto must agree byte for byte";
-        const ad = "TLS 1.3 record header";
+        inline for (lengths) |len| {
+            const key: [keyLenForSuite(suite)]u8 = @splat(0xa5);
+            const nonce: [backend.aead.nonce_len]u8 = @splat(0x5a);
+            const plaintext = source[0..len];
+            const ad = source[300 - len ..];
 
-        var native_ctx = try backend_native.aeadInit(suite, &key);
-        defer backend_native.aeadDeinit(&native_ctx);
-        var linked_ctx = try backend.aead.init(suite, &key);
-        defer backend.aead.deinit(&linked_ctx);
+            var native_ctx = try backend_native.aeadInit(suite, &key);
+            defer backend_native.aeadDeinit(&native_ctx);
+            var linked_ctx = try backend.aead.init(suite, &key);
+            defer backend.aead.deinit(&linked_ctx);
 
-        var native_ciphertext: [plaintext.len]u8 = undefined;
-        var native_tag: [backend_native.aead_tag_len]u8 = undefined;
-        backend_native.aeadEncrypt(
-            &native_ctx,
-            &native_ciphertext,
-            &native_tag,
-            plaintext,
-            ad,
-            &nonce,
-        ) catch unreachable;
-        var linked_ciphertext: [plaintext.len]u8 = undefined;
-        var linked_tag: [backend.aead.tag_len]u8 = undefined;
-        try backend.aead.encrypt(
-            &linked_ctx,
-            &linked_ciphertext,
-            &linked_tag,
-            plaintext,
-            ad,
-            &nonce,
-        );
-        try testing.expectEqualSlices(u8, &linked_ciphertext, &native_ciphertext);
-        try testing.expectEqualSlices(u8, &linked_tag, &native_tag);
+            var native_ciphertext: [plaintext.len]u8 = undefined;
+            var native_tag: [backend_native.aead_tag_len]u8 = undefined;
+            backend_native.aeadEncrypt(
+                &native_ctx,
+                &native_ciphertext,
+                &native_tag,
+                plaintext,
+                ad,
+                &nonce,
+            ) catch unreachable;
+            var linked_ciphertext: [plaintext.len]u8 = undefined;
+            var linked_tag: [backend.aead.tag_len]u8 = undefined;
+            try backend.aead.encrypt(
+                &linked_ctx,
+                &linked_ciphertext,
+                &linked_tag,
+                plaintext,
+                ad,
+                &nonce,
+            );
+            try testing.expectEqualSlices(u8, &linked_ciphertext, &native_ciphertext);
+            try testing.expectEqualSlices(u8, &linked_tag, &native_tag);
+        }
     }
 }
 
@@ -435,9 +443,11 @@ fn sha2Input(buf: []u8, seed: u64) []u8 {
     return buf;
 }
 
-// FIPS 180-4 §6.2/§6.5, RFC 2104 §2, and RFC 5869 §2 — the native hash,
-// HMAC, and HKDF outputs match libcrypto on equal keys and input.
-test "backend.native differential: SHA-2 HMAC and HKDF match libcrypto" {
+// FIPS 180-4 §6.2/§6.5, RFC 2104 §2, RFC 5869 §2, and RFC 8446 §7.1 —
+// product HMAC and the TLS key schedule agree across native and libcrypto
+// hashes. This compares the product types in hmac.zig and hkdf.zig, not a
+// libcrypto HMAC or HKDF entry point.
+test "backend.native differential: product HMAC and HKDF match across backends" {
     if (comptime backend.native_selected) return error.SkipZigTest;
     var buf: [300]u8 = undefined;
     const input = sha2Input(&buf, 0x199138);
@@ -446,8 +456,8 @@ test "backend.native differential: SHA-2 HMAC and HKDF match libcrypto" {
         .{ backend_native.sha2.Sha384, backend.sha2.Sha384 },
     }) |pair| {
         const NativeHash, const LinkedHash = pair;
-        const NativeHmac = backend_native.hmac.Hmac(NativeHash);
-        const LinkedHmac = std.crypto.auth.hmac.Hmac(LinkedHash);
+        const NativeHmac = hmac.Hmac(NativeHash);
+        const LinkedHmac = hmac.Hmac(LinkedHash);
         for ([_]usize{ 0, 1, NativeHash.block_length, 300 }) |key_len| {
             const key = input[0..key_len];
             const msg = input[key_len / 2 ..];
@@ -463,15 +473,15 @@ test "backend.native differential: SHA-2 HMAC and HKDF match libcrypto" {
             LinkedHmac.create(&linked_mac, msg, key);
             try testing.expectEqualSlices(u8, &linked_mac, &native_mac);
 
-            const NativeHkdf = backend_native.hkdf.Hkdf(NativeHmac);
-            const LinkedHkdf = std.crypto.kdf.hkdf.Hkdf(LinkedHmac);
+            const NativeHkdf = Hkdf(NativeHash, NativeHash);
+            const LinkedHkdf = Hkdf(LinkedHash, NativeHash);
             const native_prk = NativeHkdf.extract(key, msg);
             const linked_prk = LinkedHkdf.extract(key, msg);
-            try testing.expectEqualSlices(u8, &linked_prk, &native_prk);
+            try testing.expectEqualSlices(u8, &linked_prk.data, &native_prk.data);
             var native_okm: [2 * NativeHash.digest_length + 7]u8 = undefined;
             var linked_okm: [2 * LinkedHash.digest_length + 7]u8 = undefined;
-            NativeHkdf.expand(&native_okm, "native differential", native_prk);
-            LinkedHkdf.expand(&linked_okm, "native differential", linked_prk);
+            NativeHkdf.expandLabel(&native_okm, "native differential", "", native_prk);
+            LinkedHkdf.expandLabel(&linked_okm, "native differential", "", linked_prk);
             try testing.expectEqualSlices(u8, &linked_okm, &native_okm);
         }
     }

@@ -25,6 +25,8 @@ check-native:
     zig build test -Dcrypto=native --summary all
     zig build test -Dcrypto=native -Doptimize=ReleaseSafe --summary all
     zig build test -Dcrypto=native -Doptimize=ReleaseFast --summary all
+    zig build test -Dcpu=baseline --summary all
+    zig build test -Dcrypto=native -Dcpu=baseline --summary all
     zig build test-bin -Dcrypto=native --summary all
     if [ "$(uname -s)" = Linux ]; then
         linkage=$(ldd zig-out/bin/test 2>&1 || true)

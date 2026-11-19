@@ -42,8 +42,6 @@ pub const capabilities = struct {
 };
 
 pub const sha2 = crypto.hash.sha2;
-pub const hmac = crypto.auth.hmac;
-pub const hkdf = crypto.kdf.hkdf;
 
 pub const Error = error{ IdentityElement, LibcryptoFailed, UnsupportedPrimitive };
 

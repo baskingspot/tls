@@ -12,6 +12,8 @@ All notable changes to tls are recorded here. The format follows
   Ed25519 signing and verification work without libcrypto. P-256/P-384, ML-KEM,
   RSA, CertificateVerify, and handshakes remain unsupported. The default still
   auto-detects OpenSSL, AWS-LC, or BoringSSL from the selected headers (#199).
+- The `hkdf.Hkdf` type constructor is public for backends that select their own
+  runtime and comptime hash pair.
 
 ### Changed
 

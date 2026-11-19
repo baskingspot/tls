@@ -157,10 +157,12 @@ Scope: the opt-in `-Dcrypto=native` primitive backend. The base revision is
 `e382517855ecbe0814dc8f4f7fc223f339ebd030`. The host is Linux arm64 with Zig
 0.17.0 and OpenSSL 3.6.5.
 
-`just check-native` ran Debug, ReleaseSafe, and ReleaseFast. Each mode discovered
-112 tests, passed 102, failed none, and skipped ten. `zig build
-test-bin -Dcrypto=native` installed the Debug binary. `ldd zig-out/bin/test`
-printed `not a dynamic executable`; the binary has no dynamic dependencies.
+`just check-native` ran Debug, ReleaseSafe, ReleaseFast, and a baseline-CPU
+suite. Each native run discovered 112 tests, passed 102, failed none, and
+skipped ten. A baseline-CPU libcrypto suite ran the native differentials against
+std's software-AES path. `zig build test-bin -Dcrypto=native` installed the Debug
+binary. `ldd zig-out/bin/test` printed `not a dynamic executable`; the binary has
+no dynamic dependencies. `check-native` is also a dependency of root `just ci`.
 
 These ten native-lane skips are intentional:
 
@@ -173,13 +175,18 @@ These ten native-lane skips are intentional:
 - `decrypt: failed auth exposes backend failure buffer behavior`
 - `backend.native differential: X25519 shared secret matches libcrypto`
 - `backend.native differential: AEAD ciphertext and tags match libcrypto`
-- `backend.native differential: SHA-2 HMAC and HKDF match libcrypto`
+- `backend.native differential: product HMAC and HKDF match across backends`
 
-The three differentials run on the default OpenSSL lane instead. They compare
-backend_native.zig directly with the active libcrypto facade. Both default and
-`-Dcrypto=openssl` discovered 1,014 tests: 1,009 passed, none failed, and five
-existing tests skipped. These checks cover X25519 shared secrets, all AEAD
-ciphertexts and tags, SHA-256/SHA-384, HMAC, and HKDF.
+The three differentials run on the default OpenSSL lane instead. Both default
+and `-Dcrypto=openssl` discovered 1,014 tests: 1,009 passed, none failed, and
+five existing tests skipped. X25519 compares shared secrets. AEAD compares
+ciphertexts and tags for lengths 0, 1, 15, 16, 17, 127, 128, 129, 255, 256,
+and 300 on every suite, under both native and baseline CPUs.
+
+HMAC and HKDF use the product types in `hmac.zig` and `hkdf.zig`. The test
+constructs the same TLS schedule over native and libcrypto SHA-256/SHA-384.
+No libcrypto HMAC or HKDF call exists in this comparison. The removed native
+module aliases did not carry product coverage.
 
 Valgrind initially found undefined reads in std's protected software AES.
 `aes/soft.zig` filled only the requested blocks before encrypting a wider
