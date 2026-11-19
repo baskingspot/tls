@@ -143,8 +143,14 @@ check-approved-builds:
 
 [doc("Format all code")]
 [group("check")]
-fmt: fmt-zig fmt-actions fmt-just fmt-rust
+fmt: fmt-zig fmt-actions fmt-just fmt-python fmt-rust
     just conformance/fmt
+
+[doc("Format the EC2 benchmark adapter")]
+[group("check")]
+fmt-python:
+    uv run --project bench ruff format bench/tls_bench bench/tests
+    uv run --project bench ruff check --fix bench/tls_bench bench/tests
 
 [doc("Rerun a suite N times to shake out order- and timing-dependent flakes")]
 [group("check")]
@@ -245,8 +251,16 @@ examples-ci:
 
 [doc("Check formatting and lint (for CI)")]
 [group("check")]
-lint: lint-zig lint-shell lint-actions lint-just lint-markdown lint-issues lint-readme-index lint-fixtures lint-rust lint-store-paths
+lint: lint-zig lint-shell lint-actions lint-just lint-markdown lint-issues lint-readme-index lint-fixtures lint-python lint-rust lint-store-paths
     just conformance/lint
+
+[doc("Lint and type-check the EC2 benchmark adapter")]
+[group("check")]
+lint-python:
+    uv run --project bench ruff format --check bench/tls_bench bench/tests
+    uv run --project bench ruff check bench/tls_bench bench/tests
+    uv run --project bench ty check bench/tls_bench
+    uv lock --check --project bench
 
 [doc("Lint markdown for status-language drift and slop references")]
 [group("check")]
@@ -397,7 +411,7 @@ lint-zig:
 [doc("Lint shell scripts")]
 [group("check")]
 lint-shell:
-    shellcheck --severity=warning scripts/*.sh infra/bench/*.sh infra/iam/*.sh
+    shellcheck --severity=warning scripts/*.sh bench/*.sh
 
 [doc("Lint Rust benchmark code (rustfmt --check + clippy -D warnings)")]
 [group("check")]

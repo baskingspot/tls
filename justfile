@@ -19,7 +19,7 @@ example EXAMPLE *ARGS:
 # distribution smoke run on the same shell; see .github/ci.yaml.
 [doc("Run all CI gates")]
 [group("check")]
-ci: test check-backend-aws-lc check-backends check-approved-builds lint consumer-gate-selftest examples-ci capi-ci integrations-ci
+ci: test check-backend-aws-lc check-backends check-approved-builds lint bench-adapter-test consumer-gate-selftest examples-ci capi-ci integrations-ci
     if [ "$(uname -s)" = Linux ]; then just check-memory; fi
     just conformance/ci
 
