@@ -1,6 +1,28 @@
 const std = @import("std");
 const Build = std.Build;
 
+/// Native primitive suite (#199). The root deliberately excludes the full
+/// handshake and libcrypto-only harnesses until their capabilities are wired.
+pub fn addNativeSteps(b: *Build, opts: struct {
+    test_mod: *Build.Module,
+    fuzz: bool,
+    testingx: ?*Build.Dependency,
+}) void {
+    const mod_tests = b.addTest(.{
+        .root_module = opts.test_mod,
+        .test_runner = if (opts.fuzz) null else if (opts.testingx) |t|
+            .{ .path = t.path("src/runner.zig"), .mode = .simple }
+        else
+            null,
+    });
+    const run_tests = b.addRunArtifact(mod_tests);
+    run_tests.has_side_effects = true;
+    b.step("test", "Run tests with the pure-Zig native backend").dependOn(&run_tests.step);
+
+    const install_tests = b.addInstallArtifact(mod_tests, .{});
+    b.step("test-bin", "Install the native test binary").dependOn(&install_tests.step);
+}
+
 pub fn addSteps(b: *Build, opts: struct {
     test_mod: *Build.Module,
     /// When true, use the default test runner (needed for `--fuzz`, which

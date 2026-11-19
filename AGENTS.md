@@ -352,9 +352,11 @@ first implementation target because it is already in the dev shell and interop
 harnesses; AWS-LC must remain a first-class design target, with BoringSSL
 possible later behind its own backend if the API surface is worth it.
 
-Do not add or preserve a `std.crypto` backend as a parallel product path. This
-has no public API contract; there is no compatibility reason to keep transitional
-backend scaffolding once the production direction is chosen.
+The opt-in `native` backend is the explicit exception to the libcrypto-only
+backend rule (#199). It uses `std.crypto` and in-tree code, with support limited
+to its capability table. Keep the default on libcrypto auto-detection in this
+slice. Production crypto still comes from the libcrypto family while native is
+unmeasured and unreviewed.
 
 The strict no-allocation invariant applies to tls-owned framing, state machine,
 record buffers, and caller-visible TLS I/O. A libcrypto-family production build

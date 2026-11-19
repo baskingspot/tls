@@ -1,28 +1,34 @@
-//! Libcrypto-family provider selection.
+//! Crypto provider selection.
 //!
-//! This is the narrow compile-time facade used while the concrete OpenSSL
-//! calls still live in the existing primitive modules. It gives future AWS-LC /
-//! BoringSSL ports one typed switch point instead of scattering product names
-//! through handshake code.
+//! The default auto-detects the libcrypto family from its headers. `native`
+//! selects pure-Zig primitives and does not import the libcrypto facade.
 const std = @import("std");
 const testing = std.testing;
 const assert = std.debug.assert;
 const build_options = @import("build_options");
-const c_openssl = @import("c_openssl.zig");
+
+pub const native_selected = build_options.crypto == .native;
+// ziglint-ignore: Z028 — native must not resolve the libcrypto module import.
+const c_openssl = if (native_selected) struct {} else @import("c_openssl.zig");
 
 const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 const NamedGroup = @import("../kex.zig").NamedGroup;
 const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
-const backend_aws_lc = @import("backend_aws_lc.zig");
-const backend_boringssl = @import("backend_boringssl.zig");
-const backend_openssl = @import("backend_openssl.zig");
+const backend_native = @import("backend_native.zig");
+// ziglint-ignore: Z028 — native must not import any libcrypto backend.
+const backend_aws_lc = if (native_selected) struct {} else @import("backend_aws_lc.zig");
+// ziglint-ignore: Z028 — native must not import any libcrypto backend.
+const backend_boringssl = if (native_selected) struct {} else @import("backend_boringssl.zig");
+// ziglint-ignore: Z028 — native must not import any libcrypto backend.
+const backend_openssl = if (native_selected) struct {} else @import("backend_openssl.zig");
 
-/// Handshake SHA-256 and SHA-384 on the libcrypto runtime-dispatched code
-/// (#138). One implementation serves every family: all three expose the same
-/// `SHA256_CTX` / `SHA512_CTX` API.
-pub const sha2 = @import("sha2.zig");
+/// Runtime dispatch stays on libcrypto by default (#138). Native uses std's
+/// compile-time-selected SHA-256 and SHA-384 implementation.
+// ziglint-ignore: Z028 — the non-native arm owns the libcrypto SHA import.
+pub const sha2 = if (native_selected) backend_native.sha2 else @import("sha2.zig");
 
 pub const Backend = enum {
+    native,
     openssl,
     @"aws-lc",
     boringssl,
@@ -30,16 +36,45 @@ pub const Backend = enum {
     @"aws-lc-approved",
 };
 
-/// Backend family inferred from the selected libcrypto headers, plus the
-/// explicit compile-time FIPS capability policy.
-pub const active: Backend = switch (c_openssl.family) {
-    .openssl => if (approved_only) .@"openssl-approved" else .openssl,
-    .@"aws-lc" => if (approved_only) .@"aws-lc-approved" else .@"aws-lc",
-    .boringssl => if (approved_only)
-        @compileError("-Dcrypto-approved-only=true is unsupported with BoringSSL")
+/// Explicit native selection wins without reading libcrypto headers. Auto and
+/// explicit libcrypto selections resolve against the selected header family.
+pub const active: Backend = if (native_selected)
+    (if (approved_only)
+        @compileError("-Dcrypto-approved-only=true is unsupported with native")
     else
-        .boringssl,
-};
+        .native)
+else
+    activeLibcrypto();
+
+fn activeLibcrypto() Backend {
+    const detected: Backend = switch (c_openssl.family) {
+        .openssl => if (approved_only) .@"openssl-approved" else .openssl,
+        .@"aws-lc" => if (approved_only) .@"aws-lc-approved" else .@"aws-lc",
+        .boringssl => if (approved_only)
+            @compileError("-Dcrypto-approved-only=true is unsupported with BoringSSL")
+        else
+            .boringssl,
+    };
+    if (build_options.crypto != .auto) {
+        const requested: Backend = switch (build_options.crypto) {
+            .openssl => .openssl,
+            .@"aws-lc" => .@"aws-lc",
+            .boringssl => .boringssl,
+            .auto, .native => unreachable,
+        };
+        const detected_family: Backend = switch (detected) {
+            .openssl, .@"openssl-approved" => .openssl,
+            .@"aws-lc", .@"aws-lc-approved" => .@"aws-lc",
+            .boringssl => .boringssl,
+            .native => unreachable,
+        };
+        if (requested != detected_family) {
+            @compileError("-Dcrypto=" ++ @tagName(requested) ++
+                " does not match the selected libcrypto headers");
+        }
+    }
+    return detected;
+}
 
 /// True when the build restricts negotiation to approved algorithms.
 ///
@@ -50,42 +85,49 @@ pub const active: Backend = switch (c_openssl.family) {
 pub const approved_only: bool = build_options.crypto_approved_only;
 
 const x25519_impl = switch (active) {
+    .native => backend_native,
     .openssl, .@"openssl-approved" => backend_openssl,
     .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc,
     .boringssl => backend_boringssl,
 };
 
 const p256_impl = switch (active) {
+    .native => backend_native,
     .openssl, .@"openssl-approved" => backend_openssl,
     .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc,
     .boringssl => backend_boringssl,
 };
 
 const p384_impl = switch (active) {
+    .native => backend_native,
     .openssl, .@"openssl-approved" => backend_openssl,
     .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc,
     .boringssl => backend_boringssl,
 };
 
 const aead_impl = switch (active) {
+    .native => backend_native,
     .openssl, .@"openssl-approved" => backend_openssl,
     .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc,
     .boringssl => backend_boringssl,
 };
 
 const sign_impl = switch (active) {
+    .native => backend_native,
     .openssl, .@"openssl-approved" => backend_openssl,
     .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc,
     .boringssl => backend_boringssl,
 };
 
 pub const kem_impl = switch (active) {
+    .native => backend_native,
     .openssl, .@"openssl-approved" => backend_openssl,
     .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc,
     .boringssl => backend_boringssl,
 };
 
 pub const capabilities = switch (active) {
+    .native => backend_native.capabilities,
     .openssl => backend_openssl.capabilities,
     .@"openssl-approved" => backend_openssl.capabilities_approved,
     .@"aws-lc" => backend_aws_lc.capabilities,
@@ -97,7 +139,22 @@ comptime {
     assert(capabilities.cipher_suites.len > 0);
     assert(capabilities.client_x25519 or capabilities.client_p256);
     assert(capabilities.server_x25519 or capabilities.server_p256);
-    assert(capabilities.certificate_verify_schemes.len > 0);
+    // A handshake-capable backend needs a CertificateVerify scheme. Native is
+    // deliberately primitive-only in #199, so pin its empty table instead of
+    // pretending Ed25519 CertificateVerify is already wired.
+    if (active == .native) {
+        assert(capabilities.certificate_verify_schemes.len == 0);
+        assert(!capabilities.client_p256 and !capabilities.server_p256);
+        assert(!capabilities.client_p384 and !capabilities.server_p384);
+        assert(!capabilities.client_x25519_mlkem768);
+        assert(!capabilities.server_x25519_mlkem768);
+        assert(!capabilities.client_secp256r1_mlkem768);
+        assert(!capabilities.server_secp256r1_mlkem768);
+        assert(!capabilities.client_secp384r1_mlkem1024);
+        assert(!capabilities.server_secp384r1_mlkem1024);
+    } else {
+        assert(capabilities.certificate_verify_schemes.len > 0);
+    }
     assert(capabilities.certificate_signature_schemes.len > 0);
     assert(capabilities.client_p384 == capabilities.server_p384);
     assert(
@@ -113,34 +170,33 @@ comptime {
     );
 
     // FIPS capability tables must be a strict subset of their non-FIPS
-    // counterparts: every cipher suite and signature scheme advertised under
-    // FIPS must also appear in the non-FIPS table. This is checked at compile
-    // time for both backends so a FIPS table drift is caught even when the
-    // active build is non-FIPS.
-    assertSubset(
-        backend_openssl.capabilities_approved.cipher_suites,
-        backend_openssl.capabilities.cipher_suites,
-    );
-    assertSubset(
-        backend_openssl.capabilities_approved.certificate_verify_schemes,
-        backend_openssl.capabilities.certificate_verify_schemes,
-    );
-    assertSubset(
-        backend_openssl.capabilities_approved.certificate_signature_schemes,
-        backend_openssl.capabilities.certificate_signature_schemes,
-    );
-    assertSubset(
-        backend_aws_lc.capabilities_approved.cipher_suites,
-        backend_aws_lc.capabilities.cipher_suites,
-    );
-    assertSubset(
-        backend_aws_lc.capabilities_approved.certificate_verify_schemes,
-        backend_aws_lc.capabilities.certificate_verify_schemes,
-    );
-    assertSubset(
-        backend_aws_lc.capabilities_approved.certificate_signature_schemes,
-        backend_aws_lc.capabilities.certificate_signature_schemes,
-    );
+    // counterparts. Native has no approved-only profile in this slice.
+    if (!native_selected) {
+        assertSubset(
+            backend_openssl.capabilities_approved.cipher_suites,
+            backend_openssl.capabilities.cipher_suites,
+        );
+        assertSubset(
+            backend_openssl.capabilities_approved.certificate_verify_schemes,
+            backend_openssl.capabilities.certificate_verify_schemes,
+        );
+        assertSubset(
+            backend_openssl.capabilities_approved.certificate_signature_schemes,
+            backend_openssl.capabilities.certificate_signature_schemes,
+        );
+        assertSubset(
+            backend_aws_lc.capabilities_approved.cipher_suites,
+            backend_aws_lc.capabilities.cipher_suites,
+        );
+        assertSubset(
+            backend_aws_lc.capabilities_approved.certificate_verify_schemes,
+            backend_aws_lc.capabilities.certificate_verify_schemes,
+        );
+        assertSubset(
+            backend_aws_lc.capabilities_approved.certificate_signature_schemes,
+            backend_aws_lc.capabilities.certificate_signature_schemes,
+        );
+    }
 }
 
 fn assertSubset(comptime fips: anytype, comptime base: anytype) void {
@@ -163,6 +219,7 @@ fn approvedCertSigSchemes(comptime fam: @TypeOf(active)) []const SignatureScheme
     const aws_lc_approved =
         backend_aws_lc.capabilities_approved.certificate_signature_schemes;
     return switch (fam) {
+        .native => &.{},
         .openssl, .@"openssl-approved" => openssl_approved,
         .@"aws-lc", .@"aws-lc-approved" => aws_lc_approved,
         .boringssl => &.{},
@@ -397,14 +454,19 @@ pub const sign = struct {
 // docs/research/PROVIDER_INTERFACE.md §1 — the selected headers identify the
 // libcrypto family. The explicit FIPS option narrows OpenSSL or AWS-LC to its
 // FIPS capability identity without changing the linked library.
-test "active backend matches the selected libcrypto headers" {
-    switch (c_openssl.family) {
-        .openssl => try testing.expect(active == .openssl or active == .@"openssl-approved"),
-        .@"aws-lc" => try testing.expect(active == .@"aws-lc" or active == .@"aws-lc-approved"),
-        .boringssl => try testing.expectEqual(Backend.boringssl, active),
+test "active backend matches the crypto option and selected libcrypto headers" {
+    if (comptime native_selected) {
+        try testing.expectEqual(Backend.native, active);
+    } else {
+        switch (c_openssl.family) {
+            .openssl => try testing.expect(active == .openssl or active == .@"openssl-approved"),
+            .@"aws-lc" => try testing.expect(active == .@"aws-lc" or active == .@"aws-lc-approved"),
+            .boringssl => try testing.expectEqual(Backend.boringssl, active),
+        }
     }
 
     // Field names remain stable public metadata values.
+    try testing.expectEqualStrings("native", @tagName(@as(@TypeOf(active), .native)));
     try testing.expectEqualStrings("openssl", @tagName(@as(@TypeOf(active), .openssl)));
     try testing.expectEqualStrings("aws-lc", @tagName(@as(@TypeOf(active), .@"aws-lc")));
     try testing.expectEqualStrings("boringssl", @tagName(@as(@TypeOf(active), .boringssl)));
@@ -424,7 +486,11 @@ test "capabilities are non-empty for the active backend" {
     try testing.expect(capabilities.cipher_suites.len > 0);
     try testing.expect(capabilities.client_x25519 or capabilities.client_p256);
     try testing.expect(capabilities.server_x25519 or capabilities.server_p256);
-    try testing.expect(capabilities.certificate_verify_schemes.len > 0);
+    if (active == .native) {
+        try testing.expectEqual(@as(usize, 0), capabilities.certificate_verify_schemes.len);
+    } else {
+        try testing.expect(capabilities.certificate_verify_schemes.len > 0);
+    }
     try testing.expect(capabilities.certificate_signature_schemes.len > 0);
 }
 
@@ -432,13 +498,13 @@ test "capabilities are non-empty for the active backend" {
 // value handle; keep it from silently regressing to the OpenSSL EVP_PKEY
 // pointer shape.
 test "x25519 handle shape matches active backend" {
-    const evp_pointer_size = @sizeOf(*backend_openssl.pkey);
+    const evp_pointer_size = @sizeOf(*anyopaque);
     switch (active) {
         .openssl, .@"openssl-approved" => try testing.expectEqual(
             evp_pointer_size,
             @sizeOf(x25519.pkey),
         ),
-        .@"aws-lc", .@"aws-lc-approved", .boringssl => {
+        .native, .@"aws-lc", .@"aws-lc-approved", .boringssl => {
             try testing.expect(@sizeOf(x25519.pkey) > evp_pointer_size);
         },
     }
@@ -448,10 +514,19 @@ test "x25519 handle shape matches active backend" {
 // approved-only build carries P-256 only.
 test "client group capabilities match implemented client key-share plumbing" {
     try testing.expect(capabilities.client_x25519 or capabilities.client_p256);
-    try testing.expect(capabilities.client_p256);
+    if (active == .native) {
+        try testing.expect(capabilities.client_x25519);
+        try testing.expect(!capabilities.client_p256);
+    } else {
+        try testing.expect(capabilities.client_p256);
+    }
 }
 
 test "aead context shape matches active backend" {
+    if (comptime native_selected) {
+        try testing.expectEqual(@sizeOf(backend_native.AeadContext), @sizeOf(aead.Context));
+        return;
+    }
     switch (active) {
         .openssl, .@"openssl-approved" => try testing.expectEqual(
             @sizeOf(backend_openssl.AeadContext),
@@ -460,10 +535,12 @@ test "aead context shape matches active backend" {
         .@"aws-lc", .@"aws-lc-approved", .boringssl => try testing.expect(
             @sizeOf(aead.Context) != @sizeOf(backend_openssl.AeadContext),
         ),
+        .native => unreachable,
     }
 }
 
 test "aws-lc aead deinit clears inline context" {
+    if (comptime native_selected) return error.SkipZigTest;
     if (active != .@"aws-lc" and active != .@"aws-lc-approved") return error.SkipZigTest;
 
     const key: [16]u8 = @splat(0xab);
@@ -490,7 +567,7 @@ test "approved: chacha20_poly1305_sha256 excluded from the approved cipher_suite
     const suites = switch (active) {
         .openssl, .@"openssl-approved" => backend_openssl.capabilities_approved.cipher_suites,
         .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities_approved.cipher_suites,
-        .boringssl => return error.SkipZigTest,
+        .boringssl, .native => return error.SkipZigTest,
     };
     for (suites) |suite| {
         try testing.expect(suite != .chacha20_poly1305_sha256);
@@ -503,7 +580,7 @@ test "approved: x25519 excluded from the approved group capability" {
     const caps = switch (active) {
         .openssl, .@"openssl-approved" => backend_openssl.capabilities_approved,
         .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities_approved,
-        .boringssl => return error.SkipZigTest,
+        .boringssl, .native => return error.SkipZigTest,
     };
     try testing.expect(!caps.client_x25519);
     try testing.expect(!caps.server_x25519);
@@ -517,7 +594,7 @@ test "approved: certificate_signature_schemes cover the FIPS 186-5 signature fam
     const schemes = switch (active) {
         .openssl, .@"openssl-approved" => approvedCertSigSchemes(.openssl),
         .@"aws-lc", .@"aws-lc-approved" => approvedCertSigSchemes(.@"aws-lc"),
-        .boringssl => return error.SkipZigTest,
+        .boringssl, .native => return error.SkipZigTest,
     };
     try testing.expect(schemeInList(.rsa_pkcs1_sha256, schemes));
     try testing.expect(schemeInList(.ecdsa_secp256r1_sha256, schemes));
@@ -531,7 +608,7 @@ test "approved: hybrid groups disabled in the approved capability table" {
     const fips_caps = switch (active) {
         .openssl, .@"openssl-approved" => backend_openssl.capabilities_approved,
         .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities_approved,
-        .boringssl => return error.SkipZigTest,
+        .boringssl, .native => return error.SkipZigTest,
     };
     const hybrid_capabilities = [_]bool{
         fips_caps.client_x25519_mlkem768,
@@ -551,12 +628,12 @@ test "approved: approved capabilities are a subset of the default capabilities" 
     const fips_caps = switch (active) {
         .openssl, .@"openssl-approved" => backend_openssl.capabilities_approved,
         .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities_approved,
-        .boringssl => return error.SkipZigTest,
+        .boringssl, .native => return error.SkipZigTest,
     };
     const base_caps = switch (active) {
         .openssl, .@"openssl-approved" => backend_openssl.capabilities,
         .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities,
-        .boringssl => return error.SkipZigTest,
+        .boringssl, .native => return error.SkipZigTest,
     };
     for (fips_caps.cipher_suites) |suite| {
         try testing.expect(suiteInList(suite, base_caps.cipher_suites));

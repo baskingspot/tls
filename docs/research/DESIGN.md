@@ -28,14 +28,13 @@ Everything else is ours.
   struct layouts. Don't waste cache lines.
 - **SIMD where it matters.** Zig exposes SIMD via `@Vector`. AES-GCM, ChaCha,
   SHA-256, and record scanning are all candidates. Measure first, then apply.
-- **Use libcrypto-family for provider-sensitive production primitives.** Do not
-  implement our own AES-GCM, ChaCha20-Poly1305, X25519/P-256, post-quantum KEX,
-  or RSA-PSS signing. OpenSSL/libcrypto is the first concrete backend target.
-  AWS-LC remains first-class in the architecture. Certificate signature
-  verification and ECDSA P-256/P-384 signing run in-tree over `std.crypto`
-  (#183). stdlib hashing/HMAC/HKDF and utility crypto helpers remain acceptable
-  where they do not create a competing AEAD/KEX/RSA-PSS backend. ztls owns TLS
-  framing, transcripts, alerts, record sequencing, and caller-buffer discipline.
+- **Use libcrypto-family for provider-sensitive production primitives.**
+  OpenSSL/libcrypto is the first concrete backend target. AWS-LC remains
+  first-class in the architecture. The opt-in native backend uses `std.crypto`
+  for its declared capabilities and is not the production profile (#199).
+  Certificate signature verification and ECDSA P-256/P-384 signing run in-tree
+  over `std.crypto` (#183). ztls owns TLS framing, transcripts, alerts, record
+  sequencing, and caller-buffer discipline.
 - **Linux and macOS only.** No Windows. Design for real targets.
 - **Higher-level wrappers are separate.** If someone wants a `net.Stream`
   adapter or an async wrapper, that's a thin layer on top, not baked in.
@@ -49,12 +48,11 @@ Everything else is ours.
 
 ## What We Are Not Doing (Yet)
 
-- Our own AES, GCM, ChaCha20-Poly1305, X25519/P-256, post-quantum KEX, or
-  RSA-PSS primitive implementations. The production path for those is
-  libcrypto-family/provider-backed primitives. Certificate signature
-  verification and ECDSA signing are explicit in-tree exceptions (#183).
-  stdlib hashing/HMAC/HKDF and small constant-time/zeroing/random helpers are
-  not excluded by this rule.
+- A production profile based on the native backend. Production primitives use
+  libcrypto-family/provider-backed implementations. Native capabilities come
+  from `std.crypto` or in-tree code and remain subject to measurement and review
+  (#199). Certificate signature verification and ECDSA signing are explicit
+  in-tree paths on every backend (#183).
 - TLS 1.2 or earlier.
 - DTLS.
 - Post-handshake client authentication.
@@ -295,19 +293,19 @@ benchmark coverage. AWS-LC remains a first-class architecture target, not an
 afterthought hidden behind an accidental OpenSSL-only design. BoringSSL may be a
 later backend if its API differences are worth supporting directly.
 
-There is no parallel `std.crypto` AEAD/KEX/RSA-PSS backend. ECDSA signing and
-certificate signature verification run in-tree (#183). This is new pre-alpha
-software, so there is no compatibility burden that justifies preserving a
-second product path for provider-sensitive primitives. That does
-not make every `std.crypto` use implementation debt: timing-safe comparison,
-secure zeroing, and randomness are acceptable where they keep the code smaller
-and do not create backend policy or algorithm agility divergence. The
-handshake key schedule is the exception (#138). Stdlib SHA-2 selects its code
-at compile time from the target CPU, so a portable build loses the SHA
-extensions. `src/crypto/sha2.zig` runs SHA-256/SHA-384 on the backend's
-runtime-dispatched code instead. HMAC (`src/hmac.zig`) and HKDF
-(`src/hkdf.zig`) are ztls code over those types, so that one keying of a
-secret serves every label derived from it.
+The opt-in native backend supplies its declared primitives from `std.crypto`
+(#199). Its capability table rejects primitive and handshake paths that lack an
+implementation. ECDSA signing and certificate signature verification run
+in-tree (#183). Timing-safe comparison, secure zeroing, and randomness are
+acceptable where they keep the code smaller and do not create backend policy or
+algorithm agility divergence.
+
+The default handshake key schedule uses libcrypto SHA-2 (#138). Stdlib SHA-2
+selects its code at compile time from the target CPU, so a portable build loses
+the SHA extensions. `src/crypto/sha2.zig` runs SHA-256/SHA-384 on libcrypto's
+runtime-dispatched code instead. Native uses stdlib SHA-2. HMAC
+(`src/hmac.zig`) and HKDF (`src/hkdf.zig`) are ztls code over the selected types,
+so one keying of a secret serves every label derived from it.
 
 This changes the memory contract. ztls-owned code still does not allocate, does
 not import `std.heap`, does not own TLS buffers, and does no I/O. A production
@@ -402,10 +400,10 @@ See `docs/research/PERFORMANCE.md` for the benchmark methodology and prior-art n
 
 ## Open Questions
 
-1. ~~**libcrypto vs zig stdlib crypto**~~ — resolved: production crypto moves to
-   the libcrypto family. OpenSSL/libcrypto is the first concrete target; AWS-LC
-   remains first-class in the architecture. Do not keep `std.crypto` as an
-   exposed backend choice.
+1. ~~**libcrypto vs zig stdlib crypto**~~ — resolved: production crypto uses the
+   libcrypto family. OpenSSL/libcrypto is the first concrete target; AWS-LC
+   remains first-class in the architecture. The opt-in native `std.crypto`
+   backend belongs to #199, with support limited to its capability table.
 
 2. **Internal buffer ownership**: Does the engine own its staging buffers
    (caller allocates, engine holds slice), or does the caller pass a fresh

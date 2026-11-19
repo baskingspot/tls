@@ -17,6 +17,26 @@ test-release-fast:
 [group("check")]
 check: test test-release-safe test-release-fast
 
+[doc("Test the supported native primitives and verify that the test binary has no libcrypto linkage")]
+[group("check")]
+check-native:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    zig build test -Dcrypto=native --summary all
+    zig build test -Dcrypto=native -Doptimize=ReleaseSafe --summary all
+    zig build test -Dcrypto=native -Doptimize=ReleaseFast --summary all
+    zig build test-bin -Dcrypto=native --summary all
+    if [ "$(uname -s)" = Linux ]; then
+        linkage=$(ldd zig-out/bin/test 2>&1 || true)
+    else
+        linkage=$(otool -L zig-out/bin/test 2>&1 || true)
+    fi
+    printf '%s\n' "$linkage"
+    if printf '%s\n' "$linkage" | grep -E 'libcrypto|libssl'; then
+        echo "native test binary links a libcrypto-family library" >&2
+        exit 1
+    fi
+
 # Runs the whole `test` step, not one filtered target. Zig 0.17 returns
 # success after a fuzz-time failure (baskingspot/testingx#9), so read the
 # output. Do not use this recipe as a CI gate.
