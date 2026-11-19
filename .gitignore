@@ -8,7 +8,6 @@ zig-out/
 .terraform/
 *.tfstate
 *.tfstate.backup
-*.pem
 .venv/
 __pycache__/
 .pytest_cache/

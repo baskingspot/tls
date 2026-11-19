@@ -70,11 +70,12 @@ class FakeBox:
     def upload_contents(self, source, destination, *, exclude, delete):
         self.upload = (source, destination, tuple(exclude), delete)
 
-    def run(self, command, *, timeout, stream):
+    def run(self, command, *, timeout, stream=None):
         self.commands.append((command, timeout))
-        if self.error:
+        if self.error and "bench/remote" in command:
             raise self.error
-        stream("remote workload log")
+        if stream is not None:
+            stream("remote workload log")
         return self.output
 
     def download(self, source, destination):
@@ -163,15 +164,19 @@ def test_capture_syncs_runs_downloads_analyzes_and_terminates(tmp_path, monkeypa
     assert box.upload[0] == tmp_path
     assert box.upload[1] == "/root/tls"
     assert box.upload[3] is True
+    assert box.commands[0] == ("chown -R root:root -- /root/tls", 120)
     excludes = box.upload[2]
     assert "/.envrc.local" in excludes
-    assert "/zig-out/" in excludes
+    assert "zig-out/" in excludes
+    assert ".zig-cache/" in excludes
     assert ".terraform" in excludes
     assert "*.tfstate" in excludes
+    assert "*.pem" not in excludes
     assert ".git" not in excludes
-    assert "bench/remote-capture.sh" in box.commands[0][0]
-    assert "'Benchmark AppPingPong'" in box.commands[0][0]
-    assert box.commands[0][1] == adapter._REMOTE_TIMEOUT_SECONDS
+    remote_command = box.commands[-1]
+    assert "bench/remote-capture.sh" in remote_command[0]
+    assert "'Benchmark AppPingPong'" in remote_command[0]
+    assert remote_command[1] == adapter._REMOTE_TIMEOUT_SECONDS
     capture = tmp_path / "zig-out/perf/20261118-120000-c7i.large-openssl"
     assert box.downloads == [("/root/tls/zig-out/perf/20261118-120000", capture)]
     metadata = (capture / "metadata.txt").read_text()
@@ -182,6 +187,57 @@ def test_capture_syncs_runs_downloads_analyzes_and_terminates(tmp_path, monkeypa
     assert (capture / "benchstat.txt").read_text() == "benchstat output\n"
     assert box.poweroffs == 1
     assert fleet.waited == [["i-test"]]
+
+
+def test_sync_filters_keep_tracked_certificates_and_drop_nested_outputs(tmp_path):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    retained = [
+        "src/lib.zig",
+        "docs/research/TLS_ANVIL_91_CHAIN_FIXTURE/cert.pem",
+    ]
+    generated = [
+        "zig-out/local.bin",
+        ".zig-cache/local.bin",
+        "integrations/example/zig-out/result.bin",
+        "integrations/example/.zig-cache/object.bin",
+    ]
+    for relative in [*retained, *generated]:
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
+
+    subprocess.run(
+        [
+            "rsync",
+            "-a",
+            "--delete",
+            *(f"--exclude={pattern}" for pattern in adapter._SYNC_EXCLUDES),
+            f"{source}/",
+            f"{destination}/",
+        ],
+        check=True,
+        timeout=30,
+    )
+
+    for relative in retained:
+        assert (destination / relative).is_file()
+    for relative in generated:
+        assert not (destination / relative).exists()
+
+
+def test_pem_fixtures_are_not_ignored():
+    root = Path(__file__).parents[2]
+    fixture = next(root.glob("docs/research/TLS_ANVIL_91_CHAIN_FIXTURE/**/*.pem"))
+
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--quiet", str(fixture.relative_to(root))],
+        cwd=root,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 1
 
 
 def test_reused_matching_box_is_not_terminated(tmp_path, monkeypatch):
@@ -232,7 +288,7 @@ def test_perf_rows_preserves_options_and_keep_instance(tmp_path, monkeypatch):
     )
 
     assert fleet.sizes == ["2xlarge"]
-    command = box.commands[0][0]
+    command = box.commands[-1][0]
     assert "bench/remote-perf-rows.sh" in command
     assert "--samples 3" in command
     assert "--events cycles,instructions" in command

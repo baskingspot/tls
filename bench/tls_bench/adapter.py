@@ -22,22 +22,17 @@ _EVENTS = (
 )
 _REMOTE_TIMEOUT_SECONDS = 6 * 60 * 60
 
-# Keep .git for provenance. Keep remote results through the mirrored sync.
-# Basename patterns cover state in either root stack and local Python caches.
+# Keep .git and tracked PEM fixtures. Remote results survive the mirrored
+# sync. Generated directories stay out at every depth.
 _SYNC_EXCLUDES = (
     "/.bench-cache/",
     "/.direnv/",
     "/.envrc.local",
     "/.tmp/",
-    "/.venv/",
-    "/.zig-cache/",
-    "/bench/.venv/",
-    "/conformance/.venv/",
-    "/conformance/.zig-cache/",
-    "/conformance/zig-out/",
-    "/zig-out/",
+    ".venv/",
+    ".zig-cache/",
+    "zig-out/",
     ".terraform",
-    "*.pem",
     "*.tfstate",
     "*.tfstate.backup",
     "__pycache__",
@@ -108,12 +103,16 @@ def _session(
                 f"{target} runs {actual_type}, not {instance_type}. "
                 f"Stop it with `bench down {target}` before requesting a different size."
             )
+        remote_dir = config.project["remote_dir"]
         box.upload_contents(
             config.root,
-            config.project["remote_dir"],
+            remote_dir,
             exclude=_SYNC_EXCLUDES,
             delete=True,
         )
+        # rsync preserves the source UID and GID. Root must own the checkout
+        # before git accepts it for the provenance checks.
+        box.run(f"chown -R root:root -- {shlex.quote(remote_dir)}", timeout=120)
         yield _Session(box, instance, instance_type)
     finally:
         if launched and not keep_instance:
