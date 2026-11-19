@@ -24,10 +24,11 @@ pub const HkdfSha256 = Hkdf(sha2.Sha256, crypto.hash.sha2.Sha256);
 /// TLS_AES_256_GCM_SHA384.
 pub const HkdfSha384 = Hkdf(sha2.Sha384, crypto.hash.sha2.Sha384);
 
-/// `Hash` is the libcrypto-backed hash for every runtime derivation (#138).
-/// `ComptimeHash` is the same function in std, used only for the constants
-/// below: libcrypto cannot run at comptime.
-fn Hkdf(comptime Hash: type, comptime ComptimeHash: type) type {
+/// Construct the TLS 1.3 schedule over a runtime and comptime hash pair.
+/// Libcrypto supplies the default runtime hash (#138). Native supplies std's
+/// implementation. The comptime hash must match because libcrypto cannot run
+/// during compilation.
+pub fn Hkdf(comptime Hash: type, comptime ComptimeHash: type) type {
     comptime assert(Hash.digest_length == ComptimeHash.digest_length);
     const ComptimeHmac = hmac.Hmac(ComptimeHash);
 

@@ -515,6 +515,9 @@ test "encrypt/decrypt: sequence numbers advance" {
 // verification; AWS-LC EVP_AEAD zeroes the output on failure. This is not a tls
 // correctness assertion, but the test pins the per-backend behavior explicitly.
 test "decrypt: failed auth exposes backend failure buffer behavior" {
+    // std.crypto marks failed plaintext undefined rather than exposing or
+    // zeroing it, so there are no defined bytes for this pin to inspect.
+    if (comptime backend.native_selected) return error.SkipZigTest;
     const key: Aes128GcmKey = .init(@splat(0xab));
     const iv: Iv = .init(@splat(0xcd));
     var tx: RecordLayer = try .init(.{ .aes_128_gcm_sha256 = key }, iv);
@@ -554,6 +557,7 @@ test "decrypt: failed auth exposes backend failure buffer behavior" {
             // AWS-LC and BoringSSL EVP_AEAD promise to zero output on authentication failure.
             for (inner) |byte| try testing.expectEqual(@as(u8, 0), byte);
         },
+        .native => unreachable,
     }
 
     // Prove only the tampered record's buffer is poisoned, not context state:

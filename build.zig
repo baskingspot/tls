@@ -4,6 +4,8 @@ const Target = std.Target;
 const builtin = @import("builtin");
 const panic = std.debug.panic;
 
+const CryptoBackend = enum { auto, native, openssl, @"aws-lc", boringssl };
+
 const bench_mod = @import("src/build/bench.zig");
 const examples_mod = @import("src/build/examples.zig");
 const tests = @import("src/build/tests.zig");
@@ -25,6 +27,12 @@ pub fn build(b: *Build) void {
         .default_target = nativeTarget(),
     });
     const optimize = b.standardOptimizeOption(.{});
+    const crypto_backend = b.option(
+        CryptoBackend,
+        "crypto",
+        "Crypto backend: native, openssl, aws-lc, or boringssl; auto detects the libcrypto headers",
+    ) orelse .auto;
+    const native_crypto = crypto_backend == .native;
     const crypto_approved_only = b.option(
         bool,
         "crypto-approved-only",
@@ -40,7 +48,17 @@ pub fn build(b: *Build) void {
         b.option(bool, "fuzz", "Enable fuzzing (uses the default test runner)") orelse false;
 
     const build_options = b.addOptions();
+    build_options.addOption(CryptoBackend, "crypto", crypto_backend);
     build_options.addOption(bool, "crypto_approved_only", crypto_approved_only);
+
+    // The C ABI is built against system libcrypto headers by contract (#199).
+    // Reject the native combination instead of silently omitting the artifact.
+    const capi = b.option(
+        bool,
+        "capi",
+        "Build the C ABI library (libbaskingspot_tls.a)",
+    ) orelse false;
+    if (native_crypto and capi) panic("-Dcapi requires a libcrypto -Dcrypto backend", .{});
 
     // Fixed-capacity containers and memory scans. A production dependency:
     // the library imports it, so it is resolved before the consumer early
@@ -57,18 +75,22 @@ pub fn build(b: *Build) void {
     });
     mod.addOptions("build_options", build_options);
     mod.addImport("stdx", stdx_dep.module("stdx"));
-    mod.link_libc = true;
-    mod.linkSystemLibrary("crypto", .{});
+    if (!native_crypto) {
+        mod.link_libc = true;
+        mod.linkSystemLibrary("crypto", .{});
+    }
 
     // #145 — the deprecated @cImport blocks moved to translate-c wrapper
-    // headers. Created before the dependency-consumer early return: every
-    // build that compiles src/ needs the translated module, consumers
-    // included.
-    const c_modules = translate_c.addModules(b, .{
-        .target = target,
-        .optimize = optimize,
-    });
-    mod.addImport("openssl_c", c_modules.openssl_c);
+    // headers. Default and explicit libcrypto consumers still receive this
+    // module before the consumer early return. Native never creates it.
+    const c_modules: ?translate_c.Modules = if (native_crypto)
+        null
+    else
+        translate_c.addModules(b, .{
+            .target = target,
+            .optimize = optimize,
+        });
+    if (c_modules) |modules| mod.addImport("openssl_c", modules.openssl_c);
 
     // Library-only mirrors of the standalone integration build scripts. The
     // distribution smoke compiles each mirror from the fetched root package.
@@ -102,6 +124,25 @@ pub fn build(b: *Build) void {
     // out of a core consumer's cache.
     if (b.pkg_hash.len != 0) return;
 
+    if (native_crypto) {
+        const testingx_dep = b.lazyDependency("testingx", .{ .target = target });
+        const native_test_mod = b.createModule(.{
+            .root_source_file = b.path("src/test_native.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        native_test_mod.addOptions("build_options", build_options);
+        native_test_mod.addImport("stdx", stdx_dep.module("stdx"));
+        if (testingx_dep) |dep| native_test_mod.addImport("testingx", dep.module("testingx"));
+        tests.addNativeSteps(b, .{
+            .test_mod = native_test_mod,
+            .fuzz = fuzz_mode,
+            .testingx = testingx_dep,
+        });
+        return;
+    }
+
+    const modules = c_modules.?;
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/test.zig"),
         .target = target,
@@ -110,7 +151,7 @@ pub fn build(b: *Build) void {
     test_mod.addOptions("build_options", build_options);
     test_mod.link_libc = true;
     test_mod.linkSystemLibrary("crypto", .{});
-    test_mod.addImport("openssl_c", c_modules.openssl_c);
+    test_mod.addImport("openssl_c", modules.openssl_c);
     test_mod.addImport("stdx", stdx_dep.module("stdx"));
 
     // testingx: plain-text test runner, benchmark harness, and comptime
@@ -140,7 +181,7 @@ pub fn build(b: *Build) void {
     });
     c_mod.link_libc = true;
     c_mod.linkSystemLibrary("crypto", .{});
-    c_mod.addImport("openssl_c", c_modules.openssl_c);
+    c_mod.addImport("openssl_c", modules.openssl_c);
 
     const c_ssl_mod = b.createModule(.{
         .root_source_file = b.path("bench/c_ssl.zig"),
@@ -150,7 +191,7 @@ pub fn build(b: *Build) void {
     c_ssl_mod.link_libc = true;
     c_ssl_mod.linkSystemLibrary("ssl", .{});
     c_ssl_mod.linkSystemLibrary("crypto", .{});
-    c_ssl_mod.addImport("openssl_ssl", c_modules.openssl_ssl);
+    c_ssl_mod.addImport("openssl_ssl", modules.openssl_ssl);
 
     tests.addSteps(b, .{
         .test_mod = test_mod,
@@ -158,8 +199,8 @@ pub fn build(b: *Build) void {
         .testingx = testingx_dep,
         .tls_mod = mod,
         .fixtures_mod = fixtures_mod,
-        .openssl_c = c_modules.openssl_c,
-        .pty_c = c_modules.pty_c,
+        .openssl_c = modules.openssl_c,
+        .pty_c = modules.pty_c,
         .target = target,
         .optimize = optimize,
     });
@@ -169,7 +210,7 @@ pub fn build(b: *Build) void {
         .tls_mod = mod,
         .c_mod = c_mod,
         .c_ssl_mod = c_ssl_mod,
-        .openssl_c = c_modules.openssl_c,
+        .openssl_c = modules.openssl_c,
         .build_options = build_options,
         .fixtures_mod = fixtures_mod,
         .stdx_mod = stdx_dep.module("stdx"),
@@ -186,11 +227,6 @@ pub fn build(b: *Build) void {
     // Produces libbaskingspot_tls.a (static) from src/capi.zig. Consumers link a compatible
     // libcrypto-family library. Installs include/baskingspot_tls.h alongside. Behind the
     // option so default builds are unaffected. #30.
-    const capi = b.option(
-        bool,
-        "capi",
-        "Build the C ABI library (libbaskingspot_tls.a)",
-    ) orelse false;
     if (capi) {
         const capi_mod = b.createModule(.{
             .root_source_file = b.path("src/capi.zig"),
@@ -200,7 +236,7 @@ pub fn build(b: *Build) void {
         capi_mod.addOptions("build_options", build_options);
         // capi.zig imports root.zig relatively, so it compiles the crypto
         // tree (and c_openssl.zig) within itself (#145).
-        capi_mod.addImport("openssl_c", c_modules.openssl_c);
+        capi_mod.addImport("openssl_c", modules.openssl_c);
         capi_mod.addImport("stdx", stdx_dep.module("stdx"));
         capi_mod.link_libc = true;
 

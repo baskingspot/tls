@@ -151,6 +151,71 @@ The socket size excludes trust anchors, credentials, and backend allocations.
 The downstream HTTP client suite did not run against this revision. Its
 existing loopback evidence remains bound to its pinned TLS revision.
 
+## 2026-11-19 native primitive backend (#199)
+
+Scope: the opt-in `-Dcrypto=native` primitive backend. The base revision is
+`e382517855ecbe0814dc8f4f7fc223f339ebd030`. The host is Linux arm64 with Zig
+0.17.0 and OpenSSL 3.6.5.
+
+`just check-native` ran Debug, ReleaseSafe, ReleaseFast, and a baseline-CPU
+suite. Each native run discovered 112 tests, passed 102, failed none, and
+skipped ten. A baseline-CPU libcrypto suite ran the native differentials against
+std's software-AES path. `zig build test-bin -Dcrypto=native` installed the Debug
+binary. `ldd zig-out/bin/test` printed `not a dynamic executable`; the binary has
+no dynamic dependencies. `check-native` is also a dependency of root `just ci`.
+
+These ten native-lane skips are intentional:
+
+- `aws-lc aead deinit clears inline context`
+- `approved: chacha20_poly1305_sha256 excluded from the approved cipher_suites`
+- `approved: x25519 excluded from the approved group capability`
+- `approved: certificate_signature_schemes cover the FIPS 186-5 signature families`
+- `approved: hybrid groups disabled in the approved capability table`
+- `approved: approved capabilities are a subset of the default capabilities`
+- `decrypt: failed auth exposes backend failure buffer behavior`
+- `backend.native differential: X25519 shared secret matches libcrypto`
+- `backend.native differential: AEAD ciphertext and tags match libcrypto`
+- `backend.native differential: product HMAC and HKDF match across backends`
+
+The three differentials run on the default OpenSSL lane instead. Both default
+and `-Dcrypto=openssl` discovered 1,014 tests: 1,009 passed, none failed, and
+five existing tests skipped. X25519 compares shared secrets. AEAD compares
+ciphertexts and tags for lengths 0, 1, 15, 16, 17, 127, 128, 129, 255, 256,
+and 300 on every suite, under both native and baseline CPUs.
+
+HMAC and HKDF use the product types in `hmac.zig` and `hkdf.zig`. The test
+constructs the same TLS schedule over native and libcrypto SHA-256/SHA-384.
+No libcrypto HMAC or HKDF call exists in this comparison. The removed native
+module aliases did not carry product coverage.
+
+Valgrind initially found undefined reads in std's protected software AES.
+`aes/soft.zig` filled only the requested blocks before encrypting a wider
+bitsliced batch. The native AES adapter fills the unused blocks with zeros.
+`aes_gcm_native.zig` follows std's AES-GCM composition over std's AES, GHASH,
+and CTR primitives. After that change, the native ReleaseFast baseline suite
+has zero Memcheck errors. Root `just check-memory` also reports zero errors for
+the unit and benchmark targets.
+
+A mutation flipped the first native AES-GCM tag bit. The default differential
+failed on that byte: libcrypto produced 0x42 and native produced 0x43. Restoring
+the tag production restored the passing suite.
+
+The native test root includes the shared backend facade tests, native Ed25519
+vectors, AEAD and record tests, HMAC, HKDF, and X25519. It excludes the
+handshake root in src/test.zig and the libcrypto-only companion file. Native
+capabilities declare P-256/P-384, ML-KEM, RSA, and CertificateVerify unsupported.
+The C ABI rejects the native option because its headers and contract remain
+libcrypto-based.
+
+Explicit AWS-LC and BoringSSL selections pass too: 1,010 passes/four skips and
+1,003 passes/eleven skips, respectively. A fresh native test build with an empty
+PATH also passes, so that path does not invoke pkg-config.
+
+Root `just ci` completed with exit status zero. `UV_PYTHON_INSTALL_DIR` named a
+worktree-local directory because the host's uv Python directory is root-owned.
+This changed only uv's installation location; every CI recipe and crypto choice
+remained at its default.
+
 ## How this document works
 
 - **The evidence log.** The status page states the claim. This file records

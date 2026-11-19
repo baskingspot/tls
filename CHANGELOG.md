@@ -5,6 +5,16 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `-Dcrypto=native` selects an opt-in, primitive-only backend over `std.crypto`.
+  X25519, all three TLS AEAD suites, SHA-256/SHA-384, HMAC, HKDF, and raw-seed
+  Ed25519 signing and verification work without libcrypto. P-256/P-384, ML-KEM,
+  RSA, CertificateVerify, and handshakes remain unsupported. The default still
+  auto-detects OpenSSL, AWS-LC, or BoringSSL from the selected headers (#199).
+- The `hkdf.Hkdf` type constructor is public for backends that select their own
+  runtime and comptime hash pair.
+
 ### Changed
 
 - `-Dcrypto-fips` is now `-Dcrypto-approved-only`, `capabilities.is_fips` is
