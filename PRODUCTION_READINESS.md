@@ -32,7 +32,7 @@ commit because the branch moved.
 | Session resumption | Partial | The engine side is proven; persistence, expiry, rotation, replay, and SNI partitioning are yours |
 | 0-RTT early data | Partial | Offer, accept, and reject are proven; accept is gated on the RFC 8446 §4.2.10 exact-suite, ALPN, and first-identity checks; ticket-age and anti-replay policy are yours, and the engine default is off |
 | Caller-driven readiness server | Proven | `tls_nonblocking.Server` has byte-stream and OpenSSL tests on Linux. `http` runs `just conformance-run-tls-readiness` in `just ci`, and `h2spec` over TLS passes on ubuntu-26.04 and macos-26 (run 44221027341, `503515f`, against `tls` v0.4.4 at `3ba8fbd`). |
-| Caller-driven readiness client | Partial | `tls_nonblocking.Client` has in-memory handshake, ALPN, partial-write, and close_notify tests against `tls_nonblocking.Server`. `SocketClient` adds loopback coverage with forced short socket I/O, coalesced early plaintext, partial consumption, deadlines, peer alerts, close_notify, and truncation. No third-party peer has exercised this new adapter; that gap is #190. HTTP's loopback consumer evidence remains bound to its recorded dependency revision, not this commit. |
+| Caller-driven readiness client | Proven | `tls_nonblocking.Client` has in-memory handshake, ALPN, partial-write, and close_notify tests against `tls_nonblocking.Server`. `SocketClient` retains its loopback coverage. OpenSSL `s_server` tests run in the integration gate. Seven-byte reads and three-byte writes fragment the handshake and application data. The exchange verifies the generated certificate and hostname, negotiates `h2`, and transfers data in both directions. It also transfers data before and after a KeyUpdate. The request arrives while inbound plaintext remains partially consumed. OpenSSL's trace must contain the client's `update_not_requested` response. A disjoint ALPN test requires the exact OpenSSL `no_application_protocol` peer alert. Both directions send authenticated `close_notify`. `zig build footprint` reports the `Client` and `SocketClient` storage. HTTP's consumer evidence remains bound to its recorded dependency revision, not this commit. |
 | kTLS | Proven | Linux only; key export and the kernel data plane |
 | C ABI | Partial | Client lifecycle only; see `include/baskingspot_tls.h` |
 | TLS 1.2, DTLS, Windows | Out of scope | Not coming |
@@ -136,12 +136,13 @@ The row is reported on its own.
 - **Forced-HRR interop.** HelloRetryRequest is proven in memory and in
   TLS-Anvil. The harness does not yet force OpenSSL into HRR, so that path is
   not gated.
-- **HTTP readiness client.** The caller-driven server clears its consumer gate:
-  HTTP runs `just conformance-run-tls-readiness` in `just ci`, and `h2spec` over
-  TLS passes on ubuntu-26.04 and macos-26 (run 44221027341, `503515f`). The
-  client transport has loopback evidence only; no third-party peer has exercised
-  it (#190). Both results are bound to `tls` v0.4.4 (`3ba8fbd`), HTTP's pinned
-  revision, not this commit.
+- **HTTP readiness client's dependency revision.** The caller-driven server
+  clears its consumer gate: HTTP runs `just conformance-run-tls-readiness` in
+  `just ci`, and `h2spec` over TLS passes on ubuntu-26.04 and macos-26 (run
+  44221027341, `503515f`). The HTTP client transport still has loopback evidence
+  only at the consumer layer. The OpenSSL peer evidence above belongs to this
+  repository's `SocketClient` tests. Both HTTP results remain bound to `tls`
+  v0.4.4 (`3ba8fbd`), HTTP's pinned revision, not this commit.
 - **Deployment shapes beyond the tested profiles.** The resource and recovery
   checks cover the recorded Linux profiles, not every kernel, allocator, or
   connection pattern a deployment will see.

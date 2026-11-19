@@ -1013,25 +1013,19 @@ const differential_schemes = [_]SignatureScheme{
 /// context string. Every hash a TLS 1.3 suite uses fits.
 const differential_transcript_max = 64;
 
-/// Sign with a deterministic nonce where the lane supports it, so the signature
-/// is a function of the fuzzer's input and a crash input reproduces. The
-/// provider can still refuse the parameter at run time.
+/// Deterministic ECDSA makes a crash input reproduce on every backend. RSA-PSS
+/// uses its random nonce construction.
 fn signDeterministically(
     key: *backend.sign.pkey,
     scheme: SignatureScheme,
     content: []const u8,
     out: []u8,
 ) backend.sign.SignError![]const u8 {
-    const ecdsa = scheme == .ecdsa_secp256r1_sha256 or scheme == .ecdsa_secp384r1_sha384;
-    if (backend.sign.supportsDeterministicNonce() and ecdsa) {
-        if (backend.sign.sign(key, scheme, content, out, .deterministic)) |sig| {
-            return sig;
-        } else |err| switch (err) {
-            error.DeterministicNonceUnsupported => {},
-            else => return err,
-        }
-    }
-    return backend.sign.sign(key, scheme, content, out, .random);
+    const nonce_mode: backend.sign.NonceMode = switch (scheme) {
+        .ecdsa_secp256r1_sha256, .ecdsa_secp384r1_sha384 => .deterministic,
+        else => .random,
+    };
+    return backend.sign.sign(key, scheme, content, out, nonce_mode);
 }
 
 fn expectSignerVerifierAgreement(

@@ -100,6 +100,7 @@ The caller supplies these disjoint buffers:
 - `Buffers.out`: at least `tls.frame.max_wire_record_len` bytes for one outbound record.
 - `ServerHandshake.Config.reassembly`: storage for fragmented ClientHello messages. The core's default capacity is `tls.ServerHandshake.ch_reassembly_buffer_size`.
 - `ServerHandshake.Config.client_cert_buffer`: storage for an optional client certificate chain, when the client-auth policy requires it.
+- `ClientHandshake.Config.reassembly`: storage for fragmented server handshake messages. The core's default capacity is `tls.ClientHandshake.recommended_handshake_storage`.
 
 A fixed connection slot can contain the buffers beside `Server`:
 
@@ -111,6 +112,10 @@ const Slot = struct {
     reassembly: [tls.ServerHandshake.ch_reassembly_buffer_size]u8,
 };
 ```
+
+A client slot replaces `Server` with `Client` and uses the client handshake
+reassembly capacity. `SocketClient` owns its record, output, and reassembly
+buffers. Its size therefore includes those buffers.
 
 Initialize `Server` in its final slot. Do not move or copy a live connection.
 Keep the credentials and all referenced configuration storage alive until `deinit()`.
@@ -129,8 +134,9 @@ and optional buffers. Initialization performs no handshake or transport I/O.
 are harmless. It does not erase borrowed buffers. Erase those buffers before reuse
 if their contents require it.
 
-Run `zig build footprint` from this directory to measure the slot on your target.
-The report excludes shared credentials and optional client-certificate storage.
+Run `zig build footprint` from this directory to measure the server, client,
+and socket-client slots on your target. The report excludes shared credentials,
+trust anchors, optional client-certificate storage, and backend allocations.
 The engine owns no allocations. Libcrypto can allocate internally.
 
 ## Readiness loop
@@ -221,6 +227,14 @@ zig build test -Doptimize=ReleaseSafe
 zig build test -Doptimize=ReleaseFast
 ```
 
-The OpenSSL test forces three-byte writes and seven-byte reads over a real socket.
-Its test adapter uses `poll`, `recv`, and `send`. Those calls are absent from the
-library module.
+The OpenSSL server test forces three-byte writes and seven-byte reads over a real
+socket. Its test adapter uses `poll`, `recv`, and `send`. Those calls are absent
+from the library module.
+
+Two OpenSSL `s_server` tests exercise `SocketClient` in the normal test gate.
+The exchange test verifies a generated certificate and hostname and negotiates
+`h2`. It caps socket reads at seven bytes and writes at three bytes. It holds
+plaintext partially consumed while OpenSSL requests a KeyUpdate. The OpenSSL
+trace must record the client's `update_not_requested` response. OpenSSL
+authenticates the client's `close_notify` and sends its own. The alert test
+requires `no_application_protocol` after a disjoint ALPN offer.
