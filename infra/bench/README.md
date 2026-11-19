@@ -4,6 +4,20 @@ The `tls-bench` fleet uses `baskingspot/infra`. This repository owns the project
 
 No box accepts inbound connections. SSH uses SSM and a key that EC2 Instance Connect accepts for 60 seconds. The harness uses an assumed role and creates no access key.
 
+## Retire the old stacks
+
+Complete this migration step before you initialize or apply the new roots. The old roots can have Git-ignored Terraform state in `infra/bench/` and `infra/iam/`.
+
+Use a pre-migration checkout that contains the old configuration and local state. Destroy the base stack first. Destroy IAM second:
+
+```sh
+export AWS_PROFILE=<iam-capable-bootstrap-profile>
+tofu -chdir=infra/bench destroy
+tofu -chdir=infra/iam destroy
+```
+
+Do not run either command against the rewritten roots. The new configuration replaces every old resource address.
+
 ## Bootstrap
 
 Set `TF_VAR_account_id` to the twelve-digit AWS account ID. Use an IAM-capable AWS profile for both stacks. Apply IAM before the base stack:

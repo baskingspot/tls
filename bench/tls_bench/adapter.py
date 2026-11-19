@@ -85,7 +85,8 @@ def _session(
 ) -> Generator[_Session]:
     target, size = _target_for_type(config, instance_type)
     existing = {instance["InstanceId"] for instance in fleet.selected([target])}
-    outcome = ensure_up(fleet, [target], size=size)[target]
+    # The six-hour workload deadline must expire before the box's TTL guard.
+    outcome = ensure_up(fleet, [target], ttl=config.fleet["max_ttl"], size=size)[target]
     if outcome.error:
         raise click.ClickException(f"{target}: {outcome.error}") from outcome.error
     instance_id = outcome.value

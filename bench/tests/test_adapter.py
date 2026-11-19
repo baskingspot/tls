@@ -93,7 +93,7 @@ def install_fakes(monkeypatch, config, box, *, existing=False):
     def ensure_up(actual_fleet, names, ttl=None, size=None):
         assert actual_fleet is fleet
         assert names == ["c7i"]
-        assert ttl is None
+        assert ttl == config.fleet["max_ttl"]
         fleet.sizes.append(size)
         if size:
             fleet.instance["InstanceType"] = f"c7i.{size}"
@@ -224,6 +224,45 @@ def test_sync_filters_keep_tracked_certificates_and_drop_nested_outputs(tmp_path
         assert (destination / relative).is_file()
     for relative in generated:
         assert not (destination / relative).exists()
+
+
+def test_sync_filters_include_every_tracked_file_and_skip_nested_outputs(tmp_path):
+    root = Path(__file__).parents[2]
+    tracked = set(subprocess.check_output(["git", "ls-files"], cwd=root, text=True).splitlines())
+    generated = [
+        root / "integrations/tls-std/zig-out/.tls-bench-filter-test",
+        root / "integrations/tls-std/.zig-cache/.tls-bench-filter-test",
+    ]
+    for path in generated:
+        assert not path.exists()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"generated")
+
+    try:
+        result = subprocess.run(
+            [
+                "rsync",
+                "-rni",
+                "--delete",
+                "--out-format=%n",
+                *(f"--exclude={pattern}" for pattern in adapter._SYNC_EXCLUDES),
+                f"{root}/",
+                f"{tmp_path}/upload/",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        for path in generated:
+            path.unlink(missing_ok=True)
+
+    uploaded = set(result.stdout.splitlines())
+    excluded = sorted(tracked - uploaded)
+    assert not excluded, f"Tracked files excluded from upload: {excluded}"
+    for path in generated:
+        assert str(path.relative_to(root)) not in uploaded
 
 
 def test_pem_fixtures_are_not_ignored():
