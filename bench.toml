@@ -1,0 +1,23 @@
+[project]
+name = "tls-bench"
+region = "us-west-2"
+profile = "tls-bench"
+adapter = "tls_bench"
+image_version = "1"
+ssh_user = "root"
+remote_dir = "/root/tls"
+results_dir = "zig-out/perf"
+cache_dir = ".bench-cache"
+
+[fleet]
+default_ttl = "4h"
+max_ttl = "12h"
+default_owner = "agent"
+
+[targets.c7i]
+instance_type = "c7i.large"
+arch = "x86_64"
+
+[targets.c7g]
+instance_type = "c7g.2xlarge"
+arch = "arm64"

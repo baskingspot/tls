@@ -49,7 +49,7 @@ Every optimization runs this loop. A change without the remeasure is a guess.
 - `just bench-smoke` — one-shot capture+analyze plumbing check. NOT benchmark evidence; workflow test only.
 - `just bench-capture-default` — `--count=5 --benchtime=500ms`. Local captures are workflow smoke tests unless the issue explicitly asks for local data.
 - `just bench-capture` — parameterized capture.
-- `just bench-remote-capture` — EC2 capture via `infra/bench/run-capture.sh`. Durable evidence lives here, under `docs/research/perf/<timestamp-host>/`.
+- `just bench-remote-capture` — EC2 capture via the `tls_bench` adapter. Durable evidence lives here, under `docs/research/perf/<timestamp-host>/`.
 - `just bench-analyze <capture>` — benchstat analysis.
 - `just bench-perf` (Linux) — `perf record --call-graph dwarf` to `zig-out/benchmark.perf.data`.
 - `just bench-disasm` — `objdump -d` tls benchmark to `zig-out/benchmark.asm`.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
 log() {
   printf '[%s] bench-remote-perf-host: %s\n' "$(date -u +%H:%M:%S)" "$*" >&2
@@ -38,7 +38,7 @@ run_step() {
 
 usage() {
   cat <<'USAGE'
-usage: infra/bench/remote-perf-rows.sh [options]
+usage: bench/remote-perf-rows.sh [options]
 
 Run the #31 row-oriented perf/disassembly evidence set on a remote Linux host.
 This script expects to run inside the repo's nix develop .#openssl shell.

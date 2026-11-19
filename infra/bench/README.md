@@ -1,188 +1,61 @@
-# EC2 NixOS benchmark host (OpenTofu)
+# EC2 benchmarks
 
-Single NixOS instance for running ztls benchmark captures on less-noisy hardware.
+The `tls-bench` fleet uses `baskingspot/infra`. This repository owns the project-specific image fragment and workload adapter. The shared modules own IAM, the reaper, security groups, launch templates, and the base image.
 
-## One-command capture
+No box accepts inbound connections. SSH uses SSM and a key that EC2 Instance Connect accepts for 60 seconds. The harness uses an assumed role and creates no access key.
 
-From repo root with the devshell active:
+## Bootstrap
 
-```bash
+Set `TF_VAR_account_id` to the twelve-digit AWS account ID. Use an IAM-capable AWS profile for both stacks. Apply IAM before the base stack:
+
+```sh
+tofu -chdir=infra/iam init
+tofu -chdir=infra/iam apply
+tofu -chdir=infra/bench init
+tofu -chdir=infra/bench apply
+```
+
+Configure `tls-bench` as an AWS role profile. Set `role_arn` from the IAM stack's `role_arn` output. Set `source_profile` to an SSO profile with access to that role. Set the region to `us-west-2`.
+
+The devshell supplies `session-manager-plugin`, `uv`, and OpenTofu. No command reads OpenTofu state during a benchmark.
+
+## Fleet commands
+
+Run these commands from the repository root:
+
+```sh
+uv run --project bench bench up c7i
+uv run --project bench bench ssh c7i -- uname -a
+uv run --project bench bench ls
+uv run --project bench bench down c7i
+```
+
+The `c7i` target defaults to `c7i.large`. The `c7g` target defaults to `c7g.2xlarge`. Use `--size` with `up` to override only the size:
+
+```sh
+uv run --project bench bench up c7i --size 2xlarge
+```
+
+Every new instance has an expiry tag. The on-box TTL guard and the external reaper bound its lifetime.
+
+## Capture workloads
+
+The existing just recipes call the adapter:
+
+```sh
 just bench-remote-capture
-```
-
-That recipe runs `infra/bench/run-capture.sh`, which:
-
-1. initializes OpenTofu,
-2. provisions or replaces the benchmark instance,
-3. rsyncs the repo to `/root/ztls` while preserving `.git`,
-4. runs the capture through `nix develop .#openssl`,
-5. pulls the timestamped run directory back under `zig-out/perf/`,
-6. writes `benchstat.txt`, and
-7. destroys the EC2 resources on exit unless `--keep-instance` is passed.
-
-The default matrix is one `c7i.large` OpenSSL-backed capture with
-`--count=5 --benchtime=500ms`. The #11 evidence also includes a successful
-`c7i.2xlarge` run using the same runner. Override the matrix explicitly when a
-wider hardware sweep is needed:
-
-```bash
-just bench-remote-capture --instance-types c7i.large,c7i.2xlarge
-```
-
-The runner is intentionally verbose: provisioning, SSH readiness, rsync,
-remote build/capture, pullback, and analysis all emit timestamped progress, and
-long steps print 30-second heartbeats. Silence longer than that is suspicious.
-
-For smoke/debug runs only, pass a narrower benchmark after `--`:
-
-```bash
+just bench-remote-capture --instance-types c7i.large,c7g.2xlarge
 just bench-remote-capture --count 1 --benchtime 1x -- \
   --filter 'BenchmarkAppPingPong/.*/size=128'
-```
-
-Dirty worktrees are rejected by default because benchmark evidence needs a clean
-revision. Use `--allow-dirty` only for workflow debugging; do not commit or cite
-those captures as performance evidence.
-
-## Row perf/disassembly capture
-
-For #31 perf-counter and disassembly evidence, use the row runner instead of the
-full wall-time capture runner:
-
-```bash
 just bench-remote-perf-rows
 ```
 
-That defaults to one `c7i.2xlarge` OpenSSL-backed host, pins row commands with
-`taskset -c 1` when available, captures the first #31 app-data rows across
-ztls/OpenSSL/rustls, generates `perf stat`, `perf record`, `perf report`,
-`perf annotate`, per-implementation benchmark-binary disassembly, deletes binary
-`perf.data` by default, pulls the result back under `zig-out/perf/`, and
-destroys EC2 resources on exit. Full linked `libcrypto`/`libssl` disassembly is
-opt-in with `--full-linked-disasm`; the default relies on `perf annotate` for
-hot linked-library snippets instead of pulling giant assembly dumps.
+The capture command defaults to one `c7i.large` box. The perf command defaults to one `c7i.2xlarge` box. Both commands reject a dirty worktree unless `--allow-dirty` is present.
 
-The default row set is intentionally narrow:
+The adapter copies the checkout to `/root/tls`, including `.git`. It excludes local credentials, state, caches, virtual environments, and results. It runs `bench/remote-capture.sh` or `bench/remote-perf-rows.sh` through `nix develop .#openssl`.
 
-```text
-AppPingPong/TLS_AES_128_GCM_SHA256/1350
-AppClientToServer/TLS_CHACHA20_POLY1305_SHA256/16
-```
+Results land under `zig-out/perf/`. The instance-type and backend suffix remains unchanged. The metadata records the instance ID instead of a public IP address. The wall-time capture also writes `benchstat.txt` through `scripts/bench-analyze.sh`.
 
-Add the current non-equivalent handshake row only when the methodology question
-is explicit:
+A new box terminates at the end of its command. The adapter waits for EC2 to report termination before another size uses the same target. `--keep-instance` leaves a new box alive until its expiry. An existing box from `bench up` remains under operator control.
 
-```bash
-just bench-remote-perf-rows --include-handshake
-```
-
-The host sets `kernel.perf_event_paranoid=-1` and `kernel.kptr_restrict=0` so
-root-run `perf` can collect useful symbols and kernel/user counter data.
-
-## Manual escape hatch
-
-The script is the source of truth, but the manual shape is useful for debugging.
-From repo root:
-
-```bash
-cd infra/bench
-tofu init
-tofu apply -var instance_type=c7i.large
-```
-
-Then deploy and run the same remote runner:
-
-```bash
-rsync -az --delete --no-owner --no-group \
-  --exclude .envrc.local --exclude zig-out --exclude .zig-cache --exclude .terraform \
-  --exclude bench.pem --exclude terraform.tfstate \
-  --exclude terraform.tfstate.backup \
-  --exclude conformance/.venv --exclude conformance/.zig-cache --exclude conformance/zig-out \
-  -e "ssh -i infra/bench/bench.pem -o StrictHostKeyChecking=no" \
-  . root@$(tofu -chdir=infra/bench output -raw instance_ip):/root/ztls/
-
-ssh -i infra/bench/bench.pem -o StrictHostKeyChecking=no \
-  root@$(tofu -chdir=infra/bench output -raw instance_ip) \
-  'cd /root/ztls && nix --extra-experimental-features "nix-command flakes" \
-    develop .#openssl --command infra/bench/remote-capture.sh'
-```
-
-`just bench-capture` writes one timestamped run directory:
-
-```text
-zig-out/perf/YYYYMMDD-HHMMSS/
-  metadata.txt
-  ztls.txt
-  evp.txt
-  libssl.txt
-  rustls.txt
-```
-
-Pull results back:
-
-```bash
-rsync -avz \
-  -e "ssh -i infra/bench/bench.pem -o StrictHostKeyChecking=no" \
-  root@$(tofu output -raw instance_ip):/root/ztls/zig-out/perf/ \
-  zig-out/perf/
-```
-
-Compare captures with benchstat:
-
-```bash
-just bench-analyze zig-out/perf/YYYYMMDD-HHMMSS
-```
-
-With no argument, `just bench-analyze` uses the newest capture under
-`zig-out/perf/`.
-
-## Local workflow sanity check
-
-Use `just bench-smoke` to validate the capture/analyze plumbing on the current
-host. It runs only one `AppPingPong` iteration per row, so it is useful for
-checking scripts and metadata but is not benchmark evidence for #10.
-
-Use `just bench-capture-default` for a local full-comparison capture with the
-same default flags expected on the EC2 host: `--count=5 --benchtime=500ms`.
-Local captures are still workflow sanity checks; committed performance evidence
-requires the EC2 benchmark host and full provenance.
-
-## Instance sizing
-
-Default is `c7i.large` (1 physical core, 2 SMT threads) for cheap quick runs.
-The instance type is controlled by the OpenTofu `instance_type` variable and by
-`just bench-remote-capture --instance-types ...` for matrix captures. `c7i.large`
-does **not** let you:
-
-- Disable Turbo Boost (no `intel_pstate` exposed by hypervisor)
-- Set a performance CPU governor (no cpufreq driver in VM)
-- Isolate 2 physical cores with `cset` (only 1 core available)
-- Pin to `taskset -c 0` without hurting OpenSSL (its record layer benefits from
-  both hyperthreads on a single-core VM)
-
-For lower-noise runs, use `--instance-types c7i.2xlarge` or larger — 2 physical
-cores let you pin the benchmark to one core and system/perf to the other.
-
-## Notes
-
-- Benchmark binaries build with `ReleaseFast`.
-- `just bench` runs ztls benchmarks only and passes arguments through to the ztls harness.
-- `just bench-capture` captures ztls, raw EVP, libssl memory-BIO, and rustls rows.
-- `just bench-capture-default` captures all comparison rows locally with `--count=5 --benchtime=500ms`.
-- `just bench-remote-capture` provisions EC2, runs the default capture remotely,
-  pulls results back, writes `benchstat.txt`, emits verbose progress/heartbeat
-  logs, and destroys the host unless `--keep-instance` is passed.
-- Filter syntax: `--filter 'BenchmarkHandshake/*,BenchmarkAppClientToServer/*'`
-- `metadata.txt` records timestamp, git revision/dirty state, Zig version,
-  optimization mode, OpenSSL/rustls/benchstat provenance, kernel, and available
-  CPU information. If `.git` is not copied to the host, the capture is not
-  acceptable #10 evidence.
-- `configuration.nix` is applied on first boot only. If you change it, recreate
-  the instance with `tofu destroy && tofu apply`; the one-command runner's
-  default cleanup handles this for normal captures.
-
-## Destroy
-
-```bash
-tofu destroy
-```
+`just bench-regression-check` uses a `c7i.2xlarge` capture with ten samples. It then compares the fresh capture with the committed baseline.

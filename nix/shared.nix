@@ -112,6 +112,7 @@ rec {
       rustToolchain
       uv
       rsync
+      ssm-session-manager-plugin
       txtar
     ])
     ++ lib.optionals pkgs.stdenv.isLinux (

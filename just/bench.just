@@ -16,17 +16,22 @@ bench-capture-default:
 [doc("Provision EC2 benchmark host(s), run capture, pull and analyze results")]
 [group("bench")]
 bench-remote-capture *ARGS:
-    @infra/bench/run-capture.sh {{ ARGS }}
+    @uv run --project bench bench capture {{ ARGS }}
 
 [doc("Provision EC2 benchmark host, run row perf/disassembly evidence, and pull results")]
 [group("bench")]
 bench-remote-perf-rows *ARGS:
-    @infra/bench/run-perf-rows.sh {{ ARGS }}
+    @uv run --project bench bench perf-rows {{ ARGS }}
+
+[doc("Test the EC2 benchmark adapter without AWS")]
+[group("bench")]
+bench-adapter-test:
+    uv run --project bench pytest -q bench/tests
 
 [doc("Re-run EC2 capture at n=10 and check comparable AES-GCM rows against the committed baseline (manual Pillar 3 regression gate)")]
 [group("bench")]
 bench-regression-check:
-    @infra/bench/run-capture.sh --instance-types c7i.2xlarge --count 10 --benchtime 500ms
+    @uv run --project bench bench capture --instance-types c7i.2xlarge --count 10 --benchtime 500ms
     @scripts/bench-regression.sh
 
 [doc("Validate benchmark capture/analyze plumbing quickly; not benchmark evidence")]

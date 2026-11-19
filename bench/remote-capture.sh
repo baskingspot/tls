@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
 log() {
   printf '[%s] bench-remote-host: %s\n' "$(date -u +%H:%M:%S)" "$*" >&2
