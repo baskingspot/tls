@@ -124,19 +124,37 @@ def _session(
             fleet.wait_terminated([instance_id])
 
 
+_RESULT_ROOT = ("zig-out", "perf")
+
+
+def _is_result_path(line: str) -> bool:
+    if any(character.isspace() for character in line):
+        return False
+    path = PurePosixPath(line)
+    return (
+        not path.is_absolute()
+        and ".." not in path.parts
+        and len(path.parts) >= 3
+        and path.parts[:2] == _RESULT_ROOT
+    )
+
+
 def _result_path(output: str) -> PurePosixPath:
+    """Return the capture directory printed by the remote workload.
+
+    `Box.run` merges stdout and stderr, so the result line has no fixed
+    position: a log line can arrive after it. Match the line by shape and take
+    the last one, so a log line that merely mentions the path cannot win.
+    """
     lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if not lines:
-        raise click.ClickException("The remote workload returned no result path")
-    path = PurePosixPath(lines[-1])
-    if (
-        path.is_absolute()
-        or ".." in path.parts
-        or len(path.parts) < 3
-        or path.parts[:2] != ("zig-out", "perf")
-    ):
-        raise click.ClickException(f"Unexpected remote result path: {path}")
-    return path
+    matches = [line for line in lines if _is_result_path(line)]
+    if not matches:
+        seen = "\n".join(f"  {line}" for line in lines[-5:]) or "  (no output)"
+        raise click.ClickException(
+            "The remote workload returned no capture directory under zig-out/perf/.\n"
+            f"Last lines received:\n{seen}"
+        )
+    return PurePosixPath(matches[-1])
 
 
 def _run_remote(config: Config, box: Box, script: str, args: Sequence[str]) -> PurePosixPath:
