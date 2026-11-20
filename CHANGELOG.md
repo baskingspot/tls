@@ -61,6 +61,9 @@ All notable changes to tls are recorded here. The format follows
 
 ### Fixed
 
+- A certificate-authenticated server selects CertificateVerify only from the
+  client's offered schemes. No match for the configured credential fails with
+  fatal `handshake_failure` before signature generation (#208).
 - `tls_std` fills every eligible `Io.Reader.readVec` destination slice from the
   pending TLS record. A small first slice no longer makes std buffer that record
   and return zero to the caller. Direct single-slice reads and the `read_buffer`

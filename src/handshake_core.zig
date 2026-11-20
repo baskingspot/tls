@@ -112,6 +112,7 @@ const root = @import("root.zig");
 const Random = root.Random;
 const KeyPairs = @import("handshake_key_pairs.zig").KeyPairs;
 const hkdf = @import("hkdf.zig");
+const memx = @import("memx.zig");
 const CertificateChain = @import("certificate_chain.zig").CertificateChain;
 const signature = @import("signature.zig");
 const encrypted_extensions = @import("encrypted_extensions.zig");
@@ -133,6 +134,7 @@ const capabilities = @import("capabilities.zig");
 const hybrid_kex = @import("hybrid_kex.zig");
 
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
+const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 
 /// Largest leaf public key the core retains between Certificate and
 /// CertificateVerify (RSA-4096 is the practical ceiling).
@@ -184,7 +186,7 @@ pub const Error = error{
         InvalidHybridPolicy,
         HybridGroupUnavailable,
     } ||
-    error{ TooManyKeyUpdates, InvalidHandshakeType };
+    error{ TooManyKeyUpdates, InvalidHandshakeType, NoCommonSignatureScheme };
 
 pub const Client = struct {
     /// Transcript and key schedule. The client starts buffering both candidate
@@ -1293,6 +1295,8 @@ pub const Server = struct {
     alpn: []const []const u8,
     /// The protocol selected for this connection.
     selected_alpn: ?[]const u8,
+    /// CertificateVerify schemes offered by the current ClientHello.
+    offered_signature_schemes: signature.OfferedSchemes,
     /// The client early traffic secret, when 0-RTT was admitted.
     early_secret: [48]u8,
     early_len: u8,
@@ -1333,6 +1337,7 @@ pub const Server = struct {
             .queue = .init(slots),
             .alpn = &.{},
             .selected_alpn = null,
+            .offered_signature_schemes = .empty,
             .state = .wait_client_hello,
             .client_policy = null,
             .client_pub_key = undefined,
@@ -1463,6 +1468,7 @@ pub const Server = struct {
         // A second ClientHello (after a HelloRetryRequest) replaces the first's
         // extensions rather than adding to them.
         self.extension_sink.len = 0;
+        self.offered_signature_schemes.clear();
         const parsed = client_hello.parseWithExtensions(client_hello_msg, .{
             .allowed_extensions = self.allowed_extensions,
             .received = &self.extension_sink,
@@ -1470,6 +1476,7 @@ pub const Server = struct {
             error.ExtensionSinkFull => return error.ExtensionSinkFull,
             else => return error.UnexpectedMessage,
         };
+        self.offered_signature_schemes.capture(parsed.signature_schemes);
         try self.retainPeerShares(parsed);
         try self.selectAlpnParsed(parsed);
         self.state = .ch_absorbed;
@@ -1899,6 +1906,10 @@ pub const Server = struct {
         out: []u8,
     ) Error!void {
         if (self.state != .server_hello_queued) return error.UnexpectedMessage;
+        // RFC 8446 §4.4.3 — the credential's scheme must intersect the offer.
+        if (!self.offered_signature_schemes.contains(creds.signer.scheme))
+            return error.NoCommonSignatureScheme;
+        const cv_scheme = creds.signer.scheme;
 
         // Each message gets its own bytes in `out`: the queue borrows, so they
         // cannot share a start offset.
@@ -1944,7 +1955,7 @@ pub const Server = struct {
             sign_input[0 .. ctx_len + th.len],
             &sig_buf,
         );
-        const cv = try certificate.encodeCertificateVerify(out[pos..], creds.signer.scheme, sig);
+        const cv = try certificate.encodeCertificateVerify(out[pos..], cv_scheme, sig);
         try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = cv } });
         pos += cv.len;
         self.suite.update(cv);
@@ -2956,6 +2967,45 @@ test "server: selectedGroup follows group_preference, not the client's order" {
 // consumer can build one and call `useKeypairs` and `startEncoded`.
 test "core: KeyPairs is exported from the package root" {
     try testing.expect(root.KeyPairs == KeyPairs);
+}
+
+// RFC 8446 §4.4.3 — an ECDSA credential cannot answer an RSA-PSS-only offer.
+test "core server: unusable signature offer emits no authentication flight" {
+    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+        return error.SkipZigTest;
+    var ch_buf: [rfc8448_client_hello.len]u8 = undefined;
+    @memcpy(&ch_buf, &rfc8448_client_hello);
+    const sig_algs = @constCast(client_hello.extension(
+        &ch_buf,
+        compat.enumToInt(extension_type.ExtensionType.signature_algorithms),
+    ) orelse unreachable);
+    var i: usize = 2;
+    while (i < sig_algs.len) : (i += 2)
+        memx.writeInt(u16, sig_algs[i..][0..2], compat.enumToInt(
+            SignatureScheme.rsa_pss_rsae_sha256,
+        ));
+
+    var slots: [16]level.Output = undefined;
+    var server: Server = .init(&slots);
+    defer server.deinit();
+    try server.provideWithSecret(
+        .plaintext,
+        &ch_buf,
+        .aes_128_gcm_sha256,
+        &rfc8448_server_hello,
+        &dhe_rfc8448,
+    );
+    while (server.next()) |_| {}
+
+    var key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer key.deinit();
+    var flight_buf: [2048]u8 = undefined;
+    try testing.expectError(error.NoCommonSignatureScheme, server.sendFlight(
+        .{ .chain = .{ .single = &fixtures.server_ecdsa_cert_der }, .signer = key.signer() },
+        null,
+        &flight_buf,
+    ));
+    try testing.expect(server.next() == null);
 }
 
 test "core: client and server complete a handshake with each other" {

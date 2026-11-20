@@ -170,6 +170,29 @@ def test_tls13_rsa_pss_handshake_and_application_echo(rsa_server):
     )
 
 
+def test_tls13_unusable_signature_offer_is_handshake_failure(tls_server, crypto_capabilities):
+    conversation = Connect(tls_server["host"], tls_server["port"])
+    node = conversation.add_child(
+        ClientHelloGenerator(
+            CIPHERS,
+            extensions=tls13_extensions(signature_schemes=[SignatureScheme.rsa_pss_rsae_sha256]),
+        )
+    )
+    if crypto_capabilities["certificate_verify.rsa_pss_rsae_sha256"]:
+        # The ECDSA server accepts the backend-supported offer, then finds no
+        # scheme its credential can sign before the authenticated flight.
+        node = node.add_child(ExpectServerHello())
+        ccs = node.add_child(ExpectChangeCipherSpec())
+        alert = ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure)
+        ccs.add_child(alert)
+        ccs.next_sibling = alert
+        alert.next_sibling = ExpectClose()
+        alert.add_child(ExpectClose())
+    else:
+        expect_alert_or_close(node, AlertLevel.fatal, AlertDescription.handshake_failure)
+    Runner(conversation).run()
+
+
 def test_tls13_aes256_gcm_echo(tls_server):
     run_echo_conversation(
         tls_server,

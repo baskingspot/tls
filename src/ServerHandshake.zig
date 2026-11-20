@@ -59,6 +59,7 @@ const CipherSuite = root.CipherSuite;
 const Random = root.Random;
 const server_hello = @import("server_hello.zig");
 const signature = @import("signature.zig");
+const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 pub const SignError = signature.SignError;
 pub const Signer = signature.Signer;
 
@@ -528,6 +529,9 @@ client_cert: HandshakeBuffer,
 server_finished_hash: [48]u8,
 server_finished_hash_len: u8,
 selected_alpn: ?[]const u8,
+/// Recognized CertificateVerify schemes from the current ClientHello. Copied
+/// because the caller's ClientHello record does not outlive the next input.
+offered_signature_schemes: signature.OfferedSchemes,
 /// SNI hostname sent by the client in the server_name extension (RFC 6066 §3).
 /// Populated after acceptClientHello / handleRecord returns the first write event.
 /// Points into the ClientHello message buffer (the caller-owned record
@@ -656,6 +660,7 @@ pub fn init(server_config: ServerConfig, config: Config) ServerHandshake {
         .server_finished_hash = @splat(0),
         .server_finished_hash_len = 0,
         .selected_alpn = null,
+        .offered_signature_schemes = .empty,
         .client_server_name = null,
         .rx = undefined,
         .tx = undefined,
@@ -1151,7 +1156,7 @@ pub const FlightError =
     certificate.EncodeError ||
     RecordLayer.EncryptError ||
     SignError ||
-    error{ MissingServerCredentials, PendingWrite };
+    error{ MissingServerCredentials, NoCommonSignatureScheme, PendingWrite };
 
 pub const ClientFinishedError =
     RecordLayer.DecryptError ||
@@ -1224,6 +1229,7 @@ fn resetNegotiationState(self: *ServerHandshake) void {
     self.selected_psk = null;
     self.selected_psk_index = 0;
     self.selected_alpn = null;
+    self.offered_signature_schemes.clear();
     self.client_server_name = null;
     self.ticket_compatibility = .unavailable;
 }
@@ -1333,6 +1339,7 @@ fn processClientHelloMessage(
     assert((self.retry_transcript == null) == (self.retry_ch1_digest == null));
     // Transactional: a ClientHello that fails after PSK selection must not
     // leave its selection or 0-RTT key state for the next ClientHello (#160).
+    self.offered_signature_schemes.clear();
     errdefer self.resetNegotiationState();
     // RFC 8446 §4.2.10 — ClientHello2 closes the HRR early-data skip window.
     // The window is armed only by the HelloRetryRequest response to
@@ -1345,6 +1352,7 @@ fn processClientHelloMessage(
     }
     try self.validateHybridGroups();
     const ch = try client_hello.parse(ch_msg);
+    self.offered_signature_schemes.capture(ch.signature_schemes);
 
     // Caller-required extensions must be present. The peer learns
     // `missing_extension` (RFC 8446 §6.2); the caller learns which type through
@@ -2163,6 +2171,7 @@ fn encodeAuthenticatedFlight(
     plaintext: []u8,
 ) FlightError![]const u8 {
     assert(self.state == .wait_client_finished);
+    const cv_scheme = try self.selectCertificateVerifyScheme(signer);
     var pos: usize = 0;
 
     const ee = encrypted_extensions.encodeWithExtensions(
@@ -2208,7 +2217,7 @@ fn encodeAuthenticatedFlight(
         cv_input[0 .. cv_ctx_len + transcript_hash_len],
         &sig_buf,
     );
-    const cv = try certificate.encodeCertificateVerify(plaintext[pos..], signer.scheme, sig);
+    const cv = try certificate.encodeCertificateVerify(plaintext[pos..], cv_scheme, sig);
     self.suite_state.update(cv);
     pos += cv.len;
 
@@ -3023,6 +3032,17 @@ fn chooseSuite(self: *const ServerHandshake, ch: client_hello.Parsed) ?CipherSui
     return null;
 }
 
+/// RFC 8446 §4.4.3 — intersect the client's offer with the one scheme this
+/// credential signs. No match is a negotiation failure, not a signing failure.
+fn selectCertificateVerifyScheme(
+    self: *const ServerHandshake,
+    signer: Signer,
+) error{NoCommonSignatureScheme}!SignatureScheme {
+    if (!self.offered_signature_schemes.contains(signer.scheme))
+        return error.NoCommonSignatureScheme;
+    return signer.scheme;
+}
+
 // Test fixture accessors. Wrapped in functions so the @import of
 // fixtures is never analyzed unless a test actually calls these —
 // the published tarball doesn't include the fixtures module.
@@ -3199,6 +3219,44 @@ fn testConfig(keypair: x25519.KeyPair) !Config {
     var keypairs: KeyPairs = try .init(keypair);
     keypairs.p256 = try .generateDeterministic(.init(@splat(0x54)));
     return .{ .keypairs = keypairs, .random = .zero };
+}
+
+fn acceptWithSignatureSchemesForTest(
+    server: *ServerHandshake,
+    schemes: []const SignatureScheme,
+    out: []u8,
+) ![]const u8 {
+    assert(schemes.len != 0);
+    const client_keypair: x25519.KeyPair = .generate();
+    var ch_buf: [512]u8 = undefined;
+    const ch = try encodeClientHelloForTest(&ch_buf, client_keypair.public_key, null, &.{});
+    const sig_algs = @constCast(client_hello.extension(
+        ch,
+        compat.enumToInt(extension_type.ExtensionType.signature_algorithms),
+    ) orelse unreachable);
+    var i: usize = 2;
+    while (i < sig_algs.len) : (i += 2) {
+        const scheme = schemes[(i - 2) / 2 % schemes.len];
+        memx.writeInt(u16, sig_algs[i..][0..2], compat.enumToInt(scheme));
+    }
+    var record: [1024]u8 = undefined;
+    const header: frame.Header = .init(.handshake, @intCast(ch.len));
+    header.write(record[0..frame.header_len]);
+    @memcpy(record[frame.header_len..][0..ch.len], ch);
+    return server.acceptClientHello(record[0 .. frame.header_len + ch.len], out);
+}
+
+fn certificateVerifySchemeForTest(record: []const u8, rx: *RecordLayer) !SignatureScheme {
+    var wire_record: [4096]u8 = undefined;
+    @memcpy(wire_record[0..record.len], record);
+    const dec = try rx.decrypt(wire_record[0..record.len]);
+    try testing.expectEqual(.handshake, dec.content_type);
+    var hr: HandshakeReader = .init(dec.content);
+    while (try hr.next()) |msg| {
+        if (msg.type != .certificate_verify) continue;
+        return compat.enumFromInt(SignatureScheme, memx.readInt(u16, msg.raw[4..6]));
+    }
+    return error.MissingCertificateVerify;
 }
 
 fn clientHelloCipherSuites(client_hello_msg: []u8) []u8 {
@@ -6188,6 +6246,96 @@ test "processClientFinished: required client auth rejects forged CertificateVeri
     try testing.expectError(
         error.SignatureVerificationFailed,
         server.processClientFinished(client_out[0..client_finished_record.len]),
+    );
+}
+
+// RFC 8446 §4.4.3 — reproduce #208: an ECDSA credential must not answer an
+// RSA-PSS-only offer with an ECDSA CertificateVerify.
+test "sendPreparedServerFlight: RSA-only offer gets handshake_failure" {
+    var signer: signature.PrivateKey = try .fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer signer.deinit();
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer server.deinit();
+    server.setCredentials(&.{serverEcdsaCertDer()}, signer.signer());
+    var sh_out: [256]u8 = undefined;
+    const accepted = acceptWithSignatureSchemesForTest(
+        &server,
+        &.{.rsa_pss_rsae_sha256},
+        &sh_out,
+    );
+
+    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256)) {
+        try testing.expectError(error.NoCommonSignatureScheme, accepted);
+        try testing.expectEqual(
+            alert.Description.handshake_failure,
+            alert.alertForError(error.NoCommonSignatureScheme).?,
+        );
+        var alert_out: [64]u8 = undefined;
+        const alert_record = try server.sendAlert(.handshake_failure, &alert_out);
+        const received = try alert.parse(alert_record[frame.header_len..]);
+        try testing.expectEqual(.fatal, received.level);
+        try testing.expectEqual(.handshake_failure, received.description);
+        return;
+    }
+    _ = try accepted;
+
+    var flight_rx = try server.tx.clone();
+    defer flight_rx.deinit();
+    var flight_out: [4096]u8 = undefined;
+    const failure: FlightError = if (server.sendPreparedServerFlight(&flight_out)) |record| {
+        // The original #208 path reached this assertion with an ECDSA
+        // CertificateVerify for the RSA-PSS-only offer.
+        try testing.expectEqual(
+            SignatureScheme.ecdsa_secp256r1_sha256,
+            try certificateVerifySchemeForTest(record.?, &flight_rx),
+        );
+        return error.UnofferedCertificateVerifyEmitted;
+    } else |err| err;
+    try testing.expectEqual(error.NoCommonSignatureScheme, failure);
+    try testing.expectEqual(
+        alert.Description.handshake_failure,
+        alert.alertForError(failure).?,
+    );
+
+    var alert_rx = try server.tx.clone();
+    defer alert_rx.deinit();
+    var alert_out: [64]u8 = undefined;
+    const alert_record = try server.sendAlert(.handshake_failure, &alert_out);
+    var alert_wire: [64]u8 = undefined;
+    @memcpy(alert_wire[0..alert_record.len], alert_record);
+    const dec = try alert_rx.decrypt(alert_wire[0..alert_record.len]);
+    const received = try alert.parse(dec.content);
+    try testing.expectEqual(.fatal, received.level);
+    try testing.expectEqual(.handshake_failure, received.description);
+}
+
+// RFC 8446 §4.4.3 — the server selects the credential's scheme from the
+// client's offer, including when an unusable scheme appears first.
+test "sendAuthenticatedFlight: mixed signature offer selects the credential scheme" {
+    var signer: signature.PrivateKey = try .fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer signer.deinit();
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer server.deinit();
+    var sh_out: [256]u8 = undefined;
+    _ = try acceptWithSignatureSchemesForTest(
+        &server,
+        &.{ .rsa_pss_rsae_sha256, .ecdsa_secp256r1_sha256 },
+        &sh_out,
+    );
+
+    var flight_rx = try server.tx.clone();
+    defer flight_rx.deinit();
+    var plaintext: [4096]u8 = undefined;
+    var flight_out: [4096]u8 = undefined;
+    const flight_record = try server.sendAuthenticatedFlight(
+        &.{serverEcdsaCertDer()},
+        signer.signer(),
+        &plaintext,
+        &flight_out,
+    );
+    try testing.expectEqual(
+        SignatureScheme.ecdsa_secp256r1_sha256,
+        try certificateVerifySchemeForTest(flight_record, &flight_rx),
     );
 }
 

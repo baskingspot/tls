@@ -1078,7 +1078,7 @@ pub const ParseError = error{
     UnsupportedTlsVersion,
     UnsupportedKeyShare,
     MalformedKeyShare,
-    UnsupportedSignatureScheme,
+    NoCommonSignatureScheme,
     IllegalParameter,
     /// `ParseOptions.received` had no slot left.
     ExtensionSinkFull,
@@ -1661,7 +1661,7 @@ pub fn parseWithExtensions(msg: []const u8, opts: ParseOptions) ParseError!Parse
     if (!got_supported_groups or !got_signature_algorithms or !got_key_share)
         return error.MissingExtension;
     if (!hasSupportedHandshakeSignatureScheme(parsed.signature_schemes))
-        return error.UnsupportedSignatureScheme;
+        return error.NoCommonSignatureScheme;
     if (parsed.public_key != null and !parsed.groups.contains(.x25519))
         return error.IllegalParameter;
     if (parsed.public_key_p256 != null and !parsed.groups.contains(.secp256r1))
@@ -2680,7 +2680,7 @@ test "parse: rejects signature_algorithms without TLS 1.3 handshake scheme" {
         ext[i] = 0x02;
         ext[i + 1] = 0x01;
     }
-    try testing.expectError(error.UnsupportedSignatureScheme, parse(buf[0..encoded.len]));
+    try testing.expectError(error.NoCommonSignatureScheme, parse(buf[0..encoded.len]));
 }
 
 test "parse: rejects malformed ClientHello" {

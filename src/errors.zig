@@ -143,6 +143,7 @@ pub fn classify(err: HandshakeError) Class {
         error.MalformedKeyShare,
         error.MissingExtension,
         error.MissingSignatureAlgorithmsExtension,
+        error.NoCommonSignatureScheme,
         error.NotHelloRetryRequest,
         error.RecordTooShort,
         error.SignatureSchemeNotOffered,
@@ -253,6 +254,7 @@ test "classify: remaining buckets" {
     try testing.expectEqual(Class.alert, classify(error.PeerAlert));
     try testing.expectEqual(Class.protocol, classify(error.IllegalParameter));
     try testing.expectEqual(Class.protocol, classify(error.UnsupportedGroup));
+    try testing.expectEqual(Class.protocol, classify(error.NoCommonSignatureScheme));
     try testing.expectEqual(Class.record_overflow, classify(error.RecordTooLarge));
     try testing.expectEqual(Class.buffer, classify(error.HandshakeBufferTooShort));
     // A verified client leaf that cannot fit the caller's retention storage is

@@ -1,8 +1,11 @@
 //! Signature helpers for TLS 1.3 CertificateVerify.
 const std = @import("std");
 const testing = std.testing;
+const assert = std.debug.assert;
 
 const backend = @import("crypto/backend.zig");
+const compat = @import("compat.zig");
+const memx = @import("memx.zig");
 const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 
 pub const SignError = backend.sign.SignError;
@@ -22,6 +25,43 @@ pub const Signer = struct {
     scheme: SignatureScheme,
     context: *anyopaque,
     sign: *const fn (context: *anyopaque, msg: []const u8, out: []u8) SignError![]const u8,
+};
+
+/// TLS 1.3 CertificateVerify schemes from a peer's signature_algorithms.
+/// Retain the mask instead of slices into a transient handshake record.
+pub const OfferedSchemes = struct {
+    set: std.bit_set.Integer(backend.capabilities.certificate_verify_schemes.len),
+
+    pub const empty: OfferedSchemes = .{ .set = .empty };
+
+    pub fn clear(self: *OfferedSchemes) void {
+        self.set.unsetAll();
+    }
+
+    /// Capture a validated, big-endian SignatureScheme vector.
+    pub fn capture(self: *OfferedSchemes, wire_schemes: []const u8) void {
+        assert(wire_schemes.len % 2 == 0);
+        self.clear();
+        var i: usize = 0;
+        while (i < wire_schemes.len) : (i += 2) {
+            const value = memx.readInt(u16, wire_schemes[i..][0..2]);
+            const scheme: SignatureScheme = compat.enumFromInt(SignatureScheme, value);
+            const index = schemeIndex(scheme) orelse continue;
+            self.set.set(index);
+        }
+    }
+
+    pub fn contains(self: OfferedSchemes, scheme: SignatureScheme) bool {
+        const index = schemeIndex(scheme) orelse return false;
+        return self.set.isSet(index);
+    }
+
+    fn schemeIndex(scheme: SignatureScheme) ?usize {
+        for (backend.capabilities.certificate_verify_schemes, 0..) |supported, index| {
+            if (scheme == supported) return index;
+        }
+        return null;
+    }
 };
 
 pub const PrivateKey = struct {
