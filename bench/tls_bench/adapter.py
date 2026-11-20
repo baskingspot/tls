@@ -2,6 +2,7 @@
 
 import re
 import shlex
+import shutil
 import subprocess
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
@@ -21,6 +22,15 @@ _EVENTS = (
     "cycles,instructions,branches,branch-misses,cache-misses,L1-dcache-load-misses,LLC-load-misses"
 )
 _REMOTE_TIMEOUT_SECONDS = 6 * 60 * 60
+
+# Local tools a capture resolves by name. The devshell supplies all of them.
+# Check them before a box launches: a missing tool otherwise fails after the
+# workload ran and the capture downloaded, with an exit 127 from a script.
+_TRANSPORT_TOOLS = (
+    ("session-manager-plugin", "carry SSH over SSM"),
+    ("rsync", "upload the checkout and download the capture"),
+)
+_ANALYSIS_TOOLS = (("benchstat", "write benchstat.txt from the downloaded capture"),)
 
 # Keep .git and tracked PEM fixtures. Remote results survive the mirrored
 # sync. Generated directories stay out at every depth.
@@ -66,6 +76,19 @@ def _target_for_type(config: Config, instance_type: str) -> tuple[str, str]:
     if len(matches) != 1:
         raise click.UsageError(f"No unique target for EC2 instance family: {family}")
     return matches[0], size
+
+
+def _require_local_tools(*, analysis: bool, recipe: str) -> None:
+    """Fail before provisioning when a local step needs a missing tool."""
+    tools = _TRANSPORT_TOOLS + (_ANALYSIS_TOOLS if analysis else ())
+    missing = [f"  {tool}: {step}" for tool, step in tools if shutil.which(tool) is None]
+    if not missing:
+        return
+    raise click.ClickException(
+        "Missing local tools:\n"
+        + "\n".join(missing)
+        + f"\nRun inside the devshell: nix develop -c just {recipe}"
+    )
 
 
 def _check_clean(config: Config, allow_dirty: bool) -> None:
@@ -219,6 +242,7 @@ def _run_capture(
     keep_instance: bool,
     remote_args: tuple[str, ...],
 ) -> None:
+    _require_local_tools(analysis=True, recipe="bench-remote-capture")
     _check_clean(config, allow_dirty)
     fleet = Fleet(config)
     for instance_type in _matrix(instance_types):
@@ -256,6 +280,7 @@ def _run_perf_rows(
     allow_dirty: bool,
     keep_instance: bool,
 ) -> None:
+    _require_local_tools(analysis=False, recipe="bench-remote-perf-rows")
     _check_clean(config, allow_dirty)
     fleet = Fleet(config)
     with _session(config, fleet, instance_type, keep_instance) as session:

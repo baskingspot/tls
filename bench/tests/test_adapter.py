@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -87,7 +88,20 @@ class FakeBox:
         self.poweroffs += 1
 
 
+LOCAL_TOOLS = ("session-manager-plugin", "rsync", "benchstat")
+
+
+def fake_local_tools(monkeypatch, *, missing=()):
+    """Resolve every local tool unless the test names it as missing."""
+
+    def which(tool):
+        return None if tool in missing else f"/nix/store/fake/bin/{tool}"
+
+    monkeypatch.setattr(shutil, "which", which)
+
+
 def install_fakes(monkeypatch, config, box, *, existing=False):
+    fake_local_tools(monkeypatch)
     fleet = FakeFleet(config, existing=existing)
 
     def ensure_up(actual_fleet, names, ttl=None, size=None):
@@ -461,8 +475,58 @@ def test_workload_scripts_start_outside_the_checkout(tmp_path, script, argument,
     assert "No such file or directory" not in result.stderr
 
 
+# A capture resolves these tools by name. The box and the download already
+# succeed before the local analysis needs benchstat, so the adapter must name
+# a missing tool and stop before it provisions anything.
+@pytest.mark.parametrize("tool", LOCAL_TOOLS)
+def test_capture_names_a_missing_local_tool_before_it_launches_a_box(tmp_path, monkeypatch, tool):
+    config = make_config(tmp_path)
+    fake_local_tools(monkeypatch, missing=(tool,))
+    monkeypatch.setattr(adapter, "git", lambda *_args: "")
+
+    def unexpected_fleet(_config):
+        raise AssertionError("Fleet must not be constructed")
+
+    monkeypatch.setattr(adapter, "Fleet", unexpected_fleet)
+
+    with pytest.raises(click.ClickException) as caught:
+        adapter._run_capture(config, "c7i.large", "openssl", 5, "500ms", False, False, ())
+
+    message = str(caught.value)
+    assert tool in message
+    assert "nix develop" in message
+    assert "bench-remote-capture" in message
+
+
+def test_perf_rows_needs_the_transport_but_not_benchstat(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    box = FakeBox("zig-out/perf/20261118-120000-row-perf\n")
+    install_fakes(monkeypatch, config, box)
+    fake_local_tools(monkeypatch, missing=("benchstat",))
+
+    adapter._run_perf_rows(
+        config,
+        "c7i.2xlarge",
+        "openssl",
+        5,
+        "500ms",
+        None,
+        "cycles",
+        1,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    )
+
+    assert box.upload is not None
+
+
 def test_dirty_tree_fails_before_fleet_construction(tmp_path, monkeypatch):
     config = make_config(tmp_path)
+    fake_local_tools(monkeypatch)
     monkeypatch.setattr(adapter, "git", lambda *_args: " M src/lib.zig")
 
     def unexpected_fleet(_config):
