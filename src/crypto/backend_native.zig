@@ -627,6 +627,74 @@ pub fn signatureVerify(
     };
 }
 
+// SEC 1 §2.3.3, §2.3.4 and RFC 8446 §4.2.8.2 — native ECDH validates
+// peer points before scalar multiplication. Cover an off-curve point, the
+// SEC1 infinity encoding, and a truncated uncompressed point on both curves.
+test "native ECDH rejects off-curve, infinity, and wrong-length points" {
+    inline for (.{ P256, P384 }) |Curve| {
+        const secret: [Curve.scalar.encoded_length]u8 = @splat(0x42);
+        const valid = try publicFromSecret(Curve, &secret);
+        var off_curve: [1 + 2 * Curve.Fe.encoded_length]u8 = @splat(0);
+        off_curve[0] = 0x04;
+        off_curve[Curve.Fe.encoded_length] = 1; // x = 1, y = 0
+        const infinity = [_]u8{0};
+        const malformed = [_][]const u8{
+            &off_curve,
+            &infinity,
+            valid[0 .. valid.len - 1],
+        };
+        for (malformed) |point| {
+            var shared: [Curve.Fe.encoded_length]u8 = undefined;
+            try testing.expectError(
+                error.IdentityElement,
+                deriveShared(Curve, &secret, point, &shared),
+            );
+        }
+    }
+}
+
+// SEC 1 §2.3.3, §2.3.4 and RFC 8446 §4.4.3 — native ECDSA parses the
+// certificate public key before it verifies the signature. Use a valid
+// signature so each malformed key fails at the key-decoding step.
+test "native ECDSA rejects off-curve, infinity, and wrong-length points" {
+    inline for (.{
+        .{ P256, Sha256 },
+        .{ P384, Sha384 },
+    }) |case| {
+        const Curve, const Hash = case;
+        const secret: [Curve.scalar.encoded_length]u8 = @splat(0x42);
+        const valid = try publicFromSecret(Curve, &secret);
+        const msg = "native malformed ECDSA point";
+        var signature_buf: [160]u8 = undefined;
+        const signature = try signatureSignEcdsa(
+            Curve,
+            Hash,
+            &secret,
+            msg,
+            &signature_buf,
+            .deterministic,
+        );
+        const Verify = ecdsa.Ecdsa(Curve, Hash);
+        try Verify.verify(&valid, msg, signature);
+
+        var off_curve: [1 + 2 * Curve.Fe.encoded_length]u8 = @splat(0);
+        off_curve[0] = 0x04;
+        off_curve[Curve.Fe.encoded_length] = 1; // x = 1, y = 0
+        const infinity = [_]u8{0};
+        const malformed = [_][]const u8{
+            &off_curve,
+            &infinity,
+            valid[0 .. valid.len - 1],
+        };
+        for (malformed) |point| {
+            try testing.expectError(
+                error.InvalidEncoding,
+                Verify.verify(point, msg, signature),
+            );
+        }
+    }
+}
+
 // RFC 8446 §4.4.3 and RFC 6979 §3.2 — both advertised ECDSA curves sign and
 // verify through the shared in-tree module. A wrong message, a changed
 // signature, and a short output buffer are distinct failing controls.

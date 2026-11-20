@@ -62,8 +62,12 @@ just conformance/ci-native
 
 This command forwards `-Dcrypto=native` to tls. It includes both OpenSSL interop directions and the tlsfuzzer cases.
 
-The test server reports its backend and cryptographic capabilities through `--capabilities`. A `requires_capability` marker binds a test to one capability name.
+The client wrapper accepts `TLS_CA_FILE` for trust anchors and `TLS_HOST_NAME` for hostname verification. `TLS_CLIENT_GROUP` adds a selected classical or hybrid group to the offer. The OpenSSL cases cover chain and hostname failures, P-384 ECDH, P-384 CertificateVerify, and hybrid negotiation outcomes.
 
-A false capability produces an `UNSUPPORTED` result. The final summary names the test, backend, and capability. An unreported capability produces an error instead of an exclusion.
+The test server reports its backend and cryptographic capabilities through `--capabilities`. A `requires_capability` marker binds a test to one or more capability names. Every name must exist and hold a boolean value. An empty marker or the string-valued `backend` key produces an error.
+
+A false capability produces an `UNSUPPORTED` result. The fixture attaches a user property to the skip. The final summary counts that property rather than the skip text. A direct `pytest.skip("UNSUPPORTED ...")` remains an ordinary skip.
+
+A `requires_capability_false` marker selects a negative control only when its capability is false. RSA-PSS-only and `secp384r1_mlkem1024` offers have controls that require `handshake_failure`.
 
 BoGo has no runner in this tree. `docs/research/BOGO_DEFERRED.md` records that decision. The real TLS-Anvil catalogues run separately from these native commands.

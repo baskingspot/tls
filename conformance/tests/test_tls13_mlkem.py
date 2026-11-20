@@ -6,6 +6,14 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from tlsfuzzer.expect import ExpectAlert, ExpectClose
+from tlsfuzzer.helpers import key_share_gen
+from tlsfuzzer.messages import ClientHelloGenerator, Connect
+from tlsfuzzer.runner import Runner
+from tlslite.constants import AlertDescription, AlertLevel, ExtensionType, GroupName
+from tlslite.extensions import ClientKeyShareExtension, SupportedGroupsExtension
+
+from tests.test_tls13 import CIPHERS, tls13_extensions
 
 # Keep this revision aligned with the tlsfuzzer pin in pyproject.toml. The
 # package excludes its _apps modules, so run the pinned upstream driver as a
@@ -63,3 +71,19 @@ def test_upstream_tls13_mlkem_matrix(start_tls_server, group):
 
     print(result.stdout)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.requires_capability_false("server_group.secp384r1_mlkem1024")
+def test_tls13_unsupported_mlkem1024_offer_fails_with_handshake_failure(tls_server):
+    extensions = tls13_extensions()
+    extensions[ExtensionType.supported_groups] = SupportedGroupsExtension().create(
+        [GroupName.secp384r1mlkem1024]
+    )
+    extensions[ExtensionType.key_share] = ClientKeyShareExtension().create(
+        [key_share_gen(GroupName.secp384r1mlkem1024)]
+    )
+    conversation = Connect(tls_server["host"], tls_server["port"])
+    node = conversation.add_child(ClientHelloGenerator(CIPHERS, extensions=extensions))
+    alert = node.add_child(ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure))
+    alert.add_child(ExpectClose())
+    Runner(conversation).run()
