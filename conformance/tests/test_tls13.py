@@ -192,6 +192,20 @@ def test_tls13_unusable_signature_offer_is_handshake_failure(tls_server, crypto_
     Runner(conversation).run()
 
 
+@pytest.mark.requires_capability_false("certificate_verify.rsa_pss_rsae_sha256")
+def test_tls13_rsa_pss_only_offer_fails_with_handshake_failure(tls_server):
+    conversation = Connect(tls_server["host"], tls_server["port"])
+    node = conversation.add_child(
+        ClientHelloGenerator(
+            CIPHERS,
+            extensions=tls13_extensions(signature_schemes=[SignatureScheme.rsa_pss_rsae_sha256]),
+        )
+    )
+    alert = node.add_child(ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure))
+    alert.add_child(ExpectClose())
+    Runner(conversation).run()
+
+
 def test_tls13_aes256_gcm_echo(tls_server):
     run_echo_conversation(
         tls_server,

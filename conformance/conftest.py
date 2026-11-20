@@ -10,6 +10,7 @@ import pytest
 CONF_DIR = Path(__file__).resolve().parent
 SERVER_BIN = CONF_DIR / "zig-out" / "bin" / "tlsfuzzer_server"
 UNSUPPORTED_PREFIX = "UNSUPPORTED "
+CAPABILITY_EXCLUSION_PROPERTY = "tls_capability_exclusion"
 
 
 def _wait_for_ready(proc: subprocess.Popen, host: str, port: int, timeout_s: float = 5.0) -> None:
@@ -127,19 +128,39 @@ def crypto_capabilities() -> dict[str, str | bool]:
 
 @pytest.fixture(autouse=True)
 def _capability_exclusions(request):
-    marker = request.node.get_closest_marker("requires_capability")
+    required = request.node.get_closest_marker("requires_capability")
+    rejected = request.node.get_closest_marker("requires_capability_false")
+    if required is not None and rejected is not None:
+        raise RuntimeError("capability requirements must use one marker")
+    marker = required if required is not None else rejected
     if marker is None:
         yield
         return
+    if not marker.args:
+        raise RuntimeError(f"{marker.name} requires at least one capability name")
+
+    expected = required is not None
     capabilities = request.getfixturevalue("crypto_capabilities")
     for capability in marker.args:
         if capability not in capabilities:
             raise RuntimeError(f"the server did not report capability {capability!r}")
-        if not capabilities[capability]:
-            pytest.skip(
+        value = capabilities[capability]
+        if type(value) is not bool:
+            raise RuntimeError(
+                f"{marker.name} accepts only boolean capabilities; "
+                f"{capability!r} has {type(value).__name__}"
+            )
+        if value != expected:
+            reason = (
                 f"{UNSUPPORTED_PREFIX}backend={capabilities['backend']} "
                 f"capability={capability} value=false"
+                if expected
+                else f"SUPPORTED backend={capabilities['backend']} "
+                f"capability={capability} value=true"
             )
+            if expected:
+                request.node.user_properties.append((CAPABILITY_EXCLUSION_PROPERTY, reason))
+            pytest.skip(reason)
     yield
 
 
@@ -163,15 +184,11 @@ def _server_alive(request, _capability_exclusions):
 
 
 def _unsupported_reason(report) -> str | None:
-    if not report.skipped:
+    if not getattr(report, "skipped", False):
         return None
-    if isinstance(report.longrepr, tuple):
-        reason = str(report.longrepr[-1])
-    else:
-        reason = str(report.longrepr)
-    start = reason.find(UNSUPPORTED_PREFIX)
-    if start >= 0:
-        return reason[start:]
+    for name, value in getattr(report, "user_properties", ()):
+        if name == CAPABILITY_EXCLUSION_PROPERTY and isinstance(value, str):
+            return value
     return None
 
 

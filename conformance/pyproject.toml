@@ -23,6 +23,7 @@ pythonpath = ["."]
 markers = [
   "lockstep: strict request/response tlsfuzzer conversations",
   "requires_capability(name): report UNSUPPORTED when the built backend capability is false",
+  "requires_capability_false(name): run the negative control only when the capability is false",
 ]
 
 [tool.ty.environment]

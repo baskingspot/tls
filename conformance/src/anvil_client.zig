@@ -66,6 +66,22 @@ pub fn main(init: std.process.Init) !void {
         mem.eql(u8, value, "1") or ascii.eqlIgnoreCase(value, "true")
     else
         false;
+    const selected_group: ?tls.kex.NamedGroup = if (env_map.get("TLS_CLIENT_GROUP")) |value|
+        std.meta.stringToEnum(tls.kex.NamedGroup, value) orelse return error.UnknownClientGroup
+    else
+        null;
+    const trust_path = env_map.get("TLS_CA_FILE");
+    var bundle: std.crypto.Certificate.Bundle = .empty;
+    defer bundle.deinit(init.gpa);
+    if (trust_path) |path| {
+        try bundle.addCertsFromFilePath(
+            init.gpa,
+            io,
+            Io.Timestamp.now(io, .real),
+            Io.Dir.cwd(),
+            path,
+        );
+    }
 
     const stream = try connectToHost(io, host, port);
     defer stream.close(io);
@@ -76,14 +92,27 @@ pub fn main(init: std.process.Init) !void {
     var random: tls.Random = .empty;
     io.random(&random.data);
 
-    var hs: tls.ClientHandshake = .init(.{
-        .keypairs = try .init(kp),
+    var keypairs: tls.ClientHandshake.KeyPairs = try .init(kp);
+    defer keypairs.secureZero();
+    if (selected_group == .secp384r1 or selected_group == .secp384r1_mlkem1024)
+        keypairs.p384 = try .generate();
+    const hybrid_groups = [_]tls.kex.NamedGroup{selected_group orelse .x25519_mlkem768};
+    var config: tls.ClientHandshake.Config = .{
+        .keypairs = keypairs,
         .host_name = cert_host_name,
         .now_sec = Io.Timestamp.now(io, .real).toSeconds(),
         .random = random,
+        .bundle = if (trust_path != null) &bundle else null,
         .insecure_no_chain_anchor = insecure_no_chain_anchor,
         .alpn_protocols = &.{ "h2", "http/1.1" },
-    });
+    };
+    if (selected_group) |group| {
+        if (group.hybridSpec() != null) config.hybrid = .{
+            .supported_groups = &hybrid_groups,
+            .initial_key_share = group,
+        };
+    }
+    var hs: tls.ClientHandshake = .init(config);
     if (insecure_no_chain_anchor) hs.policy.leaf_usage = .none;
     defer hs.deinit();
 
@@ -180,6 +209,11 @@ fn sendAlertAndReturnError(
     err: anyerror,
     out: []u8,
 ) anyerror {
+    if (err == error.PeerAlert) {
+        if (hs.lastPeerAlert()) |received| {
+            print("anvil_client peer_alert={s}\n", .{@tagName(received.description)});
+        }
+    }
     // A peer alert maps to no reply (RFC 8446 §6.2), so `alertForError` returns
     // null and the original error propagates untouched.
     const description = tls.alert.alertForError(err) orelse return err;

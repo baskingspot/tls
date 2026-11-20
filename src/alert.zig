@@ -188,8 +188,10 @@ pub fn alertForHandshakeError(err: HandshakeError) ?Description {
         error.RecordTooLarge => .record_overflow,
         error.UnsupportedCipherSuite,
         error.UnsupportedKeyShare,
-        // RFC 8446 §4.4.3 and §6.2 — no offered CertificateVerify scheme
-        // matches the configured credential and its signing capability.
+        // RFC 8446 §4.2.3, §4.4.3, and §6.2 — no offered CertificateVerify
+        // scheme overlaps this build or matches the configured credential and
+        // its signing capability. A peer-selected forbidden scheme remains an
+        // illegal_parameter below.
         error.NoCommonSignatureScheme,
         => .handshake_failure,
         // Server admission bound, not a peer violation: the ClientHello is
