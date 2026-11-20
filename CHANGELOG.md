@@ -43,6 +43,13 @@ All notable changes to tls are recorded here. The format follows
   build sends a P-256 first flight instead. Certificate-chain signature
   schemes in the approved table now include RSASSA-PKCS1-v1_5 and Ed25519,
   which FIPS 186-5 approves.
+- A ClientHello with no backend-supported handshake signature scheme returns
+  `error.NoCommonSignatureScheme` instead of the removed
+  `client_hello.ParseError.UnsupportedSignatureScheme` member. The peer alert is
+  now `handshake_failure` (40) instead of `illegal_parameter` (47).
+  `errors.classify` returns `.protocol` instead of `.certificate`, and `tls-std`
+  returns `HandshakeProtocolError` instead of `CertificateVerificationFailed`
+  (#208).
 - ECDSA P-256/P-384 signing now runs in-tree on OpenSSL, AWS-LC, and
   BoringSSL. `PrivateKey.nonce_mode = .deterministic` no longer depends on an
   OpenSSL 3 provider and produces the same RFC 6979 signatures on each backend.

@@ -27,10 +27,20 @@ pub const Signer = struct {
     sign: *const fn (context: *anyopaque, msg: []const u8, out: []u8) SignError![]const u8,
 };
 
+/// Explicit PrivateKey loads can pin these CertificateVerify schemes. A peer
+/// offers them independently from the active backend's own advertisement list.
+const signable_certificate_verify_schemes = [_]SignatureScheme{
+    .ecdsa_secp256r1_sha256,
+    .ecdsa_secp384r1_sha384,
+    .rsa_pss_rsae_sha256,
+    .rsa_pss_rsae_sha384,
+    .rsa_pss_rsae_sha512,
+};
+
 /// TLS 1.3 CertificateVerify schemes from a peer's signature_algorithms.
 /// Retain the mask instead of slices into a transient handshake record.
 pub const OfferedSchemes = struct {
-    set: std.bit_set.Integer(backend.capabilities.certificate_verify_schemes.len),
+    set: std.bit_set.Integer(signable_certificate_verify_schemes.len),
 
     pub const empty: OfferedSchemes = .{ .set = .empty };
 
@@ -57,12 +67,22 @@ pub const OfferedSchemes = struct {
     }
 
     fn schemeIndex(scheme: SignatureScheme) ?usize {
-        for (backend.capabilities.certificate_verify_schemes, 0..) |supported, index| {
+        for (signable_certificate_verify_schemes, 0..) |supported, index| {
             if (scheme == supported) return index;
         }
         return null;
     }
 };
+
+// RFC 8446 §4.2.3 — explicit RSA-PSS-SHA512 credentials remain negotiable when
+// the client offers 0x0806, even though the backend advertises no such scheme.
+test "OfferedSchemes: captures an explicitly signable but unadvertised scheme" {
+    var offered: OfferedSchemes = .empty;
+    offered.capture(&.{ 0x04, 0x03, 0x08, 0x06 });
+    try testing.expect(offered.contains(.ecdsa_secp256r1_sha256));
+    try testing.expect(offered.contains(.rsa_pss_rsae_sha512));
+    try testing.expect(!offered.contains(.rsa_pss_rsae_sha384));
+}
 
 pub const PrivateKey = struct {
     scheme: SignatureScheme,

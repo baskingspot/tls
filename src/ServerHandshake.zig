@@ -3062,6 +3062,16 @@ fn serverEcdsaScalar() []const u8 {
     const f = @import("fixtures");
     return &f.server_ecdsa_scalar;
 }
+fn serverRsaPssCertDer() []const u8 {
+    // ziglint-ignore: Z028, Z007
+    const f = @import("fixtures");
+    return &f.rsa_pss_cert_der;
+}
+fn serverRsaPssKeyPem() []const u8 {
+    // ziglint-ignore: Z028, Z007
+    const f = @import("fixtures");
+    return f.rsa_pss_key_pem;
+}
 fn clientEcdsaCertDer() []const u8 {
     // ziglint-ignore: Z028, Z007
     const f = @import("fixtures");
@@ -6335,6 +6345,40 @@ test "sendAuthenticatedFlight: mixed signature offer selects the credential sche
     );
     try testing.expectEqual(
         SignatureScheme.ecdsa_secp256r1_sha256,
+        try certificateVerifySchemeForTest(flight_record, &flight_rx),
+    );
+}
+
+// RFC 8446 §4.2.3 — an explicit RSA-PSS-SHA512 credential remains valid when
+// the client offers it beside a backend-advertised ECDSA scheme.
+test "sendAuthenticatedFlight: offered RSA-PSS-SHA512 matches its credential" {
+    if (comptime backend.active == .native) return error.SkipZigTest;
+    var signer: signature.PrivateKey = try .fromPem(
+        .rsa_pss_rsae_sha512,
+        serverRsaPssKeyPem(),
+    );
+    defer signer.deinit();
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer server.deinit();
+    var sh_out: [256]u8 = undefined;
+    _ = try acceptWithSignatureSchemesForTest(
+        &server,
+        &.{ .ecdsa_secp256r1_sha256, .rsa_pss_rsae_sha512 },
+        &sh_out,
+    );
+
+    var flight_rx = try server.tx.clone();
+    defer flight_rx.deinit();
+    var plaintext: [4096]u8 = undefined;
+    var flight_out: [4096]u8 = undefined;
+    const flight_record = try server.sendAuthenticatedFlight(
+        &.{serverRsaPssCertDer()},
+        signer.signer(),
+        &plaintext,
+        &flight_out,
+    );
+    try testing.expectEqual(
+        SignatureScheme.rsa_pss_rsae_sha512,
         try certificateVerifySchemeForTest(flight_record, &flight_rx),
     );
 }

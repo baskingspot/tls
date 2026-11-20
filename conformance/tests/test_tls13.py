@@ -183,13 +183,12 @@ def test_tls13_unusable_signature_offer_is_handshake_failure(tls_server, crypto_
         # scheme its credential can sign before the authenticated flight.
         node = node.add_child(ExpectServerHello())
         ccs = node.add_child(ExpectChangeCipherSpec())
-        alert = ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure)
-        ccs.add_child(alert)
+        alert = ccs.add_child(ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure))
         ccs.next_sibling = alert
-        alert.next_sibling = ExpectClose()
-        alert.add_child(ExpectClose())
+        node = alert
     else:
-        expect_alert_or_close(node, AlertLevel.fatal, AlertDescription.handshake_failure)
+        node = node.add_child(ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure))
+    node.add_child(ExpectClose())
     Runner(conversation).run()
 
 
