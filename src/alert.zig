@@ -188,6 +188,9 @@ pub fn alertForHandshakeError(err: HandshakeError) ?Description {
         error.RecordTooLarge => .record_overflow,
         error.UnsupportedCipherSuite,
         error.UnsupportedKeyShare,
+        // RFC 8446 §4.4.3 and §6.2 — no offered CertificateVerify scheme
+        // matches the configured credential and its signing capability.
+        error.NoCommonSignatureScheme,
         => .handshake_failure,
         // Server admission bound, not a peer violation: the ClientHello is
         // protocol-legal but offers more PSK identities than the server's
@@ -436,6 +439,7 @@ test "alertForError: parser and semantic failures map to protocol alerts" {
         .{ .err = error.UnsupportedCipherSuite, .description = .handshake_failure },
         .{ .err = error.TooManyPskIdentities, .description = .handshake_failure },
         .{ .err = error.UnsupportedKeyShare, .description = .handshake_failure },
+        .{ .err = error.NoCommonSignatureScheme, .description = .handshake_failure },
         .{ .err = error.NoApplicationProtocol, .description = .no_application_protocol },
         .{ .err = error.DuplicateExtension, .description = .illegal_parameter },
         .{ .err = error.DuplicateKeyShare, .description = .illegal_parameter },
