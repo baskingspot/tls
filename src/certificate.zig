@@ -16,10 +16,12 @@ const compat = @import("compat.zig");
 const stdx = @import("stdx");
 const buffer = stdx.buffer;
 const certificate_policy = @import("certificate_policy.zig");
+const backend = @import("crypto/backend.zig");
 pub const LeafUsage = certificate_policy.LeafUsage;
 pub const Policy = certificate_policy.Policy;
 pub const PolicyError = certificate_policy.PolicyError;
 const Certificate = @import("certificate_parser.zig");
+const ecdsa = @import("crypto/ecdsa.zig");
 const extension_type = @import("extension_type.zig");
 const ExtensionType = extension_type.ExtensionType;
 const handshake = @import("handshake.zig");
@@ -566,12 +568,7 @@ fn verifyEcdsa(
     signed_content: []const u8,
     sig: []const u8,
 ) VerifyError!void {
-    const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(Curve, Hash);
-    const key = Ecdsa.PublicKey.fromSec1(pub_key) catch
-        return error.InvalidEncoding;
-    const signature = Ecdsa.Signature.fromDer(sig) catch
-        return error.SignatureVerificationFailed;
-    signature.verify(signed_content, key) catch return error.SignatureVerificationFailed;
+    return ecdsa.Ecdsa(Curve, Hash).verify(pub_key, signed_content, sig);
 }
 
 /// RFC 8446 §4.2.3 — rsa_pss_rsae_* is RSASSA-PSS with MGF1 over the same
@@ -2263,6 +2260,13 @@ test "certificate_policy.verifyServerAuth: legacy certificate signatures are rej
 // accepting it for X.509 signatures does not make it a CertificateVerify scheme.
 test "certificate_policy.verifyServerAuth: RSA PKCS1 SHA-256 certificate signature is accepted" {
     const leaf = policyLeaf("", .empty, .empty, .sha256WithRSAEncryption);
+    if (comptime backend.native_selected) {
+        try testing.expectError(
+            error.CertificateSignatureAlgorithmRejected,
+            certificate_policy.verifyServerAuth(leaf),
+        );
+        return;
+    }
     try certificate_policy.verifyServerAuth(leaf);
 }
 
@@ -2385,6 +2389,13 @@ test "verifySignature: valid ECDSA P-256 signature" {
 // MGF1(SHA-256), and salt length equal to the digest length.
 test "verifySignature: valid RSA-PSS SHA-256 signature" {
     var cert_buf: [2048]u8 = undefined;
+    if (comptime backend.native_selected) {
+        try testing.expectError(error.CertificateSignatureAlgorithmRejected, parse(
+            buildCertMsg(&cert_buf, fixtureRsaPssCertDer()),
+            testPolicy(.{ .insecure_no_chain_anchor = true }),
+        ));
+        return;
+    }
     const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
     }));
@@ -2401,6 +2412,13 @@ test "verifySignature: valid RSA-PSS SHA-256 signature" {
 // length, not an arbitrary PSS salt length accepted by generic RSA-PSS.
 test "verifySignature: rejects RSA-PSS signature with wrong salt length" {
     var cert_buf: [2048]u8 = undefined;
+    if (comptime backend.native_selected) {
+        try testing.expectError(error.CertificateSignatureAlgorithmRejected, parse(
+            buildCertMsg(&cert_buf, fixtureRsaPssCertDer()),
+            testPolicy(.{ .insecure_no_chain_anchor = true }),
+        ));
+        return;
+    }
     const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
     }));
@@ -3020,6 +3038,9 @@ fn verifyFuzzSeed(input: []const u8) VerifyError!void {
 // and the three key encodings the policy rejects (e = 1, a 2041-bit modulus,
 // an off-curve point).
 test "fuzz: CertificateVerify verification only with well-formed messages" {
+    // The corpus builds and signs with the RSA-PSS fixture before fuzzing.
+    // Native declares RSA unsupported, so this target stays on libcrypto lanes.
+    if (comptime backend.native_selected) return error.SkipZigTest;
     var cert_buf: [2048]u8 = undefined;
     var rsa_cert_buf: [2048]u8 = undefined;
     const p256_pub = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{

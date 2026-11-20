@@ -279,6 +279,13 @@ pub fn freeKey(key: anytype) void {
 }
 
 pub const pkey = c.EVP_PKEY;
+pub const EcKey = *pkey;
+
+pub fn freeEcKey(key: *EcKey) void {
+    c.EVP_PKEY_free(key.*);
+    key.* = undefined;
+}
+
 pub const x25519_pkey = *pkey;
 
 pub fn privateKeyFromSecret(secret: *const [32]u8) Error!x25519_pkey {

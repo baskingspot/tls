@@ -14,6 +14,9 @@ const backend_native = @import("backend_native.zig");
 const hmac = @import("../hmac.zig");
 const Hkdf = @import("../hkdf.zig").Hkdf;
 const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
+const fixtures = @import("fixtures");
+const P256 = std.crypto.ecc.P256;
+const P384 = std.crypto.ecc.P384;
 
 test {
     if (comptime !backend.native_selected) {
@@ -138,6 +141,35 @@ test "backend.x25519: small-order public key is rejected (IdentityElement)" {
     try testing.expectError(
         error.IdentityElement,
         backend.x25519.sharedSecretDerive(&priv, &peer, &shared),
+    );
+}
+
+// RFC 8446 §4.4.2 and §4.4.3 — a native P-256 scalar pairs only with the
+// certificate carrying its SEC1 public key. Mismatches are independent of DER
+// validity, and trailing bytes do not describe one CertificateEntry.
+test "backend.native: P-256 certificate key pairing accepts a match and rejects a mismatch" {
+    var key = try backend_native.privateKeyFromP256Scalar(&fixtures.server_ecdsa_scalar);
+    defer backend_native.freeEcKey(&key);
+    try testing.expect(try backend_native.privateKeyPairsWithCertificate(
+        key,
+        &fixtures.server_ecdsa_cert_der,
+    ));
+    try testing.expect(!try backend_native.privateKeyPairsWithCertificate(
+        key,
+        &fixtures.client_ecdsa_cert_der,
+    ));
+    try testing.expect(!try backend_native.privateKeyPairsWithCertificate(
+        key,
+        &fixtures.rsa_pss_cert_der,
+    ));
+    try testing.expectError(
+        error.InvalidEncoding,
+        backend_native.privateKeyPairsWithCertificate(key, "garbage"),
+    );
+    const trailing = fixtures.server_ecdsa_cert_der ++ [_]u8{0};
+    try testing.expectError(
+        error.InvalidEncoding,
+        backend_native.privateKeyPairsWithCertificate(key, &trailing),
     );
 }
 
@@ -380,6 +412,109 @@ test "backend.native differential: X25519 shared secret matches libcrypto" {
     var linked_secret: [32]u8 = undefined;
     try backend.x25519.sharedSecretDerive(&linked_priv, &linked_peer, &linked_secret);
     try testing.expectEqualSlices(u8, &linked_secret, &native_secret);
+}
+
+fn nativeEcPrivate(
+    comptime Curve: type,
+    secret: *const [Curve.scalar.encoded_length]u8,
+) backend_native.Error!backend_native.pkey {
+    return if (comptime Curve == P256)
+        backend_native.p256PrivateKeyFromSecret(secret)
+    else
+        backend_native.p384PrivateKeyFromSecret(secret);
+}
+
+fn nativeEcPublic(
+    comptime Curve: type,
+    secret: *const [Curve.scalar.encoded_length]u8,
+) backend_native.Error![1 + 2 * Curve.Fe.encoded_length]u8 {
+    if (comptime Curve == P256) return backend_native.p256PublicFromSecret(secret);
+    var key = try backend_native.p384PrivateKeyFromSecret(secret);
+    defer backend_native.freeEcKey(&key);
+    return backend_native.p384RawPublicKeyFromPrivate(key);
+}
+
+fn nativeEcPeer(
+    comptime Curve: type,
+    public_key: *const [1 + 2 * Curve.Fe.encoded_length]u8,
+) backend_native.Error!backend_native.pkey {
+    return if (comptime Curve == P256)
+        backend_native.p256PublicKeyFromRaw(public_key)
+    else
+        backend_native.p384PublicKeyFromRaw(public_key);
+}
+
+fn nativeEcShared(
+    comptime Curve: type,
+    ours: backend_native.pkey,
+    peer: backend_native.pkey,
+    out: *[Curve.Fe.encoded_length]u8,
+) backend_native.Error!void {
+    return if (comptime Curve == P256)
+        backend_native.p256SharedSecretDerive(ours, peer, out)
+    else
+        backend_native.p384SharedSecretDerive(ours, peer, out);
+}
+
+fn expectNativeEcdhPair(
+    comptime Curve: type,
+    a_secret: *const [Curve.scalar.encoded_length]u8,
+    b_secret: *const [Curve.scalar.encoded_length]u8,
+) !void {
+    const Linked = if (comptime Curve == P256) backend.p256 else backend.p384;
+    var linked_a = try Linked.privateKeyFromSecret(a_secret);
+    defer Linked.freeKey(&linked_a);
+    var linked_b = try Linked.privateKeyFromSecret(b_secret);
+    defer Linked.freeKey(&linked_b);
+    const linked_a_public = try Linked.rawPublicKeyFromPrivate(linked_a);
+    const linked_b_public = try Linked.rawPublicKeyFromPrivate(linked_b);
+    const native_a_public = try nativeEcPublic(Curve, a_secret);
+    const native_b_public = try nativeEcPublic(Curve, b_secret);
+    try testing.expectEqualSlices(u8, &linked_a_public, &native_a_public);
+    try testing.expectEqualSlices(u8, &linked_b_public, &native_b_public);
+
+    var native_a = try nativeEcPrivate(Curve, a_secret);
+    defer backend_native.freeEcKey(&native_a);
+    var native_b = try nativeEcPrivate(Curve, b_secret);
+    defer backend_native.freeEcKey(&native_b);
+    var native_a_peer = try nativeEcPeer(Curve, &linked_b_public);
+    defer backend_native.freeEcKey(&native_a_peer);
+    var native_b_peer = try nativeEcPeer(Curve, &linked_a_public);
+    defer backend_native.freeEcKey(&native_b_peer);
+    var linked_a_peer = try Linked.publicKeyFromRaw(&native_b_public);
+    defer Linked.freeKey(&linked_a_peer);
+    var linked_b_peer = try Linked.publicKeyFromRaw(&native_a_public);
+    defer Linked.freeKey(&linked_b_peer);
+
+    var native_ab: [Curve.Fe.encoded_length]u8 = undefined;
+    var native_ba: [Curve.Fe.encoded_length]u8 = undefined;
+    var linked_ab: [Curve.Fe.encoded_length]u8 = undefined;
+    var linked_ba: [Curve.Fe.encoded_length]u8 = undefined;
+    try nativeEcShared(Curve, native_a, native_a_peer, &native_ab);
+    try nativeEcShared(Curve, native_b, native_b_peer, &native_ba);
+    try Linked.sharedSecretDerive(linked_a, linked_a_peer, &linked_ab);
+    try Linked.sharedSecretDerive(linked_b, linked_b_peer, &linked_ba);
+    try testing.expectEqualSlices(u8, &linked_ab, &native_ab);
+    try testing.expectEqualSlices(u8, &linked_ba, &native_ba);
+    try testing.expectEqualSlices(u8, &native_ab, &native_ba);
+}
+
+// SEC 1 §3.2.2 and RFC 8446 §7.4.2 — native and libcrypto derive identical
+// SEC1 public keys and ECDH x-coordinates. Four pairs per curve cross both
+// public-key producers and both directions of the shared-secret operation.
+test "backend.native differential: P-256 and P-384 ECDH match libcrypto" {
+    if (comptime backend.native_selected) return error.SkipZigTest;
+    var prng: std.Random.DefaultPrng = .init(0x199200);
+    const random = prng.random();
+    inline for (.{ P256, P384 }) |Curve| {
+        for (0..4) |_| {
+            var a: [Curve.scalar.encoded_length]u8 = undefined;
+            var b: [Curve.scalar.encoded_length]u8 = undefined;
+            random.bytes(&a);
+            random.bytes(&b);
+            try expectNativeEcdhPair(Curve, &a, &b);
+        }
+    }
 }
 
 // RFC 8446 §5.2 — native and libcrypto agree on ciphertext bytes and tags for

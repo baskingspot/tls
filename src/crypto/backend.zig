@@ -139,13 +139,11 @@ comptime {
     assert(capabilities.cipher_suites.len > 0);
     assert(capabilities.client_x25519 or capabilities.client_p256);
     assert(capabilities.server_x25519 or capabilities.server_p256);
-    // A handshake-capable backend needs a CertificateVerify scheme. Native is
-    // deliberately primitive-only in #199, so pin its empty table instead of
-    // pretending Ed25519 CertificateVerify is already wired.
+    assert(capabilities.certificate_verify_schemes.len > 0);
+    // Native pins its classical groups and leaves every hybrid unsupported.
     if (active == .native) {
-        assert(capabilities.certificate_verify_schemes.len == 0);
-        assert(!capabilities.client_p256 and !capabilities.server_p256);
-        assert(!capabilities.client_p384 and !capabilities.server_p384);
+        assert(capabilities.client_p256 and capabilities.server_p256);
+        assert(capabilities.client_p384 and capabilities.server_p384);
         assert(!capabilities.client_x25519_mlkem768);
         assert(!capabilities.server_x25519_mlkem768);
         assert(!capabilities.client_secp256r1_mlkem768);
@@ -309,17 +307,18 @@ pub const x25519 = struct {
 
 pub const p256 = struct {
     pub const Error = p256_impl.Error;
-    pub const pkey = p256_impl.pkey;
+    /// A libcrypto pointer or an inline native key, depending on the backend.
+    pub const pkey = p256_impl.EcKey;
 
-    pub inline fn privateKeyFromSecret(secret: *const [32]u8) Error!*pkey {
+    pub inline fn privateKeyFromSecret(secret: *const [32]u8) Error!pkey {
         return p256_impl.p256PrivateKeyFromSecret(secret);
     }
 
-    pub inline fn publicKeyFromRaw(public_key: *const [65]u8) Error!*pkey {
+    pub inline fn publicKeyFromRaw(public_key: *const [65]u8) Error!pkey {
         return p256_impl.p256PublicKeyFromRaw(public_key);
     }
 
-    pub inline fn rawPublicKeyFromPrivate(key: *pkey) Error![65]u8 {
+    pub inline fn rawPublicKeyFromPrivate(key: pkey) Error![65]u8 {
         return p256_impl.p256RawPublicKeyFromPrivate(key);
     }
 
@@ -329,41 +328,42 @@ pub const p256 = struct {
     }
 
     /// The scalar alone, for ECDH (#134).
-    pub inline fn ecdhKeyFromSecret(secret: *const [32]u8) Error!*pkey {
+    pub inline fn ecdhKeyFromSecret(secret: *const [32]u8) Error!pkey {
         return p256_impl.p256EcdhKeyFromSecret(secret);
     }
 
-    pub inline fn sharedSecretDerive(ours: *pkey, peer: *pkey, out: *[32]u8) Error!void {
+    pub inline fn sharedSecretDerive(ours: pkey, peer: pkey, out: *[32]u8) Error!void {
         return p256_impl.p256SharedSecretDerive(ours, peer, out);
     }
 
     pub inline fn freeKey(key: *pkey) void {
-        p256_impl.freeKey(key);
+        p256_impl.freeEcKey(key);
     }
 };
 
 pub const p384 = struct {
     pub const Error = p384_impl.Error;
-    pub const pkey = p384_impl.pkey;
+    /// A libcrypto pointer or an inline native key, depending on the backend.
+    pub const pkey = p384_impl.EcKey;
 
-    pub inline fn privateKeyFromSecret(secret: *const [48]u8) Error!*pkey {
+    pub inline fn privateKeyFromSecret(secret: *const [48]u8) Error!pkey {
         return p384_impl.p384PrivateKeyFromSecret(secret);
     }
 
-    pub inline fn publicKeyFromRaw(public_key: *const [97]u8) Error!*pkey {
+    pub inline fn publicKeyFromRaw(public_key: *const [97]u8) Error!pkey {
         return p384_impl.p384PublicKeyFromRaw(public_key);
     }
 
-    pub inline fn rawPublicKeyFromPrivate(key: *pkey) Error![97]u8 {
+    pub inline fn rawPublicKeyFromPrivate(key: pkey) Error![97]u8 {
         return p384_impl.p384RawPublicKeyFromPrivate(key);
     }
 
-    pub inline fn sharedSecretDerive(ours: *pkey, peer: *pkey, out: *[48]u8) Error!void {
+    pub inline fn sharedSecretDerive(ours: pkey, peer: pkey, out: *[48]u8) Error!void {
         return p384_impl.p384SharedSecretDerive(ours, peer, out);
     }
 
     pub inline fn freeKey(key: *pkey) void {
-        p384_impl.freeKey(key);
+        p384_impl.freeEcKey(key);
     }
 };
 
@@ -410,38 +410,39 @@ pub const sign = struct {
     pub const SignError = sign_impl.SignError;
     pub const NonceMode = sign_impl.NonceMode;
 
-    pub const pkey = sign_impl.pkey;
-    pub inline fn privateKeyFromDer(der: []const u8) Error!*pkey {
+    /// A libcrypto pointer or an inline native key, depending on the backend.
+    pub const pkey = sign_impl.EcKey;
+    pub inline fn privateKeyFromDer(der: []const u8) Error!pkey {
         return sign_impl.privateKeyFromDer(der);
     }
 
-    pub inline fn privateKeyFromPem(pem: []const u8) Error!*pkey {
+    pub inline fn privateKeyFromPem(pem: []const u8) Error!pkey {
         return sign_impl.privateKeyFromPem(pem);
     }
 
     pub const KeySchemeError = sign_impl.KeySchemeError;
 
-    pub inline fn keyScheme(key: *const pkey) KeySchemeError!SignatureScheme {
+    pub inline fn keyScheme(key: pkey) KeySchemeError!SignatureScheme {
         return sign_impl.keyScheme(key);
     }
 
     pub inline fn privateKeyPairsWithCertificate(
-        key: *const pkey,
+        key: pkey,
         leaf_cert_der: []const u8,
     ) error{InvalidEncoding}!bool {
         return sign_impl.privateKeyPairsWithCertificate(key, leaf_cert_der);
     }
 
-    pub inline fn privateKeyFromP256Scalar(scalar: *const [32]u8) Error!*pkey {
+    pub inline fn privateKeyFromP256Scalar(scalar: *const [32]u8) Error!pkey {
         return sign_impl.privateKeyFromP256Scalar(scalar);
     }
 
     pub inline fn freeKey(key: *pkey) void {
-        sign_impl.freeKey(key);
+        sign_impl.freeEcKey(key);
     }
 
     pub inline fn sign(
-        key: *pkey,
+        key: pkey,
         scheme: SignatureScheme,
         msg: []const u8,
         out: []u8,
@@ -486,11 +487,7 @@ test "capabilities are non-empty for the active backend" {
     try testing.expect(capabilities.cipher_suites.len > 0);
     try testing.expect(capabilities.client_x25519 or capabilities.client_p256);
     try testing.expect(capabilities.server_x25519 or capabilities.server_p256);
-    if (active == .native) {
-        try testing.expectEqual(@as(usize, 0), capabilities.certificate_verify_schemes.len);
-    } else {
-        try testing.expect(capabilities.certificate_verify_schemes.len > 0);
-    }
+    try testing.expect(capabilities.certificate_verify_schemes.len > 0);
     try testing.expect(capabilities.certificate_signature_schemes.len > 0);
 }
 
@@ -514,12 +511,8 @@ test "x25519 handle shape matches active backend" {
 // approved-only build carries P-256 only.
 test "client group capabilities match implemented client key-share plumbing" {
     try testing.expect(capabilities.client_x25519 or capabilities.client_p256);
-    if (active == .native) {
-        try testing.expect(capabilities.client_x25519);
-        try testing.expect(!capabilities.client_p256);
-    } else {
-        try testing.expect(capabilities.client_p256);
-    }
+    if (active == .native) try testing.expect(capabilities.client_x25519);
+    try testing.expect(capabilities.client_p256);
 }
 
 test "aead context shape matches active backend" {
