@@ -15,9 +15,11 @@ All notable changes to tls are recorded here. The format follows
   with their leaf certificates. The backend supports RFC 10024
   `x25519_mlkem768` and `secp256r1_mlkem768` key exchange in both roles.
   ML-KEM-1024, `secp384r1_mlkem1024`, RSA, and DER/PEM private-key loading
-  remain unsupported. Native handshakes lack verification in this slice.
-  The default still auto-detects OpenSSL, AWS-LC, or BoringSSL from the
-  selected headers (#199).
+  remain unsupported. Native client and server handshakes exchange application
+  data in memory, over TCP, and against OpenSSL in both roles. Conformance cases
+  that require absent RSA or ML-KEM-1024 capabilities report `UNSUPPORTED` with
+  the backend and capability names. The default still auto-detects OpenSSL,
+  AWS-LC, or BoringSSL from the selected headers (#199).
 - The `hkdf.Hkdf` type constructor is public for backends that select their own
   runtime and comptime hash pair.
 
@@ -33,8 +35,9 @@ All notable changes to tls are recorded here. The format follows
   module and no longer implies it, because the key schedule, all randomness,
   signature verification, and on OpenSSL the transcript hash and EC key
   construction run outside the linked module. `PRODUCTION_READINESS.md` lists
-  the split. `capabilities.cipher_suites`, `supportsCipherSuite(suite)`, and
-  `supportsGroup(role, group)` are new.
+  the split. `capabilities.cipher_suites`, `supportsCipherSuite(suite)`,
+  `supportsGroup(role, group)`, `supportsCertificateVerifyScheme(scheme)`, and
+  `supportsCertificateSignatureScheme(scheme)` are new.
 - An approved-only build no longer advertises X25519, which the FIPS 140-3
   implementation guidance excludes from key agreement, and a client in that
   build sends a P-256 first flight instead. Certificate-chain signature

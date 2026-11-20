@@ -24,10 +24,10 @@ commit because the branch moved.
 | Record layer, framing, alerts, `close_notify` | Proven | RFC 8446 §5 tests, fuzz targets, and tlsfuzzer |
 | Certificate chains, hostname verification, leaf policy | Proven | Chain and policy tests, name-constraint fixtures, and TLS-Anvil |
 | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 | Proven | Record tests and OpenSSL interop for each |
-| Opt-in `native` crypto primitives | Partial | ECDH, ECDSA, and ML-KEM-768 match libcrypto. Both native ML-KEM-768 hybrid groups match in both roles, including derived traffic secrets. Real P-256 and Ed25519 certificates verify. Full native handshakes remain unverified. ML-KEM-1024 and RSA remain unsupported |
+| Opt-in `native` crypto backend | Partial | ECDH, ECDSA, and ML-KEM-768 match libcrypto. Native client/server examples exchange application data in memory and over TCP. Native/OpenSSL interop passes in both roles. The native tlsfuzzer suite reports absent RSA-PSS and ML-KEM-1024 capabilities as `UNSUPPORTED` by name. ML-KEM-1024, RSA, and DER/PEM private-key loading remain unsupported. The native TLS-Anvil catalogue has no run |
 | X25519 and P-256 key exchange | Proven | Handshake tests and OpenSSL interop |
 | P-384 key exchange | Proven, opt-in | Bidirectional OpenSSL interop on every non-FIPS libcrypto backend. Native has primitive differential evidence only |
-| RFC 10024 hybrid groups | Proven, opt-in | Provider-backed ML-KEM on OpenSSL, AWS-LC, and BoringSSL; OpenSSL interop and the upstream tlsfuzzer matrix. Native ML-KEM-768 has key-exchange differentials only |
+| RFC 10024 hybrid groups | Proven, opt-in | Provider-backed ML-KEM on OpenSSL, AWS-LC, and BoringSSL; OpenSSL interop and the upstream tlsfuzzer matrix. Native ML-KEM-768 has key-exchange differentials and server-side upstream tlsfuzzer coverage |
 | KeyUpdate | Proven | Both directions and both roles, with a flood bound |
 | HelloRetryRequest | Proven | Both roles in memory and in TLS-Anvil; forced-HRR OpenSSL interop is not gated |
 | Session resumption | Partial | The engine side is proven; persistence, expiry, rotation, replay, and SNI partitioning are yours |
@@ -41,9 +41,10 @@ commit because the branch moved.
 The default build infers a libcrypto backend from the selected headers. OpenSSL,
 AWS-LC, and BoringSSL are each CI-gated and each passed the same conformance
 run. Production builds must keep a libcrypto backend until native is measured
-and reviewed. The opt-in `-Dcrypto=native` path covers only the primitives above;
-its tests do not complete a native handshake. Its facade caller owns all primitive buffers.
-The C ABI stays libcrypto-only and rejects `-Dcapi -Dcrypto=native`.
+and reviewed. The opt-in `-Dcrypto=native` path completes native/native and
+native/OpenSSL handshakes through the evidence in the table. Its facade caller
+owns all primitive buffers. The C ABI stays libcrypto-only and rejects
+`-Dcapi -Dcrypto=native`.
 
 The engine itself, meaning parsing, framing, transcript, and record sequencing,
 allocates nothing. The libcrypto backends allocate during setup and inside their
@@ -57,8 +58,8 @@ ECDSA through `std.crypto`, RSA-PSS and RSA PKCS#1 v1.5 through the module in
 ECDSA P-256/P-384 signing uses `crypto/ecdsa.zig` over `std.crypto` curve
 arithmetic, with RFC 6979 nonces on every backend (#82, #183).
 CertificateVerify accepts ECDSA P-256/P-384 and RSA-PSS only. Ed25519 is a
-chain-signature scheme here. The backend covers AEAD, SHA-2, key exchange,
-ML-KEM, and RSA-PSS signing (#183).
+chain-signature scheme here. The libcrypto backend covers AEAD, SHA-2, key
+exchange, ML-KEM, and RSA-PSS signing (#183). Native advertises no RSA scheme.
 
 ## How a claim gets proven
 
@@ -66,9 +67,9 @@ A claim is proven when a command in this repository fails if the claim becomes
 false. Four gates carry most of the weight.
 
 **`just ci`** runs the unit tests, the handshake replays against OpenSSL, the
-three backend lanes, the examples, the C ABI example, the distribution smoke
-test, and the conformance subproject. It is the gate a change must pass before
-it lands.
+libcrypto and native backend lanes, the examples, the C ABI example, the
+distribution smoke test, the default conformance subproject, and native
+conformance. It is the gate a change must pass before it lands.
 
 **TLS-Anvil** runs the full test catalogue against a wrapper around the engine,
 as both client and server, on all three backends. The most recent all-backend
@@ -79,8 +80,9 @@ harness did not exercise. The #91 series captures, with per-case results and
 provenance, are committed under `docs/research/TLS_ANVIL_91_CHAIN_FIXTURE/`.
 
 **tlsfuzzer** drives the server over a real socket with an independently
-maintained TLS test suite. It covers the server side only; client-side behavior
-against a hostile server is covered by the unit and replay tests instead.
+maintained TLS test suite. The conformance suite also connects the built client
+to OpenSSL `s_server` and the built server to OpenSSL `s_client`. Client-side
+behavior against a hostile server is covered by the unit and replay tests.
 
 **The consumer gate** replaces the dependency pins in two downstream consumers
 and runs their suites against one fixed tls commit. It proves the package works

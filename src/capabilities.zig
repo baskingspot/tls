@@ -7,6 +7,7 @@ const backend = @import("crypto/backend.zig");
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 const kex = @import("kex.zig");
 const NamedGroup = kex.NamedGroup;
+const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 
 pub const Backend = backend.Backend;
 
@@ -40,6 +41,20 @@ pub const HybridPolicyError = error{
 pub fn supportsCipherSuite(suite: CipherSuite) bool {
     for (cipher_suites) |advertised| {
         if (advertised == suite) return true;
+    }
+    return false;
+}
+
+/// Report whether this build advertises `scheme` for CertificateVerify.
+pub fn supportsCertificateVerifyScheme(scheme: SignatureScheme) bool {
+    return backend.supportsCertificateVerifyScheme(scheme);
+}
+
+/// Report whether this build accepts `scheme` in a certificate chain.
+pub fn supportsCertificateSignatureScheme(scheme: SignatureScheme) bool {
+    const schemes = backend.capabilities.certificate_signature_schemes;
+    for (schemes) |supported| {
+        if (scheme == supported) return true;
     }
     return false;
 }
@@ -130,6 +145,23 @@ pub fn requiresP384(groups: []const NamedGroup) bool {
 test "active backend identity matches the private provider facade" {
     try testing.expectEqualStrings(@tagName(backend.active), @tagName(active_backend));
     try testing.expectEqual(backend.approved_only, approved_only);
+}
+
+test "signature capability queries match the active backend" {
+    for (SignatureScheme.supported_handshake) |scheme| {
+        try testing.expectEqual(
+            backend.supportsCertificateVerifyScheme(scheme),
+            supportsCertificateVerifyScheme(scheme),
+        );
+    }
+    for (SignatureScheme.supported_certificate) |scheme| {
+        const advertised = std.mem.findScalar(
+            SignatureScheme,
+            backend.capabilities.certificate_signature_schemes,
+            scheme,
+        ) != null;
+        try testing.expectEqual(advertised, supportsCertificateSignatureScheme(scheme));
+    }
 }
 
 // RFC 10024 §7 — public capability queries cover exactly the implemented groups.

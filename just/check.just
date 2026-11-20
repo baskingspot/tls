@@ -17,7 +17,7 @@ test-release-fast:
 [group("check")]
 check: test test-release-safe test-release-fast
 
-[doc("Test the supported native primitives and verify that the test binary has no libcrypto linkage")]
+[doc("Test native primitives, handshakes, and conformance; verify that the test binary has no libcrypto linkage")]
 [group("check")]
 check-native:
     #!/usr/bin/env bash
@@ -38,6 +38,9 @@ check-native:
         echo "native test binary links a libcrypto-family library" >&2
         exit 1
     fi
+    zig build example-in_memory_handshake -Dcrypto=native --summary all
+    zig build example-tcp_loopback -Dcrypto=native --summary all
+    just conformance/ci-native
 
 # Runs the whole `test` step, not one filtered target. Zig 0.17 returns
 # success after a fuzz-time failure (baskingspot/testingx#9), so read the

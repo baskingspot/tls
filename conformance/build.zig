@@ -1,8 +1,15 @@
 const std = @import("std");
 
+const CryptoBackend = enum { auto, native, openssl, @"aws-lc", boringssl };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const crypto_backend = b.option(
+        CryptoBackend,
+        "crypto",
+        "Crypto backend: native, openssl, aws-lc, boringssl, or auto",
+    ) orelse .auto;
     const crypto_approved_only = b.option(
         bool,
         "crypto-approved-only",
@@ -12,6 +19,7 @@ pub fn build(b: *std.Build) void {
     const tls_dep = b.dependency("tls", .{
         .target = target,
         .optimize = optimize,
+        .crypto = crypto_backend,
         .@"crypto-approved-only" = crypto_approved_only,
     });
     const tls_mod = tls_dep.module("tls");

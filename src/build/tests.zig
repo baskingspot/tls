@@ -1,8 +1,9 @@
 const std = @import("std");
 const Build = std.Build;
 
-/// Native primitive suite (#199). The root deliberately excludes the full
-/// handshake and libcrypto-only harnesses until their capabilities are wired.
+/// Native primitive suite (#199). The root excludes the general test suite,
+/// whose RSA vectors do not apply to this backend. Examples and the
+/// conformance subproject exercise native handshakes separately.
 pub fn addNativeSteps(b: *Build, opts: struct {
     test_mod: *Build.Module,
     fuzz: bool,

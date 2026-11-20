@@ -133,22 +133,32 @@ pub fn build(b: *Build) void {
         });
         native_test_mod.addOptions("build_options", build_options);
         native_test_mod.addImport("stdx", stdx_dep.module("stdx"));
+        var fixtures_mod: ?*Build.Module = null;
         if (testingx_dep) |dep| {
             const testingx_mod = dep.module("testingx");
             native_test_mod.addImport("testingx", testingx_mod);
-            const fixtures_mod = b.createModule(.{
+            const fixtures = b.createModule(.{
                 .root_source_file = b.path("tests/fixtures/fixtures.zig"),
                 .target = target,
                 .optimize = optimize,
             });
-            fixtures_mod.addImport("testingx", testingx_mod);
-            native_test_mod.addImport("fixtures", fixtures_mod);
+            fixtures.addImport("testingx", testingx_mod);
+            native_test_mod.addImport("fixtures", fixtures);
+            fixtures_mod = fixtures;
         }
         tests.addNativeSteps(b, .{
             .test_mod = native_test_mod,
             .fuzz = fuzz_mode,
             .testingx = testingx_dep,
         });
+        if (fixtures_mod) |fixtures| {
+            examples_mod.addSteps(b, .{
+                .target = target,
+                .optimize = optimize,
+                .tls_mod = mod,
+                .fixtures_mod = fixtures,
+            });
+        }
         return;
     }
 

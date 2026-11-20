@@ -1,4 +1,4 @@
-//! Native backend test roots supported in #199. No handshake claim is made.
+//! Native primitive tests. Examples and conformance own the handshake evidence.
 test {
     _ = @import("aead.zig");
     _ = @import("certificate.zig");

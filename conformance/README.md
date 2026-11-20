@@ -51,3 +51,19 @@ The report script:
 - writes `summary.json` (machine-readable) and `summary.txt` (human-readable).
 
 The parser exits 0 only when the report has no unexpected pass/fail/skipped classifications; it exits 1 when review is required. Synthetic parser tests and wrapper helper tests run in `just ci`; real TLS-Anvil server execution runs in the dedicated scheduled/manual workflow, while client execution has a manual workflow with strict normalized evidence.
+
+### Native backend
+
+From the repository root, run:
+
+```sh
+just conformance/ci-native
+```
+
+This command forwards `-Dcrypto=native` to tls. It includes both OpenSSL interop directions and the tlsfuzzer cases.
+
+The test server reports its backend and cryptographic capabilities through `--capabilities`. A `requires_capability` marker binds a test to one capability name.
+
+A false capability produces an `UNSUPPORTED` result. The final summary names the test, backend, and capability. An unreported capability produces an error instead of an exclusion.
+
+BoGo has no runner in this tree. `docs/research/BOGO_DEFERRED.md` records that decision. The real TLS-Anvil catalogues run separately from these native commands.

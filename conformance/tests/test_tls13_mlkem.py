@@ -16,11 +16,26 @@ DRIVER_URL = (
     "https://raw.githubusercontent.com/tlsfuzzer/tlsfuzzer/"
     f"{TLSFUZZER_REVISION}/tlsfuzzer/_apps/test_tls13_mlkem.py"
 )
-RFC10024_GROUPS = "secp256r1mlkem768,x25519mlkem768,secp384r1mlkem1024"
+RFC10024_GROUPS = {
+    "secp256r1_mlkem768": "secp256r1mlkem768",
+    "x25519_mlkem768": "x25519mlkem768",
+    "secp384r1_mlkem1024": "secp384r1mlkem1024",
+}
 
 
 @pytest.mark.lockstep
-def test_upstream_tls13_mlkem_matrix(tls_server):
+@pytest.mark.parametrize(
+    "group",
+    [
+        pytest.param(
+            group,
+            marks=pytest.mark.requires_capability(f"server_group.{group}"),
+        )
+        for group in RFC10024_GROUPS
+    ],
+)
+def test_upstream_tls13_mlkem_matrix(start_tls_server, group):
+    tls_server = start_tls_server(hybrid_group=group)
     with urllib.request.urlopen(DRIVER_URL, timeout=30) as response:
         driver = response.read()
     assert hashlib.sha256(driver).hexdigest() == DRIVER_SHA256
@@ -38,7 +53,7 @@ def test_upstream_tls13_mlkem_matrix(tls_server):
                 str(tls_server["port"]),
                 "--no-fuzz",
                 "--kems",
-                RFC10024_GROUPS,
+                RFC10024_GROUPS[group],
             ],
             capture_output=True,
             text=True,
@@ -46,4 +61,5 @@ def test_upstream_tls13_mlkem_matrix(tls_server):
             check=False,
         )
 
+    print(result.stdout)
     assert result.returncode == 0, result.stdout + result.stderr
