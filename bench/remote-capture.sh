@@ -88,4 +88,6 @@ log "capture script returned: ${capture}"
 log "writing remote benchstat: ${capture}/benchstat.txt"
 scripts/bench-analyze.sh "${capture}" > "${capture}/benchstat.txt"
 log "remote capture complete: ${capture}"
+# The result directory is the only thing on stdout. Logging stays on
+# stderr; the adapter matches this line by shape, not by position.
 printf '%s\n' "${capture}"

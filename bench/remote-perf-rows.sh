@@ -219,4 +219,6 @@ if [[ "${keep_perf_data}" != true ]]; then
 fi
 
 log "remote perf evidence complete: ${out_dir}"
+# The result directory is the only thing on stdout. Logging stays on
+# stderr; the adapter matches this line by shape, not by position.
 printf '%s\n' "${out_dir}"

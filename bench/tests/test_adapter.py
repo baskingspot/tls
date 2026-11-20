@@ -1,5 +1,5 @@
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import click
 import pytest
@@ -141,6 +141,40 @@ def test_target_and_matrix_parsing(tmp_path):
 def test_result_path_rejects_escape(path):
     with pytest.raises(click.ClickException):
         adapter._result_path(path)
+
+
+# The real first capture, merged by SSH: the path line arrived before the last
+# log line, which is what made the old last-line parser throw it away.
+_MERGED_CAPTURE_OUTPUT = """\
+[01:23:09] bench-remote-host: crypto backend: openssl
+[01:23:09] bench-remote-host: count=5 benchtime=500ms allow_dirty=false
+[01:23:09] bench-remote-host: checking remote worktree cleanliness
+[01:23:09] bench-remote-host: remote git revision: 70e10a8d
+[01:23:09] bench-remote-host: starting capture script
+[01:24:51] bench-remote-host: capture script returned: zig-out/perf/20261120-012025
+[01:24:51] bench-remote-host: writing remote benchstat: zig-out/perf/20261120-012025/benchstat.txt
+zig-out/perf/20261120-012025
+[01:24:51] bench-remote-host: remote capture complete: zig-out/perf/20261120-012025
+"""
+
+
+def test_result_path_ignores_a_trailing_log_line():
+    path = adapter._result_path(_MERGED_CAPTURE_OUTPUT)
+
+    assert path == PurePosixPath("zig-out/perf/20261120-012025")
+
+
+def test_result_path_names_the_output_when_only_logs_arrive():
+    output = "\n".join(
+        line for line in _MERGED_CAPTURE_OUTPUT.splitlines() if not line.startswith("zig-out/")
+    )
+
+    with pytest.raises(click.ClickException) as caught:
+        adapter._result_path(output)
+
+    message = str(caught.value)
+    assert "no capture directory under zig-out/perf/" in message
+    assert "remote capture complete: zig-out/perf/20261120-012025" in message
 
 
 def test_capture_syncs_runs_downloads_analyzes_and_terminates(tmp_path, monkeypatch):
@@ -343,6 +377,40 @@ def test_perf_rows_preserves_options_and_keep_instance(tmp_path, monkeypatch):
     assert "ec2_crypto_backend=aws-lc" in (capture / "metadata.txt").read_text()
     assert box.poweroffs == 0
     assert fleet.waited == []
+
+
+def test_perf_rows_reads_the_result_past_a_trailing_log_line(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    box = FakeBox(
+        "zig-out/perf/20261120-012025-row-perf\n"
+        "[01:24:51] bench-remote-perf-host: remote perf evidence complete: "
+        "zig-out/perf/20261120-012025-row-perf\n"
+    )
+    install_fakes(monkeypatch, config, box)
+
+    adapter._run_perf_rows(
+        config,
+        "c7i.2xlarge",
+        "openssl",
+        5,
+        "500ms",
+        None,
+        "cycles",
+        1,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+    )
+
+    assert box.downloads == [
+        (
+            "/root/tls/zig-out/perf/20261120-012025-row-perf",
+            tmp_path / "zig-out/perf/20261120-012025-row-perf-c7i.2xlarge-openssl",
+        )
+    ]
 
 
 def test_click_preserves_remote_arguments_after_separator(tmp_path, monkeypatch):
