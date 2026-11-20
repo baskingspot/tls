@@ -64,6 +64,8 @@ This command forwards `-Dcrypto=native` to tls. It includes both OpenSSL interop
 
 The client wrapper accepts `TLS_CA_FILE` for trust anchors and `TLS_HOST_NAME` for hostname verification. `TLS_CLIENT_GROUP` adds a selected classical or hybrid group to the offer. The OpenSSL cases cover chain and hostname failures, P-384 ECDH, P-384 CertificateVerify, and hybrid negotiation outcomes.
 
+A separate socket server crafts malformed ServerHello key shares. P-256 and P-384 cases cover off-curve, infinity, and truncated points. Each case asserts the client's exact `illegal_parameter` alert record. EOF or another alert fails the test.
+
 The test server reports its backend and cryptographic capabilities through `--capabilities`. A `requires_capability` marker binds a test to one or more capability names. Every name must exist and hold a boolean value. An empty marker or the string-valued `backend` key produces an error.
 
 A false capability produces an `UNSUPPORTED` result. The fixture attaches a user property to the skip. The final summary counts that property rather than the skip text. A direct `pytest.skip("UNSUPPORTED ...")` remains an ordinary skip.

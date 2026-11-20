@@ -224,16 +224,17 @@ The base revision is `5e409b3`. The host is Linux arm64 with Zig 0.17.0 and
 OpenSSL 3.6.5.
 
 The focused native command built `conformance/` with `zig build -Dcrypto=native`.
-It ran `test_tls13.py`, `test_tls13_mlkem.py`, `test_openssl_interop.py`, and
-`test_capability_markers.py` under `-v`. The run collected 37 cases.
-It passed 35 and reported two named `UNSUPPORTED` cases. The exclusions are
-RSA-PSS CertificateVerify and `secp384r1_mlkem1024` server key exchange.
-The default-backend control passed 35 and produced two ordinary inverse-marker
-skips. No default backend changed.
+It ran `test_tls13.py`, `test_tls13_mlkem.py`, `test_openssl_interop.py`,
+`test_malformed_key_share.py`, and `test_capability_markers.py` under `-v`.
+The run collected 43 cases. It passed 41 and reported two named `UNSUPPORTED`
+cases. The exclusions are RSA-PSS CertificateVerify and
+`secp384r1_mlkem1024` server key exchange. The complete default-backend control
+passed every supported case, including all six new wire cases. Its two
+inverse-marker cases produced ordinary skips. No default backend changed.
 
 The client harness loads a caller-selected PEM anchor through `TLS_CA_FILE`.
 Its `TLS_CLIENT_GROUP` control adds P-384 or hybrid key material to an offer.
-OpenSSL supplies the independent peer in every interop case.
+OpenSSL supplies the independent peer in the OpenSSL interop cases.
 
 Chain and hostname evidence has three cases:
 
@@ -259,6 +260,16 @@ key decoding. An ECDH mutation replaced malformed points with the base point.
 The ECDH test failed by receiving success instead of `IdentityElement`.
 Restored code passed all native tests.
 
+A separate Python socket server parses the ClientHello and requires the selected
+group. It then sends a hand-built ServerHello with an invalid key share and
+reads the client's alert record. For both P-256 and P-384, off-curve, infinity,
+and wrong-length inputs produce the exact bytes `15 03 03 00 02 02 2f`.
+The final two bytes are fatal `illegal_parameter`. Off-curve input returns
+`IdentityElement`. Infinity and wrong lengths return `UnsupportedKeyShareGroup`.
+EOF or another alert fails the test. A mutation mapped both error paths to
+`decode_error`. All six cases then failed on the alert byte: `0x32` replaced
+the expected `0x2f`. Restored code passed the focused and complete gates.
+
 The native RSA-PSS-only offer initially produced `illegal_parameter`.
 ClientHello parsing now raises `NoCommonSignatureScheme`. Its alert mapping
 is `handshake_failure`, while CertificateVerify scheme faults retain their
@@ -283,16 +294,16 @@ A TLS-Anvil client run selected package
 Feature extraction saw X25519, P-256, ECDSA-SHA256, and ECDSA-SHA384 offers,
 but reported no supported TLS version. It disabled all 65 cases in 4.716
 seconds. `KeyShare.rejectsPointsNotOnCurve` did not execute. This attempt is
-not TLS-Anvil evidence. The direct malformed-point tests above cover the
-requested point classes without that gap.
+not TLS-Anvil evidence. The primitive and wire tests above cover the requested
+point classes without that gap.
 
 The default Zig suite passed 1,022 tests and skipped six. The native Debug
 suite discovered 335 tests, passed 322, and retained 13 accounted skips.
 
 `UV_PYTHON_INSTALL_DIR="$PWD/.tmp/uv-python" just ci` passed. Every native
 mode passed 322 tests with 13 skips and no failures. The complete native
-conformance run collected 121 cases, passed 119, and reported two named
-exclusions. The complete default conformance run passed 119 with two
+conformance run collected 127 cases, passed 125, and reported two named
+exclusions. The complete default conformance run passed 125 with two
 inverse-marker skips. The full gate included all backends, integrations,
 memory checks, and lint. The native test binary printed `not a dynamic
 executable` under `ldd`.
