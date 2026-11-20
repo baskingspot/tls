@@ -39,10 +39,31 @@ provider "aws" {
   }
 }
 
-module "bench" {
-  source = "git::https://github.com/baskingspot/infra//modules/bench-base?ref=653c441d3219bf5d532d5f7e60db367ed2d4a0e6"
+data "aws_vpc" "bench" {
+  filter {
+    name   = "tag:Name"
+    values = ["baskingspot-bench"]
+  }
+}
 
-  project = local.project
+data "aws_subnets" "bench" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.bench.id]
+  }
+
+  filter {
+    name   = "tag:Name"
+    values = ["baskingspot-bench-public"]
+  }
+}
+
+module "bench" {
+  source = "git::https://github.com/baskingspot/infra//modules/bench-base?ref=cff88dc4c6f30a2ee314c60f55f49675bb4557f3"
+
+  project    = local.project
+  vpc_id     = data.aws_vpc.bench.id
+  subnet_ids = data.aws_subnets.bench.ids
 
   # Official NixOS 25.11.12484.b6018f87da91 AMIs in us-west-2.
   amis = {

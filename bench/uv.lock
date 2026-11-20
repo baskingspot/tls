@@ -51,7 +51,7 @@ wheels = [
 [[package]]
 name = "ec2bench"
 version = "0.2.0"
-source = { git = "https://github.com/baskingspot/infra?subdirectory=harness&rev=653c441d3219bf5d532d5f7e60db367ed2d4a0e6#653c441d3219bf5d532d5f7e60db367ed2d4a0e6" }
+source = { git = "https://github.com/baskingspot/infra?subdirectory=harness&rev=cff88dc4c6f30a2ee314c60f55f49675bb4557f3#cff88dc4c6f30a2ee314c60f55f49675bb4557f3" }
 dependencies = [
     { name = "boto3" },
     { name = "click" },
@@ -227,7 +227,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "ec2bench", git = "https://github.com/baskingspot/infra?subdirectory=harness&rev=653c441d3219bf5d532d5f7e60db367ed2d4a0e6" }]
+requires-dist = [{ name = "ec2bench", git = "https://github.com/baskingspot/infra?subdirectory=harness&rev=cff88dc4c6f30a2ee314c60f55f49675bb4557f3" }]
 
 [package.metadata.requires-dev]
 dev = [
