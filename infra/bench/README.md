@@ -33,7 +33,15 @@ tofu -chdir=infra/bench apply
 
 Configure `tls-bench` as an AWS role profile. Set `role_arn` from the IAM stack's `role_arn` output. Set `source_profile` to an SSO profile with access to that role. Set the region to `us-west-2`.
 
-The devshell supplies `session-manager-plugin`, `uv`, and OpenTofu. No command reads OpenTofu state during a benchmark.
+The devshell supplies `session-manager-plugin`, `rsync`, `benchstat`, `uv`, and OpenTofu. Run every command in this document from the repository root, inside the devshell:
+
+```sh
+nix develop
+```
+
+The adapter checks `session-manager-plugin`, `rsync`, and `benchstat` before it launches a box. A missing tool fails in seconds and names the devshell. `benchstat` applies only to the wall-time capture, because the perf-rows capture does no local analysis.
+
+No command reads OpenTofu state during a benchmark.
 
 ## Fleet commands
 
