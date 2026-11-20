@@ -268,6 +268,7 @@ pub fn alertForHandshakeError(err: HandshakeError) ?Description {
         error.DeterministicNonceUnsupported,
         error.InvalidHybridPolicy,
         error.HybridGroupUnavailable,
+        error.UnsupportedPrimitive,
         error.MissingP384KeyPair,
         => .internal_error,
         // Our own storage, counters, and provider calls. Nothing here can be

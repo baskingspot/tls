@@ -24,10 +24,10 @@ commit because the branch moved.
 | Record layer, framing, alerts, `close_notify` | Proven | RFC 8446 §5 tests, fuzz targets, and tlsfuzzer |
 | Certificate chains, hostname verification, leaf policy | Proven | Chain and policy tests, name-constraint fixtures, and TLS-Anvil |
 | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 | Proven | Record tests and OpenSSL interop for each |
-| Opt-in `native` crypto primitives | Partial | 300 native tests pass in Debug. ECDH and ECDSA match libcrypto. Real P-256 and Ed25519 certificates verify. Handshakes, ML-KEM, and RSA remain unsupported |
+| Opt-in `native` crypto primitives | Partial | ECDH, ECDSA, and ML-KEM-768 match libcrypto. Both native ML-KEM-768 hybrid groups match in both roles, including derived traffic secrets. Real P-256 and Ed25519 certificates verify. Full native handshakes remain unverified. ML-KEM-1024 and RSA remain unsupported |
 | X25519 and P-256 key exchange | Proven | Handshake tests and OpenSSL interop |
 | P-384 key exchange | Proven, opt-in | Bidirectional OpenSSL interop on every non-FIPS libcrypto backend. Native has primitive differential evidence only |
-| RFC 10024 hybrid groups | Proven, opt-in | Provider-backed ML-KEM on OpenSSL, AWS-LC, and BoringSSL; OpenSSL interop and the upstream tlsfuzzer matrix |
+| RFC 10024 hybrid groups | Proven, opt-in | Provider-backed ML-KEM on OpenSSL, AWS-LC, and BoringSSL; OpenSSL interop and the upstream tlsfuzzer matrix. Native ML-KEM-768 has key-exchange differentials only |
 | KeyUpdate | Proven | Both directions and both roles, with a flood bound |
 | HelloRetryRequest | Proven | Both roles in memory and in TLS-Anvil; forced-HRR OpenSSL interop is not gated |
 | Session resumption | Partial | The engine side is proven; persistence, expiry, rotation, replay, and SNI partitioning are yours |
@@ -42,7 +42,7 @@ The default build infers a libcrypto backend from the selected headers. OpenSSL,
 AWS-LC, and BoringSSL are each CI-gated and each passed the same conformance
 run. Production builds must keep a libcrypto backend until native is measured
 and reviewed. The opt-in `-Dcrypto=native` path covers only the primitives above;
-it does not complete a handshake. Its facade caller owns all primitive buffers.
+its tests do not complete a native handshake. Its facade caller owns all primitive buffers.
 The C ABI stays libcrypto-only and rejects `-Dcapi -Dcrypto=native`.
 
 The engine itself, meaning parsing, framing, transcript, and record sequencing,

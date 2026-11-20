@@ -1,7 +1,7 @@
 //! Pure-Zig crypto primitives for the opt-in native backend (#199).
 //!
-//! This backend is not a production replacement for libcrypto. ML-KEM and RSA
-//! remain unsupported in this slice.
+//! This backend is not a production replacement for libcrypto. ML-KEM-1024 and
+//! RSA remain unsupported in this slice.
 const std = @import("std");
 const crypto = std.crypto;
 const mem = std.mem;
@@ -14,6 +14,8 @@ const ParameterSet = @import("mlkem_parameters.zig").ParameterSet;
 const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
 const aes_gcm = @import("aes_gcm_native.zig");
 const ecdsa = @import("ecdsa.zig");
+const entropy = @import("../entropy.zig");
+const MlKem768 = crypto.kem.ml_kem.MLKem768;
 const P256 = crypto.ecc.P256;
 const P384 = crypto.ecc.P384;
 
@@ -27,14 +29,14 @@ pub const capabilities = struct {
     pub const client_x25519 = true;
     pub const client_p256 = true;
     pub const client_p384 = true;
-    pub const client_x25519_mlkem768 = false;
-    pub const client_secp256r1_mlkem768 = false;
+    pub const client_x25519_mlkem768 = true;
+    pub const client_secp256r1_mlkem768 = true;
     pub const client_secp384r1_mlkem1024 = false;
     pub const server_x25519 = true;
     pub const server_p256 = true;
     pub const server_p384 = true;
-    pub const server_x25519_mlkem768 = false;
-    pub const server_secp256r1_mlkem768 = false;
+    pub const server_x25519_mlkem768 = true;
+    pub const server_secp256r1_mlkem768 = true;
     pub const server_secp384r1_mlkem1024 = false;
 
     // CertificateVerify and chain verification use the in-tree ECDSA module.
@@ -255,11 +257,20 @@ pub const pkey = union(enum) {
     p384_public: [97]u8,
 };
 pub const EcKey = pkey;
-pub const KemKey = *pkey;
-pub const KemPeerKey = *pkey;
 
-// ML-KEM has no native key to free. Unsupported constructors fail before one
-// can exist. EC handles use freeEcKey through their facade instead.
+// Keep the private handle to the FIPS 203 seed. Expansion is expensive but
+// native favors a small caller-owned handle over cached provider state.
+// std.crypto.kem.hybrid implements C2PRI, not RFC 10024 concatenation, so
+// hybrid_kex.zig remains the owner of the TLS construction.
+pub const KemKey = union(enum) {
+    mlkem768: [MlKem768.seed_length]u8,
+};
+pub const KemPeerKey = union(enum) {
+    mlkem768: [MlKem768.PublicKey.encoded_length]u8,
+};
+
+// Native KEM handles have no external resource. mlkem.zig wipes their inline
+// storage after this call, including the private seed.
 pub fn freeKey(key: anytype) void {
     _ = key;
 }
@@ -367,33 +378,69 @@ pub fn p384SharedSecretDerive(ours: pkey, peer: pkey, out: *[48]u8) Error!void {
 }
 
 pub fn kemKeygen(parameter_set: ParameterSet) KemError!KemKey {
-    _ = parameter_set;
-    return error.UnsupportedPrimitive;
+    if (parameter_set != .mlkem768) return error.UnsupportedPrimitive;
+    var seed: [MlKem768.seed_length]u8 = undefined;
+    entropy.fill(&seed);
+    return .{ .mlkem768 = seed };
+}
+
+/// Deterministic key generation for differential vectors and caller tests.
+pub fn kemKeygenFromSeed(
+    parameter_set: ParameterSet,
+    seed: *const [MlKem768.seed_length]u8,
+) KemError!KemKey {
+    if (parameter_set != .mlkem768) return error.UnsupportedPrimitive;
+    return .{ .mlkem768 = seed.* };
+}
+
+fn expandMlKem768(seed: *const [MlKem768.seed_length]u8) KemError!MlKem768.KeyPair {
+    return MlKem768.KeyPair.generateDeterministic(seed.*) catch
+        return error.LibcryptoFailed;
 }
 
 pub fn kemPublic(key: KemKey, out: []u8) KemError![]u8 {
-    _ = key;
-    _ = out;
-    return error.UnsupportedPrimitive;
+    const seed = switch (key) {
+        .mlkem768 => |seed| seed,
+    };
+    if (out.len != MlKem768.PublicKey.encoded_length) return error.LibcryptoFailed;
+    var keypair = try expandMlKem768(&seed);
+    defer crypto.secureZero(u8, mem.asBytes(&keypair));
+    out[0..MlKem768.PublicKey.encoded_length].* = keypair.public_key.toBytes();
+    return out;
 }
 
-pub fn kemLoadPublic(parameter_set: ParameterSet, public_key: []const u8) KemError!KemPeerKey {
-    _ = parameter_set;
-    _ = public_key;
-    return error.UnsupportedPrimitive;
+pub fn kemLoadPublic(
+    parameter_set: ParameterSet,
+    public_key: []const u8,
+    out: *KemPeerKey,
+) KemError!void {
+    if (parameter_set != .mlkem768) return error.UnsupportedPrimitive;
+    if (public_key.len != MlKem768.PublicKey.encoded_length)
+        return error.LibcryptoFailed;
+    out.* = .{ .mlkem768 = public_key[0..MlKem768.PublicKey.encoded_length].* };
 }
 
 pub fn kemEncapsulate(
     parameter_set: ParameterSet,
-    peer_key: KemPeerKey,
+    peer_key: *const KemPeerKey,
     ciphertext_out: []u8,
     secret_out: []u8,
 ) KemError!struct { ciphertext: []u8, secret: []u8 } {
-    _ = parameter_set;
-    _ = peer_key;
-    _ = ciphertext_out;
-    _ = secret_out;
-    return error.UnsupportedPrimitive;
+    if (parameter_set != .mlkem768) return error.UnsupportedPrimitive;
+    if (ciphertext_out.len != MlKem768.ciphertext_length or
+        secret_out.len != MlKem768.shared_length) return error.LibcryptoFailed;
+    const encoded = switch (peer_key.*) {
+        .mlkem768 => |*public_key| public_key,
+    };
+    const public_key = MlKem768.PublicKey.fromBytes(encoded) catch
+        return error.IdentityElement;
+    var seed: [MlKem768.encaps_seed_length]u8 = undefined;
+    defer crypto.secureZero(u8, &seed);
+    entropy.fill(&seed);
+    const encapsulated = public_key.encapsDeterministic(&seed);
+    ciphertext_out[0..MlKem768.ciphertext_length].* = encapsulated.ciphertext;
+    secret_out[0..MlKem768.shared_length].* = encapsulated.shared_secret;
+    return .{ .ciphertext = ciphertext_out, .secret = secret_out };
 }
 
 pub fn kemDecapsulate(
@@ -402,11 +449,18 @@ pub fn kemDecapsulate(
     ciphertext: []const u8,
     secret_out: []u8,
 ) KemError![]u8 {
-    _ = parameter_set;
-    _ = our_key;
-    _ = ciphertext;
-    _ = secret_out;
-    return error.UnsupportedPrimitive;
+    if (parameter_set != .mlkem768) return error.UnsupportedPrimitive;
+    if (ciphertext.len != MlKem768.ciphertext_length or
+        secret_out.len != MlKem768.shared_length) return error.LibcryptoFailed;
+    const seed = switch (our_key) {
+        .mlkem768 => |seed| seed,
+    };
+    var keypair = try expandMlKem768(&seed);
+    defer crypto.secureZero(u8, mem.asBytes(&keypair));
+    const secret = keypair.secret_key.decaps(ciphertext[0..MlKem768.ciphertext_length]) catch
+        return error.LibcryptoFailed;
+    secret_out[0..MlKem768.shared_length].* = secret;
+    return secret_out;
 }
 
 pub const SignatureError = error{
@@ -623,8 +677,8 @@ test "native ECDSA P-256 and P-384 sign, verify, and reject invalid inputs" {
 }
 
 // RFC 8446 §4.2.3 and RFC 10024 — native does not advertise or execute RSA
-// or ML-KEM. Direct calls fail by name instead of probing libcrypto silently.
-test "native capabilities keep RSA and ML-KEM unsupported" {
+// or ML-KEM-1024. Direct calls fail by name instead of probing libcrypto silently.
+test "native capabilities keep RSA and ML-KEM-1024 unsupported" {
     const rsa_schemes = [_]SignatureScheme{
         .rsa_pkcs1_sha256,
         .rsa_pkcs1_sha384,
@@ -645,16 +699,21 @@ test "native capabilities keep RSA and ML-KEM unsupported" {
             scheme,
         ) == null);
     }
-    try testing.expect(!capabilities.client_x25519_mlkem768);
-    try testing.expect(!capabilities.server_x25519_mlkem768);
-    try testing.expect(!capabilities.client_secp256r1_mlkem768);
-    try testing.expect(!capabilities.server_secp256r1_mlkem768);
+    try testing.expect(capabilities.client_x25519_mlkem768);
+    try testing.expect(capabilities.server_x25519_mlkem768);
+    try testing.expect(capabilities.client_secp256r1_mlkem768);
+    try testing.expect(capabilities.server_secp256r1_mlkem768);
     try testing.expect(!capabilities.client_secp384r1_mlkem1024);
     try testing.expect(!capabilities.server_secp384r1_mlkem1024);
 
-    for ([_]ParameterSet{ .mlkem768, .mlkem1024 }) |parameter_set| {
-        try testing.expectError(error.UnsupportedPrimitive, kemKeygen(parameter_set));
-    }
+    try testing.expectError(error.UnsupportedPrimitive, kemKeygen(.mlkem1024));
+    const seed: [MlKem768.seed_length]u8 = @splat(0x19);
+    try testing.expectError(
+        error.UnsupportedPrimitive,
+        kemKeygenFromSeed(.mlkem1024, &seed),
+    );
+    var key = try kemKeygenFromSeed(.mlkem768, &seed);
+    defer crypto.secureZero(u8, mem.asBytes(&key));
 
     const scalar: [32]u8 = @splat(0x42);
     var private = try privateKeyFromP256Scalar(&scalar);

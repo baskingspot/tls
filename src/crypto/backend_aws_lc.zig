@@ -155,26 +155,27 @@ pub fn kemPublic(key: KemKey, out: []u8) Error![]u8 {
 pub fn kemLoadPublic(
     parameter_set: ParameterSet,
     public_key: []const u8,
-) Error!KemPeerKey {
+    out: *KemPeerKey,
+) Error!void {
     compat.errqEnter();
     defer compat.errqExit();
-    return c.EVP_PKEY_kem_new_raw_public_key(
+    out.* = c.EVP_PKEY_kem_new_raw_public_key(
         kemNid(parameter_set),
         public_key.ptr,
         public_key.len,
-    ) orelse error.LibcryptoFailed;
+    ) orelse return error.LibcryptoFailed;
 }
 
 pub fn kemEncapsulate(
     parameter_set: ParameterSet,
-    peer: KemPeerKey,
+    peer: *const KemPeerKey,
     ciphertext_out: []u8,
     secret_out: []u8,
 ) Error!struct { ciphertext: []u8, secret: []u8 } {
     _ = parameter_set;
     compat.errqEnter();
     defer compat.errqExit();
-    const ctx = c.EVP_PKEY_CTX_new(peer, null) orelse return error.LibcryptoFailed;
+    const ctx = c.EVP_PKEY_CTX_new(peer.*, null) orelse return error.LibcryptoFailed;
     defer c.EVP_PKEY_CTX_free(ctx);
     var ciphertext_len: usize = ciphertext_out.len;
     var secret_len: usize = secret_out.len;

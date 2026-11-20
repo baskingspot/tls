@@ -204,29 +204,30 @@ pub fn kemPublic(key: KemKey, out: []u8) Error![]u8 {
 pub fn kemLoadPublic(
     parameter_set: ParameterSet,
     public_key: []const u8,
-) Error!KemPeerKey {
+    out: *KemPeerKey,
+) Error!void {
     errqEnter();
     defer errqExit();
-    return c.EVP_PKEY_new_raw_public_key_ex(
+    out.* = c.EVP_PKEY_new_raw_public_key_ex(
         null,
         kemName(parameter_set),
         null,
         public_key.ptr,
         public_key.len,
-    ) orelse error.LibcryptoFailed;
+    ) orelse return error.LibcryptoFailed;
 }
 
 /// Encapsulate using the peer's pure ML-KEM public key.
 pub fn kemEncapsulate(
     parameter_set: ParameterSet,
-    peer_key: KemPeerKey,
+    peer_key: *const KemPeerKey,
     ciphertext_out: []u8,
     secret_out: []u8,
 ) Error!struct { ciphertext: []u8, secret: []u8 } {
     _ = parameter_set;
     errqEnter();
     defer errqExit();
-    const ctx = c.EVP_PKEY_CTX_new(peer_key, null) orelse
+    const ctx = c.EVP_PKEY_CTX_new(peer_key.*, null) orelse
         return error.LibcryptoFailed;
     defer c.EVP_PKEY_CTX_free(ctx);
     if (c.EVP_PKEY_encapsulate_init(ctx, null) != 1)

@@ -17,6 +17,10 @@ const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
 const fixtures = @import("fixtures");
 const fuzz_compat = @import("../fuzz_compat.zig");
 
+test {
+    _ = @import("backend_native_hybrid_tests.zig");
+}
+
 fn keyLenForSuite(suite: CipherSuite) usize {
     return switch (suite) {
         .aes_128_gcm_sha256 => 16,
