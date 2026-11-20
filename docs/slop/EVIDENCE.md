@@ -151,6 +151,69 @@ The socket size excludes trust anchors, credentials, and backend allocations.
 The downstream HTTP client suite did not run against this revision. Its
 existing loopback evidence remains bound to its pinned TLS revision.
 
+## 2026-11-19 native EC key exchange and signatures (#199)
+
+Scope: native P-256/P-384 key exchange, ECDSA CertificateVerify, and
+certificate-chain signatures. The base revision is `21d7c0a`. The host is
+Linux arm64 with Zig 0.17.0 and OpenSSL 3.6.5.
+
+`just check-native` ran Debug, ReleaseSafe, ReleaseFast, and a baseline-CPU
+native suite. Every native run discovered 311 tests, passed 299, failed none,
+and skipped 12. The baseline-CPU libcrypto run discovered 1,018 tests, passed
+1,013, and retained five existing skips. `ldd` printed `not a dynamic
+executable` for the installed native Debug test binary.
+
+The native skips include the ten from the primitive-backend slice. This slice
+adds a skip for the native-side ECDH self-comparison. It also skips
+`fuzz: CertificateVerify verification only with well-formed messages` because
+that corpus loads an RSA certificate under the native no-RSA policy.
+
+Five differentials run in the libcrypto portion of `check-native`:
+
+- `backend.native differential: X25519 shared secret matches libcrypto`
+- `backend.native differential: P-256 and P-384 ECDH match libcrypto`
+- `backend.native differential: AEAD ciphertext and tags match libcrypto`
+- `backend.native differential: product HMAC and HKDF match across backends`
+- `backend.native differential: ECDSA P-256 and P-384 cross-verify with libcrypto`
+
+The new ECDH test checks four deterministic pairs per curve. Both sides derive
+every public key. Each side then consumes the other side's public key and
+matches its shared secret byte for byte in both directions. The ECDSA test uses
+RFC 6979 output from `crypto/ecdsa.zig` on the native side. Libcrypto verifies
+it through `ECDSA_verify`. In the other direction, libcrypto produces a fresh
+signature through `ECDSA_sign`, and native verifies it. Both directions also
+pass through the TLS CertificateVerify message verifier. A wrong message and a
+tampered signature fail under native verification on both curves.
+
+Mutation checks made each new differential fail for its intended reason:
+
+- Changing byte zero after native ECDH failed the linked/native comparison at
+  that byte.
+- Changing the final native ECDSA byte failed in `ECDSA_verify`.
+- Changing the final byte from libcrypto's `ECDSA_sign` failed in the native
+  `ecdsa.zig` verifier.
+
+The restored implementation passed both focused differentials and the complete
+`check-native` recipe. No mutation remains in the tree.
+
+The native root also includes the existing certificate tests. Focused named
+runs passed `parse: validates leaf-intermediate-root chain`, `parse: Ed25519
+self-signed certificate verified via std.crypto`, the native ECDSA contract,
+and the native RSA/ML-KEM unsupported-capability contract. The chain uses the
+real leaf and intermediate DER in `tests/fixtures/fixtures.zig` and the root in
+`tests/fixtures/chain/root.crt`. The Ed25519 fixture is real self-signed DER.
+The 30 PEM files under `docs/research/TLS_ANVIL_91_CHAIN_FIXTURE/` all contain
+RSA signatures, so they cannot exercise this slice without violating its RSA
+non-goal.
+
+The differential host is Linux arm64. No macOS comparison ran locally. The
+existing `check-native` CI job runs on Ubuntu, not macOS.
+
+`UV_PYTHON_INSTALL_DIR="$PWD/.tmp/uv-python" just ci` passed on the change.
+This included all native modes, OpenSSL, AWS-LC, BoringSSL, approved-profile
+suites, memory checks, integrations, and conformance. The uv override selected
+a writable worktree-local Python directory. It changed no crypto option.
+
 ## 2026-11-19 native primitive backend (#199)
 
 Scope: the opt-in `-Dcrypto=native` primitive backend. The base revision is

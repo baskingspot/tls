@@ -85,7 +85,7 @@ fn generateRetry(comptime Attempt: type) Error!KeyPair {
     }
 }
 
-fn publicKey(public_key: PublicKey) Error!*backend.p256.pkey {
+fn publicKey(public_key: PublicKey) Error!backend.p256.pkey {
     return backend.p256.publicKeyFromRaw(&public_key.data);
 }
 
@@ -105,10 +105,10 @@ pub fn sharedSecret(
     out: *[secret_length]u8,
 ) Error!void {
     errdefer std.crypto.secureZero(u8, out);
-    const ours = try backend.p256.ecdhKeyFromSecret(&secret_key.data);
-    defer backend.p256.freeKey(ours);
-    const peer = try publicKey(peer_public_key);
-    defer backend.p256.freeKey(peer);
+    var ours = try backend.p256.ecdhKeyFromSecret(&secret_key.data);
+    defer backend.p256.freeKey(&ours);
+    var peer = try publicKey(peer_public_key);
+    defer backend.p256.freeKey(&peer);
 
     try backend.p256.sharedSecretDerive(ours, peer, out);
 }

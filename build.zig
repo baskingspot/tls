@@ -133,7 +133,17 @@ pub fn build(b: *Build) void {
         });
         native_test_mod.addOptions("build_options", build_options);
         native_test_mod.addImport("stdx", stdx_dep.module("stdx"));
-        if (testingx_dep) |dep| native_test_mod.addImport("testingx", dep.module("testingx"));
+        if (testingx_dep) |dep| {
+            const testingx_mod = dep.module("testingx");
+            native_test_mod.addImport("testingx", testingx_mod);
+            const fixtures_mod = b.createModule(.{
+                .root_source_file = b.path("tests/fixtures/fixtures.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            fixtures_mod.addImport("testingx", testingx_mod);
+            native_test_mod.addImport("fixtures", fixtures_mod);
+        }
         tests.addNativeSteps(b, .{
             .test_mod = native_test_mod,
             .fuzz = fuzz_mode,

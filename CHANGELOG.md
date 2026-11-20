@@ -8,15 +8,19 @@ All notable changes to tls are recorded here. The format follows
 ### Added
 
 - `-Dcrypto=native` selects an opt-in, primitive-only backend over `std.crypto`.
-  X25519, all three TLS AEAD suites, SHA-256/SHA-384, HMAC, HKDF, and raw-seed
-  Ed25519 signing and verification work without libcrypto. P-256/P-384, ML-KEM,
-  RSA, CertificateVerify, and handshakes remain unsupported. The default still
-  auto-detects OpenSSL, AWS-LC, or BoringSSL from the selected headers (#199).
+  X25519, P-256/P-384 ECDH, all three TLS AEAD suites, SHA-256/SHA-384, HMAC,
+  HKDF, and raw-seed Ed25519 operations work without libcrypto. ECDSA P-256 and
+  P-384 support CertificateVerify signatures and certificate chains. Chains
+  also support Ed25519 signatures. ML-KEM, RSA, DER/PEM private-key loading,
+  and handshakes remain unsupported. The default still auto-detects OpenSSL,
+  AWS-LC, or BoringSSL from the selected headers (#199).
 - The `hkdf.Hkdf` type constructor is public for backends that select their own
   runtime and comptime hash pair.
 
 ### Changed
 
+- Backend EC key handles can hold inline native bytes. Their cleanup functions
+  take a pointer to the handle, so native erases caller-owned key material (#199).
 - `-Dcrypto-fips` is now `-Dcrypto-approved-only`, `capabilities.is_fips` is
   `capabilities.approved_only`, and the backend identities are
   `openssl-approved` / `aws-lc-approved`. The option selects an

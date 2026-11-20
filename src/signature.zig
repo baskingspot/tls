@@ -26,7 +26,7 @@ pub const Signer = struct {
 
 pub const PrivateKey = struct {
     scheme: SignatureScheme,
-    key: *backend.sign.pkey,
+    key: backend.sign.pkey,
     /// RFC 6979 nonce strategy (baskingspot/tls#82): `.deterministic`
     /// makes identical key and message yield identical signature bytes for
     /// byte-reproducible seeded transcripts on every backend. Non-ECDSA
@@ -59,10 +59,10 @@ pub const PrivateKey = struct {
     /// P-521 today) fails here with `error.UnsupportedKeyScheme`, at load
     /// time instead of at the first handshake signature.
     pub fn fromPemAuto(pem: []const u8) LoadError!PrivateKey {
-        const key = try backend.sign.privateKeyFromPem(pem);
+        var key = try backend.sign.privateKeyFromPem(pem);
         // Two fallible steps: a scheme-rejected key must not leak the
         // loaded EVP_PKEY.
-        errdefer backend.sign.freeKey(key);
+        errdefer backend.sign.freeKey(&key);
         const scheme = try backend.sign.keyScheme(key);
         if (!backend.supportsCertificateVerifyScheme(scheme)) return error.UnsupportedKeyScheme;
         return .{ .scheme = scheme, .key = key, .nonce_mode = .random };
@@ -77,7 +77,7 @@ pub const PrivateKey = struct {
     }
 
     pub fn deinit(self: *PrivateKey) void {
-        backend.sign.freeKey(self.key);
+        backend.sign.freeKey(&self.key);
         self.* = undefined;
     }
 
@@ -307,8 +307,8 @@ test "PrivateKey.fromPemAuto: P-384 infers ecdsa_secp384r1_sha384 and signs" {
 // CertificateVerify signature (#112).
 test "PrivateKey.fromPemAuto: P-521 is rejected at load by the capability gate" {
     const ec_p521_key_pem = @import("fixtures").ec_p521_key_pem;
-    const backend_key = try backend.sign.privateKeyFromPem(ec_p521_key_pem);
-    defer backend.sign.freeKey(backend_key);
+    var backend_key = try backend.sign.privateKeyFromPem(ec_p521_key_pem);
+    defer backend.sign.freeKey(&backend_key);
     try testing.expectEqual(
         SignatureScheme.ecdsa_secp521r1_sha512,
         try backend.sign.keyScheme(backend_key),
@@ -324,8 +324,8 @@ test "PrivateKey.fromPemAuto: P-521 is rejected at load by the capability gate" 
 // flow the sign seam does not have), so the gate rejects at load (#112).
 test "PrivateKey.fromPemAuto: Ed25519 is rejected at load by the capability gate" {
     const ed25519_key_pem = @import("fixtures").ed25519_key_pem;
-    const backend_key = try backend.sign.privateKeyFromPem(ed25519_key_pem);
-    defer backend.sign.freeKey(backend_key);
+    var backend_key = try backend.sign.privateKeyFromPem(ed25519_key_pem);
+    defer backend.sign.freeKey(&backend_key);
     try testing.expectEqual(
         SignatureScheme.ed25519,
         try backend.sign.keyScheme(backend_key),

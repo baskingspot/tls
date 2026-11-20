@@ -4,6 +4,7 @@
 //! P-384/SHA-384. `random` adds fresh OS entropy as RFC 6979 §3.6 additional
 //! data. `deterministic` omits it and produces the RFC's published answers.
 const std = @import("std");
+const crypto = std.crypto;
 const assert = std.debug.assert;
 const testing = std.testing;
 const entropy = @import("../entropy.zig");
@@ -19,14 +20,14 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
     comptime assert(Hash.digest_length == Curve.scalar.encoded_length);
 
     return struct {
-        const Scheme = std.crypto.sign.ecdsa.Ecdsa(Curve, Hash);
+        const Scheme = crypto.sign.ecdsa.Ecdsa(Curve, Hash);
         const Scalar = Curve.scalar.Scalar;
-        const Prf = std.crypto.auth.hmac.Hmac(Hash);
+        const Prf = crypto.auth.hmac.Hmac(Hash);
         const scalar_length = Curve.scalar.encoded_length;
         const der_length_max = Scheme.Signature.der_encoded_length_max;
 
         fn wipe(value: anytype) void {
-            std.crypto.secureZero(u8, std.mem.asBytes(value));
+            crypto.secureZero(u8, std.mem.asBytes(value));
         }
 
         fn mac(out: *[Hash.digest_length]u8, key: []const u8, parts: anytype) void {
@@ -182,12 +183,28 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
             @memcpy(out[0..der.len], der);
             return out[0..der.len];
         }
+
+        pub const VerifyError = error{ InvalidEncoding, SignatureVerificationFailed };
+
+        /// RFC 8446 §4.2.3 — verify DER ECDSA over a SEC1 key on the named
+        /// curve. A malformed key and a bad signature stay distinguishable.
+        pub fn verify(
+            public_key: []const u8,
+            msg: []const u8,
+            encoded_signature: []const u8,
+        ) VerifyError!void {
+            const key = Scheme.PublicKey.fromSec1(public_key) catch
+                return error.InvalidEncoding;
+            const signature = Scheme.Signature.fromDer(encoded_signature) catch
+                return error.SignatureVerificationFailed;
+            signature.verify(msg, key) catch return error.SignatureVerificationFailed;
+        }
     };
 }
 
 // RFC 6979 §2.2 — the private scalar must be in [1, q-1].
 test "ECDSA rejects zero and non-canonical private scalars" {
-    const P256 = Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha256);
+    const P256 = Ecdsa(crypto.ecc.P256, crypto.hash.sha2.Sha256);
     var out: [72]u8 = undefined;
     const zero: [32]u8 = @splat(0);
     try testing.expectError(

@@ -118,6 +118,7 @@ pub const capabilities_approved = struct {
 
 pub const Error = compat.Error;
 pub const pkey = compat.pkey;
+pub const EcKey = compat.EcKey;
 pub const KemKey = *c.EVP_PKEY;
 pub const KemPeerKey = *c.EVP_PKEY;
 
@@ -213,6 +214,7 @@ pub fn kemDecapsulate(
 }
 
 pub const freeKey = compat.freeKey;
+pub const freeEcKey = compat.freeEcKey;
 
 pub const x25519_pkey = union(enum) {
     private: [32]u8,

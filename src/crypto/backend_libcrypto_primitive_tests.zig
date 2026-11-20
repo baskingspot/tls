@@ -1,14 +1,15 @@
 //! Libcrypto-only backend primitive tests (#199).
 //!
-//! The shared primitive vectors remain in backend_primitive_tests.zig. This
-//! companion keeps P-256/P-384, signing, and error-queue coverage out of the
-//! native build, whose capability table declares those paths unsupported.
+//! The shared primitive vectors and native EC differential live in
+//! backend_primitive_tests.zig. This companion owns the libcrypto facade
+//! contracts, the independent ECDSA cross-check, and error-queue coverage.
 const std = @import("std");
 const stdx = @import("stdx");
 const testing = std.testing;
 const assert = std.debug.assert;
 
 const backend = @import("backend.zig");
+const backend_native = @import("backend_native.zig");
 const certificate = @import("../certificate.zig");
 const Certificate = @import("../certificate_parser.zig");
 const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
@@ -38,25 +39,25 @@ test "backend.p256: mutual key agreement with fixed scalars" {
         "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
     );
 
-    const alice_priv = try backend.p256.privateKeyFromSecret(&alice_scalar);
-    defer backend.p256.freeKey(alice_priv);
+    var alice_priv = try backend.p256.privateKeyFromSecret(&alice_scalar);
+    defer backend.p256.freeKey(&alice_priv);
     const alice_pub = try backend.p256.rawPublicKeyFromPrivate(alice_priv);
 
-    const bob_priv = try backend.p256.privateKeyFromSecret(&bob_scalar);
-    defer backend.p256.freeKey(bob_priv);
+    var bob_priv = try backend.p256.privateKeyFromSecret(&bob_scalar);
+    defer backend.p256.freeKey(&bob_priv);
     const bob_pub = try backend.p256.rawPublicKeyFromPrivate(bob_priv);
 
     // Both public keys must be uncompressed SEC1 (0x04 prefix, 65 bytes).
     try testing.expectEqual(@as(u8, 0x04), alice_pub[0]);
     try testing.expectEqual(@as(u8, 0x04), bob_pub[0]);
 
-    const alice_peer = try backend.p256.publicKeyFromRaw(&bob_pub);
-    defer backend.p256.freeKey(alice_peer);
+    var alice_peer = try backend.p256.publicKeyFromRaw(&bob_pub);
+    defer backend.p256.freeKey(&alice_peer);
     var alice_shared: [32]u8 = undefined;
     try backend.p256.sharedSecretDerive(alice_priv, alice_peer, &alice_shared);
 
-    const bob_peer = try backend.p256.publicKeyFromRaw(&alice_pub);
-    defer backend.p256.freeKey(bob_peer);
+    var bob_peer = try backend.p256.publicKeyFromRaw(&alice_pub);
+    defer backend.p256.freeKey(&bob_peer);
     var bob_shared: [32]u8 = undefined;
     try backend.p256.sharedSecretDerive(bob_priv, bob_peer, &bob_shared);
 
@@ -70,8 +71,8 @@ test "backend.p256: non-04 SEC1 prefix is rejected" {
     var fixed_scalar: [32]u8 = scalar;
     fixed_scalar[31] = 1;
 
-    const priv = try backend.p256.privateKeyFromSecret(&fixed_scalar);
-    defer backend.p256.freeKey(priv);
+    var priv = try backend.p256.privateKeyFromSecret(&fixed_scalar);
+    defer backend.p256.freeKey(&priv);
     const pub_bytes = try backend.p256.rawPublicKeyFromPrivate(priv);
 
     // Tamper with the prefix: 0x03 (compressed) is not accepted by this facade.
@@ -129,10 +130,10 @@ test "backend.p256: Wycheproof tcId 1 shared secret" {
         "53020d908b0219328b658b525f26780e3ae12bcd952bb25a93bc0895e1714285",
     );
 
-    const priv = try backend.p256.privateKeyFromSecret(&scalar);
-    defer backend.p256.freeKey(priv);
-    const peer = try backend.p256.publicKeyFromRaw(&peer_pub);
-    defer backend.p256.freeKey(peer);
+    var priv = try backend.p256.privateKeyFromSecret(&scalar);
+    defer backend.p256.freeKey(&priv);
+    var peer = try backend.p256.publicKeyFromRaw(&peer_pub);
+    defer backend.p256.freeKey(&peer);
 
     var shared: [32]u8 = undefined;
     try backend.p256.sharedSecretDerive(priv, peer, &shared);
@@ -150,8 +151,8 @@ test "backend.p256: publicFromSecret matches the checked construction" {
         stdx.fmt.comptimeHex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550"),
     };
     for (&scalars) |*scalar| {
-        const priv = try backend.p256.privateKeyFromSecret(scalar);
-        defer backend.p256.freeKey(priv);
+        var priv = try backend.p256.privateKeyFromSecret(scalar);
+        defer backend.p256.freeKey(&priv);
         const want = try backend.p256.rawPublicKeyFromPrivate(priv);
         const got = try backend.p256.publicFromSecret(scalar);
         try testing.expectEqualSlices(u8, &want, &got);
@@ -172,10 +173,10 @@ test "backend.p256: ecdhKeyFromSecret derives the Wycheproof secret and range-ch
     const want: [32]u8 = stdx.fmt.comptimeHex(
         "53020d908b0219328b658b525f26780e3ae12bcd952bb25a93bc0895e1714285",
     );
-    const ours = try backend.p256.ecdhKeyFromSecret(&scalar);
-    defer backend.p256.freeKey(ours);
-    const peer = try backend.p256.publicKeyFromRaw(&peer_pub);
-    defer backend.p256.freeKey(peer);
+    var ours = try backend.p256.ecdhKeyFromSecret(&scalar);
+    defer backend.p256.freeKey(&ours);
+    var peer = try backend.p256.publicKeyFromRaw(&peer_pub);
+    defer backend.p256.freeKey(&peer);
     var shared: [32]u8 = undefined;
     try backend.p256.sharedSecretDerive(ours, peer, &shared);
     try testing.expectEqualSlices(u8, &want, &shared);
@@ -216,24 +217,24 @@ test "backend.p384: mutual key agreement with fixed scalars" {
             "505152535455565758595a5b5c5d5e5f",
     );
 
-    const alice_priv = try backend.p384.privateKeyFromSecret(&alice_scalar);
-    defer backend.p384.freeKey(alice_priv);
+    var alice_priv = try backend.p384.privateKeyFromSecret(&alice_scalar);
+    defer backend.p384.freeKey(&alice_priv);
     const alice_pub = try backend.p384.rawPublicKeyFromPrivate(alice_priv);
 
-    const bob_priv = try backend.p384.privateKeyFromSecret(&bob_scalar);
-    defer backend.p384.freeKey(bob_priv);
+    var bob_priv = try backend.p384.privateKeyFromSecret(&bob_scalar);
+    defer backend.p384.freeKey(&bob_priv);
     const bob_pub = try backend.p384.rawPublicKeyFromPrivate(bob_priv);
 
     try testing.expectEqual(@as(u8, 0x04), alice_pub[0]);
     try testing.expectEqual(@as(u8, 0x04), bob_pub[0]);
 
-    const alice_peer = try backend.p384.publicKeyFromRaw(&bob_pub);
-    defer backend.p384.freeKey(alice_peer);
+    var alice_peer = try backend.p384.publicKeyFromRaw(&bob_pub);
+    defer backend.p384.freeKey(&alice_peer);
     var alice_shared: [48]u8 = undefined;
     try backend.p384.sharedSecretDerive(alice_priv, alice_peer, &alice_shared);
 
-    const bob_peer = try backend.p384.publicKeyFromRaw(&alice_pub);
-    defer backend.p384.freeKey(bob_peer);
+    var bob_peer = try backend.p384.publicKeyFromRaw(&alice_pub);
+    defer backend.p384.freeKey(&bob_peer);
     var bob_shared: [48]u8 = undefined;
     try backend.p384.sharedSecretDerive(bob_priv, bob_peer, &bob_shared);
 
@@ -245,8 +246,8 @@ test "backend.p384: non-04 SEC1 prefix is rejected" {
     var scalar: [48]u8 = @splat(0);
     scalar[47] = 1;
 
-    const priv = try backend.p384.privateKeyFromSecret(&scalar);
-    defer backend.p384.freeKey(priv);
+    var priv = try backend.p384.privateKeyFromSecret(&scalar);
+    defer backend.p384.freeKey(&priv);
     const pub_bytes = try backend.p384.rawPublicKeyFromPrivate(priv);
 
     var bad_pub = pub_bytes;
@@ -301,10 +302,10 @@ test "backend.p384: Wycheproof tcId 1 shared secret" {
             "de1e229da71fef0c77fe49b249190135",
     );
 
-    const priv = try backend.p384.privateKeyFromSecret(&scalar);
-    defer backend.p384.freeKey(priv);
-    const peer = try backend.p384.publicKeyFromRaw(&peer_pub);
-    defer backend.p384.freeKey(peer);
+    var priv = try backend.p384.privateKeyFromSecret(&scalar);
+    defer backend.p384.freeKey(&priv);
+    var peer = try backend.p384.publicKeyFromRaw(&peer_pub);
+    defer backend.p384.freeKey(&peer);
 
     var shared: [48]u8 = undefined;
     try backend.p384.sharedSecretDerive(priv, peer, &shared);
@@ -363,7 +364,7 @@ fn verifyAsServerCertificateVerify(
 }
 
 fn verifyEcdsaDigestWithLibcrypto(
-    key: *backend.sign.pkey,
+    key: backend.sign.pkey,
     digest: []const u8,
     sig: []const u8,
 ) !void {
@@ -385,7 +386,7 @@ fn verifyEcdsaDigestWithLibcrypto(
 /// Verify the signature through the native path and through libcrypto's
 /// separate implementation of the ECDSA equation over the same digest.
 fn verifyEcdsaWithLibcrypto(
-    key: *backend.sign.pkey,
+    key: backend.sign.pkey,
     scheme: SignatureScheme,
     msg: []const u8,
     sig: []const u8,
@@ -406,7 +407,7 @@ fn verifyEcdsaWithLibcrypto(
 }
 
 fn verifyEcdsaBoth(
-    key: *backend.sign.pkey,
+    key: backend.sign.pkey,
     sig: []const u8,
     scheme: SignatureScheme,
     pub_key: []const u8,
@@ -420,8 +421,8 @@ fn verifyEcdsaBoth(
 // RFC 8446 §4.4.3 — CertificateVerify signs caller-assembled bytes; the
 // libcrypto signer and the native verifier must agree on that content.
 test "backend.sign: RSA-PSS SHA-256 signature verifies natively" {
-    const private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
-    defer backend.sign.freeKey(private_key);
+    var private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
+    defer backend.sign.freeKey(&private_key);
     const pub_key = try rsaPssPublicKeyBits();
 
     const transcript_hash: [32]u8 = @splat(0x42);
@@ -436,8 +437,8 @@ test "backend.sign: RSA-PSS SHA-256 signature verifies natively" {
 
 // RFC 8446 §4.4.3 — signature verification must reject a tampered signature.
 test "backend.sign: RSA-PSS SHA-256 tampered signature is rejected natively" {
-    const private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
-    defer backend.sign.freeKey(private_key);
+    var private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
+    defer backend.sign.freeKey(&private_key);
     const pub_key = try rsaPssPublicKeyBits();
 
     const transcript_hash: [32]u8 = @splat(0x42);
@@ -458,8 +459,8 @@ test "backend.sign: RSA-PSS SHA-256 tampered signature is rejected natively" {
 // RFC 8446 §4.4.3 — RSA-PSS SHA-384 is advertised for CertificateVerify and
 // must round-trip through the signer and the native verifier.
 test "backend.sign: RSA-PSS SHA-384 signature verifies natively and tamper is rejected" {
-    const private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
-    defer backend.sign.freeKey(private_key);
+    var private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
+    defer backend.sign.freeKey(&private_key);
     const pub_key = try rsaPssPublicKeyBits();
 
     const transcript_hash: [48]u8 = @splat(0x24);
@@ -485,8 +486,8 @@ test "backend.sign: ECDSA P-256 signatures verify natively and through libcrypto
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     );
 
-    const priv = try backend.sign.privateKeyFromP256Scalar(&scalar);
-    defer backend.sign.freeKey(priv);
+    var priv = try backend.sign.privateKeyFromP256Scalar(&scalar);
+    defer backend.sign.freeKey(&priv);
 
     // The native verifier takes the certificate's SubjectPublicKey bits
     // directly, so the SEC1 encoding is the whole key.
@@ -521,8 +522,8 @@ test "backend.sign: ECDSA P-256 SHA-256 tampered signature is rejected natively"
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     );
 
-    const priv = try backend.sign.privateKeyFromP256Scalar(&scalar);
-    defer backend.sign.freeKey(priv);
+    var priv = try backend.sign.privateKeyFromP256Scalar(&scalar);
+    defer backend.sign.freeKey(&priv);
 
     const pub_bytes = try backend.p256.rawPublicKeyFromPrivate(priv);
 
@@ -554,8 +555,8 @@ test "backend.sign: ECDSA P-384 signatures verify natively and through libcrypto
             "202122232425262728292a2b2c2d2e2f",
     );
 
-    const priv = try backend.p384.privateKeyFromSecret(&scalar);
-    defer backend.p384.freeKey(priv);
+    var priv = try backend.p384.privateKeyFromSecret(&scalar);
+    defer backend.p384.freeKey(&priv);
 
     const pub_bytes = try backend.p384.rawPublicKeyFromPrivate(priv);
 
@@ -588,13 +589,122 @@ test "backend.sign: ECDSA P-384 signatures verify natively and through libcrypto
     );
 }
 
+fn signEcdsaDigestWithLibcrypto(
+    key: backend.sign.pkey,
+    digest: []const u8,
+    out: []u8,
+) ![]const u8 {
+    _ = c.ERR_set_mark();
+    defer _ = c.ERR_pop_to_mark();
+    const ec = c.EVP_PKEY_get0_EC_KEY(key) orelse return error.LibcryptoFailed;
+    const required = c.ECDSA_size(ec);
+    if (required < 0 or out.len < @as(usize, @intCast(required)))
+        return error.BufferTooShort;
+    var signature_len: c_uint = @intCast(out.len);
+    if (c.ECDSA_sign(
+        0,
+        digest.ptr,
+        @intCast(digest.len),
+        out.ptr,
+        &signature_len,
+        @constCast(ec),
+    ) != 1) return error.LibcryptoFailed;
+    return out[0..signature_len];
+}
+
+fn expectEcdsaCrossVerification(
+    comptime Curve: type,
+    comptime Hash: type,
+    scheme: SignatureScheme,
+    scalar: *const [Curve.scalar.encoded_length]u8,
+) !void {
+    var linked_private: backend.sign.pkey = if (comptime Curve == std.crypto.ecc.P256)
+        try backend.sign.privateKeyFromP256Scalar(scalar)
+    else
+        try backend.p384.privateKeyFromSecret(scalar);
+    defer backend.sign.freeKey(&linked_private);
+    var native_private: backend_native.pkey = if (comptime Curve == std.crypto.ecc.P256)
+        try backend_native.privateKeyFromP256Scalar(scalar)
+    else
+        try backend_native.p384PrivateKeyFromSecret(scalar);
+    defer backend_native.freeEcKey(&native_private);
+    const public_bytes = if (comptime Curve == std.crypto.ecc.P256)
+        try backend_native.p256RawPublicKeyFromPrivate(native_private)
+    else
+        try backend_native.p384RawPublicKeyFromPrivate(native_private);
+    var native_public: backend_native.pkey = if (comptime Curve == std.crypto.ecc.P256)
+        try backend_native.p256PublicKeyFromRaw(&public_bytes)
+    else
+        try backend_native.p384PublicKeyFromRaw(&public_bytes);
+    defer backend_native.freeEcKey(&native_public);
+
+    const transcript_hash: [Hash.digest_length]u8 = @splat(0x5a);
+    var content_buf: [160]u8 = undefined;
+    const content = serverSignedContent(&content_buf, &transcript_hash);
+    var digest: [Hash.digest_length]u8 = undefined;
+    Hash.hash(content, &digest, .{});
+
+    var native_buf: [160]u8 = undefined;
+    const native_sig = try backend_native.signatureSign(
+        native_private,
+        scheme,
+        content,
+        &native_buf,
+        .deterministic,
+    );
+    try verifyEcdsaDigestWithLibcrypto(linked_private, &digest, native_sig);
+    try backend_native.signatureVerify(native_public, scheme, content, native_sig);
+    try verifyAsServerCertificateVerify(native_sig, scheme, &public_bytes, &transcript_hash);
+
+    var linked_buf: [160]u8 = undefined;
+    const linked_sig = try signEcdsaDigestWithLibcrypto(linked_private, &digest, &linked_buf);
+    try backend_native.signatureVerify(native_public, scheme, content, linked_sig);
+    try verifyAsServerCertificateVerify(linked_sig, scheme, &public_bytes, &transcript_hash);
+
+    native_buf[native_sig.len - 1] ^= 1;
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        backend_native.signatureVerify(native_public, scheme, content, native_sig),
+    );
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        backend_native.signatureVerify(native_public, scheme, "wrong message", linked_sig),
+    );
+}
+
+// RFC 8446 §4.4.3 — native output verifies with libcrypto, and output from
+// libcrypto's own ECDSA_sign verifies natively. This is independent in both
+// directions; backend.sign uses the in-tree signer and is not the C producer.
+test "backend.native differential: ECDSA P-256 and P-384 cross-verify with libcrypto" {
+    const p256_scalar: [32]u8 = stdx.fmt.comptimeHex(
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    );
+    try expectEcdsaCrossVerification(
+        std.crypto.ecc.P256,
+        std.crypto.hash.sha2.Sha256,
+        .ecdsa_secp256r1_sha256,
+        &p256_scalar,
+    );
+    const p384_scalar: [48]u8 = stdx.fmt.comptimeHex(
+        "000102030405060708090a0b0c0d0e0f" ++
+            "101112131415161718191a1b1c1d1e1f" ++
+            "202122232425262728292a2b2c2d2e2f",
+    );
+    try expectEcdsaCrossVerification(
+        std.crypto.ecc.P384,
+        std.crypto.hash.sha2.Sha384,
+        .ecdsa_secp384r1_sha384,
+        &p384_scalar,
+    );
+}
+
 // RFC 8446 §4.2.3 — rsa_pss_rsae_sha512 is a legal CertificateVerify scheme
 // even though the default capability tables do not advertise it, so the
 // verifier must handle it. SHA-512 needs a 2048-bit key: emLen has to hold
 // hLen + sLen + 2.
 test "backend.sign: RSA-PSS SHA-512 signature verifies natively" {
-    const private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
-    defer backend.sign.freeKey(private_key);
+    var private_key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
+    defer backend.sign.freeKey(&private_key);
     const pub_key = try rsaPssPublicKeyBits();
 
     const transcript_hash: [64]u8 = @splat(0x11);
@@ -610,8 +720,8 @@ test "backend.sign: RSA-PSS SHA-512 signature verifies natively" {
 // RFC 8446 §4.4.3 — the signing output buffer must be large enough or the
 // backend returns BufferTooShort without truncation.
 test "backend.sign: BufferTooShort on undersized output" {
-    const key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
-    defer backend.sign.freeKey(key);
+    var key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
+    defer backend.sign.freeKey(&key);
 
     var sig_buf: [1]u8 = undefined;
     try testing.expectError(
@@ -626,8 +736,8 @@ test "backend.sign: ECDSA curve mismatch is a named failure" {
     const scalar: [32]u8 = @splat(0);
     var fixed: [32]u8 = scalar;
     fixed[31] = 1;
-    const priv = try backend.sign.privateKeyFromP256Scalar(&fixed);
-    defer backend.sign.freeKey(priv);
+    var priv = try backend.sign.privateKeyFromP256Scalar(&fixed);
+    defer backend.sign.freeKey(&priv);
 
     var sig_buf: [104]u8 = undefined;
     try testing.expectError(
@@ -642,8 +752,8 @@ test "backend.sign: key/scheme mismatch is a libcrypto failure" {
     const scalar: [32]u8 = @splat(0);
     var fixed: [32]u8 = scalar;
     fixed[31] = 1;
-    const priv = try backend.sign.privateKeyFromP256Scalar(&fixed);
-    defer backend.sign.freeKey(priv);
+    var priv = try backend.sign.privateKeyFromP256Scalar(&fixed);
+    defer backend.sign.freeKey(&priv);
 
     var sig_buf: [256]u8 = undefined;
     try testing.expectError(
@@ -682,7 +792,7 @@ const differential_transcript_max = 64;
 /// Deterministic ECDSA makes a crash input reproduce on every backend. RSA-PSS
 /// uses its random nonce construction.
 fn signDeterministically(
-    key: *backend.sign.pkey,
+    key: backend.sign.pkey,
     scheme: SignatureScheme,
     content: []const u8,
     out: []u8,
@@ -695,7 +805,7 @@ fn signDeterministically(
 }
 
 fn expectSignerVerifierAgreement(
-    key: *backend.sign.pkey,
+    key: backend.sign.pkey,
     scheme: SignatureScheme,
     pub_key: []const u8,
     content: []const u8,
@@ -735,8 +845,8 @@ fn fuzzSignVerifyDifferential(_: void, input: []const u8) anyerror!void {
         .ecdsa_secp256r1_sha256 => {
             // Zero and out-of-range scalars cannot form a key. Skip them
             // instead of reporting an expected key-construction error.
-            const key = backend.sign.privateKeyFromP256Scalar(input[1..33]) catch return;
-            defer backend.sign.freeKey(key);
+            var key = backend.sign.privateKeyFromP256Scalar(input[1..33]) catch return;
+            defer backend.sign.freeKey(&key);
             const pub_key = try backend.p256.rawPublicKeyFromPrivate(key);
             try expectSignerVerifierAgreement(
                 key,
@@ -748,8 +858,8 @@ fn fuzzSignVerifyDifferential(_: void, input: []const u8) anyerror!void {
             );
         },
         .ecdsa_secp384r1_sha384 => {
-            const key = backend.p384.privateKeyFromSecret(input[1..49]) catch return;
-            defer backend.sign.freeKey(key);
+            var key = backend.p384.privateKeyFromSecret(input[1..49]) catch return;
+            defer backend.sign.freeKey(&key);
             const pub_key = try backend.p384.rawPublicKeyFromPrivate(key);
             try expectSignerVerifierAgreement(
                 key,
@@ -761,8 +871,8 @@ fn fuzzSignVerifyDifferential(_: void, input: []const u8) anyerror!void {
             );
         },
         else => {
-            const key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
-            defer backend.sign.freeKey(key);
+            var key = try backend.sign.privateKeyFromPem(rsa_pss_key_pem);
+            defer backend.sign.freeKey(&key);
             const pub_key = try rsaPssPublicKeyBits();
             try expectSignerVerifierAgreement(
                 key,
@@ -973,8 +1083,8 @@ test "backend error-queue hygiene: successful key load preserves caller entries 
     pushCallerQueueEntries();
     // Any in-range scalar: 0x0101…01 < the P-256 group order.
     const scalar: [32]u8 = @splat(0x01);
-    const key = try backend.p256.privateKeyFromSecret(&scalar);
-    defer backend.p256.freeKey(key);
+    var key = try backend.p256.privateKeyFromSecret(&scalar);
+    defer backend.p256.freeKey(&key);
 
     try expectQueueMatchesCallerResidue();
 }
@@ -1068,8 +1178,8 @@ test "backend error-queue hygiene: scheme inference preserves caller entries (#1
     c.ERR_clear_error();
     pushCallerQueueEntries();
     const scalar: [32]u8 = @splat(0x01);
-    const key = try backend.sign.privateKeyFromP256Scalar(&scalar);
-    defer backend.sign.freeKey(key);
+    var key = try backend.sign.privateKeyFromP256Scalar(&scalar);
+    defer backend.sign.freeKey(&key);
 
     const scheme = try backend.sign.keyScheme(key);
     try testing.expectEqual(SignatureScheme.ecdsa_secp256r1_sha256, scheme);
@@ -1113,8 +1223,8 @@ test "backend error-queue hygiene: cert/key mismatch preservation is lane-depend
     c.ERR_clear_error();
     pushCallerQueueEntries();
     const scalar: [32]u8 = @splat(0x01);
-    const key = try backend.sign.privateKeyFromP256Scalar(&scalar);
-    defer backend.sign.freeKey(key);
+    var key = try backend.sign.privateKeyFromP256Scalar(&scalar);
+    defer backend.sign.freeKey(&key);
 
     try testing.expect(
         try backend.sign.privateKeyPairsWithCertificate(key, &fixtures.rsa_pss_cert_der) == false,

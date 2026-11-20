@@ -1,7 +1,7 @@
 //! Pure-Zig crypto primitives for the opt-in native backend (#199).
 //!
-//! This backend is not a production replacement for libcrypto. P-256/P-384,
-//! ML-KEM, and RSA remain unsupported in this slice.
+//! This backend is not a production replacement for libcrypto. ML-KEM and RSA
+//! remain unsupported in this slice.
 const std = @import("std");
 const crypto = std.crypto;
 const testing = std.testing;
@@ -11,6 +11,9 @@ const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 const ParameterSet = @import("mlkem_parameters.zig").ParameterSet;
 const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
 const aes_gcm = @import("aes_gcm_native.zig");
+const ecdsa = @import("ecdsa.zig");
+const P256 = crypto.ecc.P256;
+const P384 = crypto.ecc.P384;
 
 pub const capabilities = struct {
     pub const cipher_suites: []const CipherSuite = &.{
@@ -20,30 +23,38 @@ pub const capabilities = struct {
     };
 
     pub const client_x25519 = true;
-    pub const client_p256 = false;
-    pub const client_p384 = false;
+    pub const client_p256 = true;
+    pub const client_p384 = true;
     pub const client_x25519_mlkem768 = false;
     pub const client_secp256r1_mlkem768 = false;
     pub const client_secp384r1_mlkem1024 = false;
     pub const server_x25519 = true;
-    pub const server_p256 = false;
-    pub const server_p384 = false;
+    pub const server_p256 = true;
+    pub const server_p384 = true;
     pub const server_x25519_mlkem768 = false;
     pub const server_secp256r1_mlkem768 = false;
     pub const server_secp384r1_mlkem1024 = false;
 
-    // Ed25519 primitive signing and verification exist below. The
-    // CertificateVerify key-loading and verification path is a later slice.
-    pub const certificate_verify_schemes: []const SignatureScheme = &.{};
+    // CertificateVerify and chain verification use the in-tree ECDSA module.
+    // Ed25519 remains a chain-signature scheme, not a CertificateVerify scheme.
+    pub const certificate_verify_schemes: []const SignatureScheme = &.{
+        .ecdsa_secp256r1_sha256,
+        .ecdsa_secp384r1_sha384,
+    };
 
-    // Certificate-chain Ed25519 verification already uses std.crypto in
-    // certificate_parser.zig and needs no libcrypto calls.
-    pub const certificate_signature_schemes: []const SignatureScheme = &.{.ed25519};
+    pub const certificate_signature_schemes: []const SignatureScheme = &.{
+        .ecdsa_secp256r1_sha256,
+        .ecdsa_secp384r1_sha384,
+        .ed25519,
+    };
 };
 
 pub const sha2 = crypto.hash.sha2;
+const Sha256 = sha2.Sha256;
+const Sha384 = sha2.Sha384;
 
-pub const Error = error{ IdentityElement, LibcryptoFailed, UnsupportedPrimitive };
+pub const Error = error{ IdentityElement, LibcryptoFailed };
+pub const KemError = Error || error{UnsupportedPrimitive};
 
 // X25519 handles are values, as on the BoringSSL-family backends.
 pub const x25519_pkey = union(enum) {
@@ -233,82 +244,138 @@ pub const ed25519 = struct {
     }
 };
 
-// Unsupported facade entries fail by name. Capabilities prevent negotiation;
-// these errors also stop a direct caller from getting a silent no-op.
-pub const pkey = struct {};
+/// Inline keys keep native construction allocation-free. Libcrypto backends
+/// use a pointer at the same facade boundary.
+pub const pkey = union(enum) {
+    p256_private: [32]u8,
+    p256_public: [65]u8,
+    p384_private: [48]u8,
+    p384_public: [97]u8,
+};
+pub const EcKey = pkey;
 pub const KemKey = *pkey;
 pub const KemPeerKey = *pkey;
 
+// ML-KEM has no native key to free. Unsupported constructors fail before one
+// can exist. EC handles use freeEcKey through their facade instead.
 pub fn freeKey(key: anytype) void {
     _ = key;
 }
 
-pub fn p256PrivateKeyFromSecret(secret: *const [32]u8) Error!*pkey {
-    _ = secret;
-    return error.UnsupportedPrimitive;
+pub fn freeEcKey(key: *EcKey) void {
+    crypto.secureZero(u8, std.mem.asBytes(key));
+    key.* = undefined;
 }
 
-pub fn p256PublicKeyFromRaw(public_key: *const [65]u8) Error!*pkey {
-    _ = public_key;
-    return error.UnsupportedPrimitive;
+/// SEC 1 §3.2.1 — reject zero and every scalar outside [1, n - 1].
+fn validateSecret(comptime Curve: type, secret: anytype) Error!void {
+    const scalar = Curve.scalar.Scalar.fromBytes(secret.*, .big) catch
+        return error.IdentityElement;
+    if (scalar.isZero()) return error.IdentityElement;
 }
 
-pub fn p256RawPublicKeyFromPrivate(key: *pkey) Error![65]u8 {
-    _ = key;
-    return error.UnsupportedPrimitive;
+fn publicFromSecret(
+    comptime Curve: type,
+    secret: anytype,
+) Error![1 + 2 * Curve.Fe.encoded_length]u8 {
+    try validateSecret(Curve, secret);
+    const point = Curve.basePoint.mul(secret.*, .big) catch return error.IdentityElement;
+    return point.toUncompressedSec1();
+}
+
+fn decodePublic(comptime Curve: type, public_key: anytype) Error!Curve {
+    if (public_key[0] != 0x04) return error.IdentityElement;
+    const point = Curve.fromSec1(public_key) catch return error.IdentityElement;
+    point.rejectIdentity() catch return error.IdentityElement;
+    return point;
+}
+
+fn deriveShared(
+    comptime Curve: type,
+    secret: anytype,
+    public_key: anytype,
+    out: anytype,
+) Error!void {
+    try validateSecret(Curve, secret);
+    const point = try decodePublic(Curve, public_key);
+    const shared = point.mul(secret.*, .big) catch return error.IdentityElement;
+    out.* = shared.affineCoordinates().x.toBytes(.big);
+}
+
+pub fn p256PrivateKeyFromSecret(secret: *const [32]u8) Error!pkey {
+    try validateSecret(P256, secret);
+    return .{ .p256_private = secret.* };
+}
+
+pub fn p256PublicKeyFromRaw(public_key: *const [65]u8) Error!pkey {
+    _ = try decodePublic(P256, public_key);
+    return .{ .p256_public = public_key.* };
+}
+
+pub fn p256RawPublicKeyFromPrivate(key: pkey) Error![65]u8 {
+    return switch (key) {
+        .p256_private => |secret| publicFromSecret(P256, &secret),
+        else => error.LibcryptoFailed,
+    };
 }
 
 pub fn p256PublicFromSecret(secret: *const [32]u8) Error![65]u8 {
-    _ = secret;
-    return error.UnsupportedPrimitive;
+    return publicFromSecret(P256, secret);
 }
 
-pub fn p256EcdhKeyFromSecret(secret: *const [32]u8) Error!*pkey {
-    _ = secret;
-    return error.UnsupportedPrimitive;
+pub fn p256EcdhKeyFromSecret(secret: *const [32]u8) Error!pkey {
+    return p256PrivateKeyFromSecret(secret);
 }
 
-pub fn p256SharedSecretDerive(ours: *pkey, peer: *pkey, out: *[32]u8) Error!void {
-    _ = ours;
-    _ = peer;
-    _ = out;
-    return error.UnsupportedPrimitive;
+pub fn p256SharedSecretDerive(ours: pkey, peer: pkey, out: *[32]u8) Error!void {
+    switch (ours) {
+        .p256_private => |*secret| switch (peer) {
+            .p256_public => |*public_key| return deriveShared(P256, secret, public_key, out),
+            else => return error.LibcryptoFailed,
+        },
+        else => return error.LibcryptoFailed,
+    }
 }
 
-pub fn p384PrivateKeyFromSecret(secret: *const [48]u8) Error!*pkey {
-    _ = secret;
-    return error.UnsupportedPrimitive;
+pub fn p384PrivateKeyFromSecret(secret: *const [48]u8) Error!pkey {
+    try validateSecret(P384, secret);
+    return .{ .p384_private = secret.* };
 }
 
-pub fn p384PublicKeyFromRaw(public_key: *const [97]u8) Error!*pkey {
-    _ = public_key;
-    return error.UnsupportedPrimitive;
+pub fn p384PublicKeyFromRaw(public_key: *const [97]u8) Error!pkey {
+    _ = try decodePublic(P384, public_key);
+    return .{ .p384_public = public_key.* };
 }
 
-pub fn p384RawPublicKeyFromPrivate(key: *pkey) Error![97]u8 {
-    _ = key;
-    return error.UnsupportedPrimitive;
+pub fn p384RawPublicKeyFromPrivate(key: pkey) Error![97]u8 {
+    return switch (key) {
+        .p384_private => |secret| publicFromSecret(P384, &secret),
+        else => error.LibcryptoFailed,
+    };
 }
 
-pub fn p384SharedSecretDerive(ours: *pkey, peer: *pkey, out: *[48]u8) Error!void {
-    _ = ours;
-    _ = peer;
-    _ = out;
-    return error.UnsupportedPrimitive;
+pub fn p384SharedSecretDerive(ours: pkey, peer: pkey, out: *[48]u8) Error!void {
+    switch (ours) {
+        .p384_private => |*secret| switch (peer) {
+            .p384_public => |*public_key| return deriveShared(P384, secret, public_key, out),
+            else => return error.LibcryptoFailed,
+        },
+        else => return error.LibcryptoFailed,
+    }
 }
 
-pub fn kemKeygen(parameter_set: ParameterSet) Error!KemKey {
+pub fn kemKeygen(parameter_set: ParameterSet) KemError!KemKey {
     _ = parameter_set;
     return error.UnsupportedPrimitive;
 }
 
-pub fn kemPublic(key: KemKey, out: []u8) Error![]u8 {
+pub fn kemPublic(key: KemKey, out: []u8) KemError![]u8 {
     _ = key;
     _ = out;
     return error.UnsupportedPrimitive;
 }
 
-pub fn kemLoadPublic(parameter_set: ParameterSet, public_key: []const u8) Error!KemPeerKey {
+pub fn kemLoadPublic(parameter_set: ParameterSet, public_key: []const u8) KemError!KemPeerKey {
     _ = parameter_set;
     _ = public_key;
     return error.UnsupportedPrimitive;
@@ -319,7 +386,7 @@ pub fn kemEncapsulate(
     peer_key: KemPeerKey,
     ciphertext_out: []u8,
     secret_out: []u8,
-) Error!struct { ciphertext: []u8, secret: []u8 } {
+) KemError!struct { ciphertext: []u8, secret: []u8 } {
     _ = parameter_set;
     _ = peer_key;
     _ = ciphertext_out;
@@ -332,7 +399,7 @@ pub fn kemDecapsulate(
     our_key: KemKey,
     ciphertext: []const u8,
     secret_out: []u8,
-) Error![]u8 {
+) KemError![]u8 {
     _ = parameter_set;
     _ = our_key;
     _ = ciphertext;
@@ -349,26 +416,28 @@ pub const SignatureError = error{
     UnsupportedSignatureScheme,
 };
 pub const SignError = SignatureError || error{DeterministicNonceUnsupported};
-pub const NonceMode = @import("ecdsa.zig").NonceMode;
+pub const NonceMode = ecdsa.NonceMode;
 pub const KeySchemeError = error{UnsupportedKeyScheme};
 
-pub fn privateKeyFromDer(der: []const u8) SignatureError!*pkey {
+pub fn privateKeyFromDer(der: []const u8) SignatureError!pkey {
     _ = der;
     return error.UnsupportedPrimitive;
 }
 
-pub fn privateKeyFromPem(pem: []const u8) SignatureError!*pkey {
+pub fn privateKeyFromPem(pem: []const u8) SignatureError!pkey {
     _ = pem;
     return error.UnsupportedPrimitive;
 }
 
-pub fn keyScheme(key: *const pkey) KeySchemeError!SignatureScheme {
-    _ = key;
-    return error.UnsupportedKeyScheme;
+pub fn keyScheme(key: pkey) KeySchemeError!SignatureScheme {
+    return switch (key) {
+        .p256_private, .p256_public => .ecdsa_secp256r1_sha256,
+        .p384_private, .p384_public => .ecdsa_secp384r1_sha384,
+    };
 }
 
 pub fn privateKeyPairsWithCertificate(
-    key: *const pkey,
+    key: pkey,
     leaf_cert_der: []const u8,
 ) error{InvalidEncoding}!bool {
     _ = key;
@@ -376,24 +445,196 @@ pub fn privateKeyPairsWithCertificate(
     return error.InvalidEncoding;
 }
 
-pub fn privateKeyFromP256Scalar(scalar: *const [32]u8) SignatureError!*pkey {
-    _ = scalar;
-    return error.UnsupportedPrimitive;
+pub fn privateKeyFromP256Scalar(scalar: *const [32]u8) SignatureError!pkey {
+    return p256PrivateKeyFromSecret(scalar) catch return error.LibcryptoFailed;
+}
+
+fn signatureSignEcdsa(
+    comptime Curve: type,
+    comptime Hash: type,
+    secret: *const [Curve.scalar.encoded_length]u8,
+    msg: []const u8,
+    out: []u8,
+    nonce_mode: NonceMode,
+) SignError![]const u8 {
+    return ecdsa.Ecdsa(Curve, Hash).sign(secret, msg, out, nonce_mode) catch |err| switch (err) {
+        error.BufferTooShort => error.BufferTooShort,
+        error.InvalidPrivateKey => error.LibcryptoFailed,
+    };
 }
 
 pub fn signatureSign(
-    key: *pkey,
+    key: pkey,
     scheme: SignatureScheme,
     msg: []const u8,
     out: []u8,
     nonce_mode: NonceMode,
 ) SignError![]const u8 {
-    _ = key;
-    _ = scheme;
-    _ = msg;
-    _ = out;
-    _ = nonce_mode;
-    return error.UnsupportedPrimitive;
+    switch (scheme) {
+        .rsa_pss_rsae_sha256,
+        .rsa_pss_rsae_sha384,
+        .rsa_pss_rsae_sha512,
+        .rsa_pkcs1_sha256,
+        .rsa_pkcs1_sha384,
+        .rsa_pkcs1_sha512,
+        => return error.UnsupportedPrimitive,
+        else => {},
+    }
+    return switch (key) {
+        .p256_private => |*secret| switch (scheme) {
+            .ecdsa_secp256r1_sha256 => signatureSignEcdsa(
+                P256,
+                Sha256,
+                secret,
+                msg,
+                out,
+                nonce_mode,
+            ),
+            else => error.LibcryptoFailed,
+        },
+        .p384_private => |*secret| switch (scheme) {
+            .ecdsa_secp384r1_sha384 => signatureSignEcdsa(
+                P384,
+                Sha384,
+                secret,
+                msg,
+                out,
+                nonce_mode,
+            ),
+            else => error.LibcryptoFailed,
+        },
+        else => error.LibcryptoFailed,
+    };
+}
+
+pub fn signatureVerify(
+    key: pkey,
+    scheme: SignatureScheme,
+    msg: []const u8,
+    signature: []const u8,
+) SignatureError!void {
+    switch (scheme) {
+        .rsa_pss_rsae_sha256,
+        .rsa_pss_rsae_sha384,
+        .rsa_pss_rsae_sha512,
+        .rsa_pkcs1_sha256,
+        .rsa_pkcs1_sha384,
+        .rsa_pkcs1_sha512,
+        => return error.UnsupportedPrimitive,
+        else => {},
+    }
+    return switch (key) {
+        .p256_public => |*public_key| switch (scheme) {
+            .ecdsa_secp256r1_sha256 => ecdsa.Ecdsa(P256, Sha256).verify(
+                public_key,
+                msg,
+                signature,
+            ),
+            else => error.LibcryptoFailed,
+        },
+        .p384_public => |*public_key| switch (scheme) {
+            .ecdsa_secp384r1_sha384 => ecdsa.Ecdsa(P384, Sha384).verify(
+                public_key,
+                msg,
+                signature,
+            ),
+            else => error.LibcryptoFailed,
+        },
+        else => error.LibcryptoFailed,
+    };
+}
+
+// RFC 8446 §4.4.3 and RFC 6979 §3.2 — both advertised ECDSA curves sign and
+// verify through the shared in-tree module. A wrong message, a changed
+// signature, and a short output buffer are distinct failing controls.
+test "native ECDSA P-256 and P-384 sign, verify, and reject invalid inputs" {
+    inline for (.{
+        .{ P256, SignatureScheme.ecdsa_secp256r1_sha256 },
+        .{ P384, SignatureScheme.ecdsa_secp384r1_sha384 },
+    }) |case| {
+        const Curve, const scheme = case;
+        const scalar: [Curve.scalar.encoded_length]u8 = @splat(0x42);
+        var private: pkey = if (comptime Curve == P256)
+            try privateKeyFromP256Scalar(&scalar)
+        else
+            try p384PrivateKeyFromSecret(&scalar);
+        defer freeEcKey(&private);
+
+        const public_bytes = if (comptime Curve == P256)
+            try p256RawPublicKeyFromPrivate(private)
+        else
+            try p384RawPublicKeyFromPrivate(private);
+        var public: pkey = if (comptime Curve == P256)
+            try p256PublicKeyFromRaw(&public_bytes)
+        else
+            try p384PublicKeyFromRaw(&public_bytes);
+        defer freeEcKey(&public);
+
+        try testing.expectEqual(scheme, try keyScheme(private));
+        const msg = "native ECDSA differential message";
+        var signature_buf: [160]u8 = undefined;
+        const signature = try signatureSign(private, scheme, msg, &signature_buf, .deterministic);
+        try signatureVerify(public, scheme, msg, signature);
+        try testing.expectError(
+            error.SignatureVerificationFailed,
+            signatureVerify(public, scheme, "wrong message", signature),
+        );
+
+        signature_buf[signature.len - 1] ^= 1;
+        try testing.expectError(
+            error.SignatureVerificationFailed,
+            signatureVerify(public, scheme, msg, signature),
+        );
+        var short: [1]u8 = undefined;
+        try testing.expectError(
+            error.BufferTooShort,
+            signatureSign(private, scheme, msg, &short, .deterministic),
+        );
+    }
+}
+
+// RFC 8446 §4.2.3 and RFC 10024 — native does not advertise or execute RSA
+// or ML-KEM. Direct calls fail by name instead of probing libcrypto silently.
+test "native capabilities keep RSA and ML-KEM unsupported" {
+    const rsa_schemes = [_]SignatureScheme{
+        .rsa_pkcs1_sha256,
+        .rsa_pkcs1_sha384,
+        .rsa_pkcs1_sha512,
+        .rsa_pss_rsae_sha256,
+        .rsa_pss_rsae_sha384,
+        .rsa_pss_rsae_sha512,
+    };
+    for (rsa_schemes) |scheme| {
+        try testing.expect(std.mem.findScalar(
+            SignatureScheme,
+            capabilities.certificate_verify_schemes,
+            scheme,
+        ) == null);
+        try testing.expect(std.mem.findScalar(
+            SignatureScheme,
+            capabilities.certificate_signature_schemes,
+            scheme,
+        ) == null);
+    }
+    try testing.expect(!capabilities.client_x25519_mlkem768);
+    try testing.expect(!capabilities.server_x25519_mlkem768);
+    try testing.expect(!capabilities.client_secp256r1_mlkem768);
+    try testing.expect(!capabilities.server_secp256r1_mlkem768);
+    try testing.expect(!capabilities.client_secp384r1_mlkem1024);
+    try testing.expect(!capabilities.server_secp384r1_mlkem1024);
+
+    for ([_]ParameterSet{ .mlkem768, .mlkem1024 }) |parameter_set| {
+        try testing.expectError(error.UnsupportedPrimitive, kemKeygen(parameter_set));
+    }
+
+    const scalar: [32]u8 = @splat(0x42);
+    var private = try privateKeyFromP256Scalar(&scalar);
+    defer freeEcKey(&private);
+    var out: [160]u8 = undefined;
+    try testing.expectError(
+        error.UnsupportedPrimitive,
+        signatureSign(private, .rsa_pss_rsae_sha256, "message", &out, .random),
+    );
 }
 
 // The backend boundary rejects slices that cannot satisfy the fixed-size key.
