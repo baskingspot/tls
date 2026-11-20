@@ -53,9 +53,18 @@ lint-just:
 build:
     zig build
 
+[private]
+build-native:
+    zig build -Dcrypto=native
+
 [doc("Run tlsfuzzer TLS 1.3 conformance smoke tests")]
 [group("conformance")]
 tlsfuzzer *ARGS: build
+    uv run pytest {{ ARGS }}
+
+[doc("Run the conformance suite with the native crypto backend")]
+[group("conformance")]
+tlsfuzzer-native *ARGS: build-native
     uv run pytest {{ ARGS }}
 
 [doc("Run all CI gates")]
@@ -63,6 +72,17 @@ tlsfuzzer *ARGS: build
 ci:
     zig build test
     just tlsfuzzer -v
+    just anvil-report-test
+    just anvil-adapter-test
+    just anvil-server-test
+    just anvil-client-test
+    just anvil-chain-patch-test
+
+[doc("Run all CI gates with the native crypto backend")]
+[group("conformance")]
+ci-native:
+    zig build test -Dcrypto=native
+    just tlsfuzzer-native -v
     just anvil-report-test
     just anvil-adapter-test
     just anvil-server-test

@@ -26,6 +26,14 @@ pub fn testSigner() !tls.signature.PrivateKey {
     return .fromP256Scalar(scalar[0..32]);
 }
 
+pub fn testRsaCertDer() []const u8 {
+    return &fixtures.rsa_pss_cert_der;
+}
+
+pub fn testRsaSigner() !tls.signature.PrivateKey {
+    return .fromPem(.rsa_pss_rsae_sha256, fixtures.rsa_pss_key_pem);
+}
+
 pub fn randomBytes(io: Io) tls.Random {
     var bytes: [32]u8 = undefined;
     io.random(&bytes);

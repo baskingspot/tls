@@ -53,7 +53,12 @@ CIPHERS = [
 ]
 
 
-def tls13_extensions(alpn_protocols=None):
+def tls13_extensions(alpn_protocols=None, signature_schemes=None):
+    if signature_schemes is None:
+        signature_schemes = [
+            SignatureScheme.ecdsa_secp256r1_sha256,
+            SignatureScheme.rsa_pss_rsae_sha256,
+        ]
     ext = {
         ExtensionType.key_share: ClientKeyShareExtension().create(
             [key_share_gen(GroupName.x25519)]
@@ -63,16 +68,10 @@ def tls13_extensions(alpn_protocols=None):
         ),
         ExtensionType.supported_groups: SupportedGroupsExtension().create([GroupName.x25519]),
         ExtensionType.signature_algorithms: SignatureAlgorithmsExtension().create(
-            [
-                SignatureScheme.ecdsa_secp256r1_sha256,
-                SignatureScheme.rsa_pss_rsae_sha256,
-            ]
+            signature_schemes
         ),
         ExtensionType.signature_algorithms_cert: SignatureAlgorithmsCertExtension().create(
-            [
-                SignatureScheme.ecdsa_secp256r1_sha256,
-                SignatureScheme.rsa_pss_rsae_sha256,
-            ]
+            signature_schemes
         ),
     }
     if alpn_protocols is not None:
@@ -142,9 +141,14 @@ def minimal_client_hello_with_ext(ext_type: int, ext_body: bytes) -> bytes:
     return record(ContentType.handshake, handshake)
 
 
-def run_echo_conversation(tls_server, ciphers):
+def run_echo_conversation(tls_server, ciphers, signature_schemes=None):
     conversation = Connect(tls_server["host"], tls_server["port"])
-    node = conversation.add_child(ClientHelloGenerator(ciphers, extensions=tls13_extensions()))
+    node = conversation.add_child(
+        ClientHelloGenerator(
+            ciphers,
+            extensions=tls13_extensions(signature_schemes=signature_schemes),
+        )
+    )
     node = tls13_handshake(node)
     node = node.add_child(ApplicationDataGenerator(bytearray(b"tls tlsfuzzer smoke\n")))
     node = node.add_child(ExpectApplicationData())
@@ -155,6 +159,15 @@ def run_echo_conversation(tls_server, ciphers):
 @pytest.mark.lockstep
 def test_tls13_handshake_and_application_echo(tls_server):
     run_echo_conversation(tls_server, CIPHERS)
+
+
+@pytest.mark.requires_capability("certificate_verify.rsa_pss_rsae_sha256")
+def test_tls13_rsa_pss_handshake_and_application_echo(rsa_server):
+    run_echo_conversation(
+        rsa_server,
+        CIPHERS,
+        signature_schemes=[SignatureScheme.rsa_pss_rsae_sha256],
+    )
 
 
 def test_tls13_aes256_gcm_echo(tls_server):
