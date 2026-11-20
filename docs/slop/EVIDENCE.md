@@ -151,6 +151,72 @@ The socket size excludes trust anchors, credentials, and backend allocations.
 The downstream HTTP client suite did not run against this revision. Its
 existing loopback evidence remains bound to its pinned TLS revision.
 
+## 2026-11-19 native ML-KEM-768 hybrid key exchange (#199)
+
+Scope: native ML-KEM-768, `x25519_mlkem768`, and `secp256r1_mlkem768`.
+The base revision is `240bf37`. The host is Linux arm64 with Zig 0.17.0 and
+OpenSSL 3.6.5.
+
+Native advertises both ML-KEM-768 groups for clients and servers. ML-KEM-1024
+and `secp384r1_mlkem1024` remain unsupported in both roles. Direct requests
+return `UnsupportedPrimitive`. The public capability queries run in the native
+suite and enforce this split.
+
+The native KEM uses `std.crypto.kem.ml_kem.MLKem768`. A private handle stores
+the 64-byte FIPS 203 seed. The implementation expands the seed for public-key
+export and decapsulation. It wipes every expanded key. Peer handles own a copy
+of the 1,184-byte encapsulation key. No native KEM operation allocates memory.
+
+`std.crypto.kem.hybrid` implements C2PRI rather than RFC 10024 concatenation.
+Its shared secret also depends on the classical ciphertext and public key.
+The native backend therefore supplies pure ML-KEM to `hybrid_kex.zig`. The
+existing module retains the RFC 10024 wire layout and secret order.
+
+`just check-native` ran Debug, ReleaseSafe, ReleaseFast, and a baseline-CPU
+native suite. Every native run discovered 332 tests, passed 319, failed none,
+and skipped 13. The baseline-CPU libcrypto run discovered 1,025 tests, passed
+1,019, and skipped six. `ldd` printed `not a dynamic executable` for the native
+test binary.
+
+The baseline libcrypto lane runs these two new differentials alongside the
+five from the earlier native slices:
+
+- `backend.native differential: ML-KEM-768 secrets match libcrypto in both roles`
+- `backend.native differential: ML-KEM-768 hybrid groups match libcrypto in both roles`
+
+The pure differential uses two deterministic seeds. It exports the expanded
+FIPS 203 private key from std and imports it into OpenSSL. Both backends carry
+the same private and public key pair. Each case compares public keys and pure
+ML-KEM secrets byte for byte. Encapsulation runs on each backend, and the other
+backend decapsulates the ciphertext.
+
+The hybrid differential uses two more deterministic seeds and both groups.
+Each case covers a native client with an OpenSSL server, then a native server
+with an OpenSSL client. It compares client shares, combined secrets, and all
+four handshake and application traffic secrets. The traffic-secret comparison
+uses the native and libcrypto SHA-256 schedules independently.
+
+The negative tests cover a tampered ciphertext, a wrong encapsulation key, and
+a non-canonical encapsulation key. FIPS 203 implicit rejection returns a
+pseudorandom secret for the first two cases. The tests require a secret
+mismatch because no decapsulation error exists for those cases. Non-canonical
+input returns `IdentityElement` before backend import.
+
+A mutation changed the first native encapsulation secret byte without changing
+the ciphertext. The pure differential failed on that byte at the
+native-server/OpenSSL-client comparison. The hybrid differential failed on the
+same byte of the 64-byte combined secret. Both focused tests passed after
+restoration.
+
+No test completes a full native handshake. The native root excludes the full
+handshake harness, and the differential does not add a two-backend handshake
+peer. No macOS comparison ran. The same-key tests use OpenSSL's raw private-key
+API, so the AWS-LC and BoringSSL lanes skip them.
+
+`UV_PYTHON_INSTALL_DIR="$PWD/.tmp/uv-python" just ci` passed on the change.
+The uv override selected a writable worktree-local Python directory. It changed
+no crypto option.
+
 ## 2026-11-19 native EC key exchange and signatures (#199)
 
 Scope: native P-256/P-384 key exchange, ECDSA CertificateVerify, and

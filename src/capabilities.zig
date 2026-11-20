@@ -151,7 +151,9 @@ test "hybrid capability queries match the active backend" {
     try testing.expect(!supportsHybridGroup(.server, unknown));
 
     for (hybrid_groups) |group| {
-        if (approved_only) {
+        if (approved_only or
+            (backend.native_selected and group == .secp384r1_mlkem1024))
+        {
             try testing.expect(!supportsHybridGroup(.client, group));
             try testing.expect(!supportsHybridGroup(.server, group));
         } else {

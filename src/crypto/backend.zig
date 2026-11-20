@@ -140,14 +140,14 @@ comptime {
     assert(capabilities.client_x25519 or capabilities.client_p256);
     assert(capabilities.server_x25519 or capabilities.server_p256);
     assert(capabilities.certificate_verify_schemes.len > 0);
-    // Native pins its classical groups and leaves every hybrid unsupported.
+    // Native pins both ML-KEM-768 hybrids and leaves ML-KEM-1024 unsupported.
     if (active == .native) {
         assert(capabilities.client_p256 and capabilities.server_p256);
         assert(capabilities.client_p384 and capabilities.server_p384);
-        assert(!capabilities.client_x25519_mlkem768);
-        assert(!capabilities.server_x25519_mlkem768);
-        assert(!capabilities.client_secp256r1_mlkem768);
-        assert(!capabilities.server_secp256r1_mlkem768);
+        assert(capabilities.client_x25519_mlkem768);
+        assert(capabilities.server_x25519_mlkem768);
+        assert(capabilities.client_secp256r1_mlkem768);
+        assert(capabilities.server_secp256r1_mlkem768);
         assert(!capabilities.client_secp384r1_mlkem1024);
         assert(!capabilities.server_secp384r1_mlkem1024);
     } else {

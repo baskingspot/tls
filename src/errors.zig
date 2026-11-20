@@ -183,6 +183,7 @@ pub fn classify(err: HandshakeError) Class {
         error.DeterministicNonceUnsupported,
         error.EmptyAlpnProtocol,
         error.HybridGroupUnavailable,
+        error.UnsupportedPrimitive,
         error.IdentityTooLong,
         error.InvalidBinderLength,
         error.InvalidHybridPolicy,

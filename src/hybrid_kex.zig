@@ -27,6 +27,7 @@ pub const Error = error{
     LibcryptoFailed,
     MalformedKeyShare,
     UnsupportedGroup,
+    UnsupportedPrimitive,
 };
 
 pub const ClientKeyPair = struct {
@@ -116,7 +117,8 @@ pub fn encapsulate(
     else
         client_share[classical_len..][0..mlkem_public_len];
 
-    var peer = try mlkem.loadPeerPublic(spec.parameter_set, client_mlkem);
+    var peer: mlkem.PeerHandle = undefined;
+    try mlkem.loadPeerPublic(spec.parameter_set, client_mlkem, &peer);
     defer peer.deinit();
 
     var classical_secret: [p384.secret_length]u8 = undefined;
@@ -367,4 +369,53 @@ test "hybrid decapsulation rejects wrong server share length" {
         &keys,
         &secret,
     ));
+}
+
+// RFC 10024 §4.2-§4.3 — ML-KEM implicit rejection must change the combined
+// secret after ciphertext tampering, even though the classical part still agrees.
+test "hybrid decapsulation cannot ignore a tampered ciphertext" {
+    var client_keys: KeyPairs = .initWithP256(.generate(), try .generate());
+    defer client_keys.secureZero();
+    var server_keys: KeyPairs = .initWithP256(.generate(), try .generate());
+    defer server_keys.secureZero();
+    for ([_]NamedGroup{ .x25519_mlkem768, .secp256r1_mlkem768 }) |group| {
+        if (!backend.supportsClientHybridGroup(group)) continue;
+        var client_key = try ClientKeyPair.generate(group);
+        defer client_key.deinit();
+        var client_share_buf: [max_client_share_len]u8 = undefined;
+        const client_share = try client_key.publicKey(&client_keys, &client_share_buf);
+        var server_share_buf: [max_server_share_len]u8 = undefined;
+        var server_secret_buf: [max_shared_secret_len]u8 = undefined;
+        const server = try encapsulate(
+            group,
+            client_share,
+            &server_keys,
+            &server_share_buf,
+            &server_secret_buf,
+        );
+        const spec = group.hybridSpec().?;
+        const ciphertext_offset: usize = if (spec.component_order == .mlkem_first)
+            0
+        else
+            classicalPublicLen(spec.classical_group);
+        server_share_buf[ciphertext_offset] ^= 1;
+        var client_secret_buf: [max_shared_secret_len]u8 = undefined;
+        const client_secret = try decapsulate(
+            &client_key,
+            server.server_share,
+            &client_keys,
+            &client_secret_buf,
+        );
+        try testing.expect(!std.mem.eql(u8, server.shared_secret, client_secret));
+    }
+}
+
+// RFC 10024 §4 — a native ML-KEM-1024 request remains a named unsupported
+// operation, and no group capability or partial key exists for it.
+test "native rejects the unsupported ML-KEM-1024 hybrid" {
+    if (comptime !backend.native_selected) return error.SkipZigTest;
+    try testing.expectError(
+        error.UnsupportedPrimitive,
+        ClientKeyPair.generate(.secp384r1_mlkem1024),
+    );
 }

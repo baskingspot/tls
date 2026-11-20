@@ -1,9 +1,9 @@
-//! Provider-backed pure ML-KEM primitives used by RFC 10024 hybrid groups.
+//! Backend-supplied pure ML-KEM primitives used by RFC 10024 hybrid groups.
 //!
 //! tls owns the hybrid construction: this module only generates ML-KEM keys,
 //! validates encapsulation keys, and encapsulates/decapsulates fixed-size
-//! ciphertexts. Keeping the combiner above the provider seam makes the TLS wire
-//! construction identical for OpenSSL, AWS-LC, and BoringSSL.
+//! ciphertexts. Keeping the combiner above the backend seam makes the TLS wire
+//! construction identical for OpenSSL, AWS-LC, BoringSSL, and native.
 const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -17,6 +17,7 @@ pub const Error = error{
     IdentityElement,
     LibcryptoFailed,
     MalformedKeyShare,
+    UnsupportedPrimitive,
 };
 
 pub const max_public_key_len = ParameterSet.mlkem1024.publicKeyLen();
@@ -32,6 +33,7 @@ pub const KeyHandle = struct {
 
     pub fn deinit(self: *KeyHandle) void {
         kem_impl.freeKey(self.key);
+        std.crypto.secureZero(u8, std.mem.asBytes(self));
         self.* = undefined;
     }
 };
@@ -42,6 +44,7 @@ pub const PeerHandle = struct {
 
     pub fn deinit(self: *PeerHandle) void {
         kem_impl.freeKey(self.key);
+        std.crypto.secureZero(u8, std.mem.asBytes(self));
         self.* = undefined;
     }
 };
@@ -66,15 +69,14 @@ pub fn publicKey(key: *const KeyHandle, out: []u8) Error![]u8 {
 pub fn loadPeerPublic(
     parameter_set: ParameterSet,
     public_key: []const u8,
-) Error!PeerHandle {
+    out: *PeerHandle,
+) Error!void {
     if (public_key.len != parameter_set.publicKeyLen())
         return error.MalformedKeyShare;
     if (!encapsulationKeyIsCanonical(parameter_set, public_key))
         return error.IdentityElement;
-    return .{
-        .parameter_set = parameter_set,
-        .key = try kem_impl.kemLoadPublic(parameter_set, public_key),
-    };
+    out.* = .{ .parameter_set = parameter_set, .key = undefined };
+    try kem_impl.kemLoadPublic(parameter_set, public_key, &out.key);
 }
 
 fn encapsulationKeyIsCanonical(
@@ -108,7 +110,7 @@ pub fn encapsulate(
         return error.BufferTooShort;
     const result = try kem_impl.kemEncapsulate(
         peer.parameter_set,
-        peer.key,
+        &peer.key,
         ciphertext_out[0..ciphertext_len],
         secret_out[0..secret_len],
     );
@@ -163,7 +165,8 @@ fn testRoundTrip(parameter_set: ParameterSet) !void {
     const client_public = try publicKey(&client_key, &public_key_buf);
     try testing.expectEqual(@as(usize, parameter_set.publicKeyLen()), client_public.len);
 
-    var peer = try loadPeerPublic(parameter_set, client_public);
+    var peer: PeerHandle = undefined;
+    try loadPeerPublic(parameter_set, client_public, &peer);
     defer peer.deinit();
 
     var ciphertext_buf: [max_ciphertext_len]u8 = undefined;
@@ -222,16 +225,12 @@ test "ML-KEM rejects non-canonical encapsulation keys" {
         var public_key: [max_public_key_len]u8 = @splat(0);
         @memset(public_key[0..3], 0xff);
 
-        if (loadPeerPublic(
+        var peer: PeerHandle = undefined;
+        try testing.expectError(error.IdentityElement, loadPeerPublic(
             parameter_set,
             public_key[0..parameter_set.publicKeyLen()],
-        )) |peer_value| {
-            var peer = peer_value;
-            peer.deinit();
-            return error.TestUnexpectedResult;
-        } else |err| {
-            try testing.expectEqual(error.IdentityElement, err);
-        }
+            &peer,
+        ));
     }
 }
 
@@ -248,4 +247,53 @@ test "ML-KEM rejects a wrong-length ciphertext" {
         &@as([(ParameterSet.mlkem768.ciphertextLen() - 1)]u8, @splat(0)),
         &secret,
     ));
+}
+
+// FIPS 203 §7.3 — invalid ciphertexts and the wrong recipient use implicit
+// rejection. Success returns a pseudorandom secret, so agreement is the failure
+// signal rather than an error from decapsulation.
+test "ML-KEM tampering and a wrong recipient derive different secrets" {
+    if (!backend.supportsClientHybridGroup(.x25519_mlkem768))
+        return error.SkipZigTest;
+    var key = try generate(.mlkem768);
+    defer key.deinit();
+    var public_buf: [ParameterSet.mlkem768.publicKeyLen()]u8 = undefined;
+    const public = try publicKey(&key, &public_buf);
+    var peer: PeerHandle = undefined;
+    try loadPeerPublic(.mlkem768, public, &peer);
+    defer peer.deinit();
+    var ciphertext_buf: [ParameterSet.mlkem768.ciphertextLen()]u8 = undefined;
+    var server_secret_buf: [32]u8 = undefined;
+    const server = try encapsulate(&peer, &ciphertext_buf, &server_secret_buf);
+
+    ciphertext_buf[0] ^= 1;
+    var tampered_secret_buf: [32]u8 = undefined;
+    const tampered_secret = try decapsulate(
+        &key,
+        server.ciphertext,
+        &tampered_secret_buf,
+    );
+    try testing.expect(!std.mem.eql(u8, server.secret, tampered_secret));
+
+    var wrong_key = try generate(.mlkem768);
+    defer wrong_key.deinit();
+    var wrong_public_buf: [ParameterSet.mlkem768.publicKeyLen()]u8 = undefined;
+    const wrong_public = try publicKey(&wrong_key, &wrong_public_buf);
+    var wrong_peer: PeerHandle = undefined;
+    try loadPeerPublic(.mlkem768, wrong_public, &wrong_peer);
+    defer wrong_peer.deinit();
+    var wrong_ciphertext_buf: [ParameterSet.mlkem768.ciphertextLen()]u8 = undefined;
+    var wrong_server_secret_buf: [32]u8 = undefined;
+    const wrong_server = try encapsulate(
+        &wrong_peer,
+        &wrong_ciphertext_buf,
+        &wrong_server_secret_buf,
+    );
+    var wrong_recipient_secret_buf: [32]u8 = undefined;
+    const wrong_recipient_secret = try decapsulate(
+        &key,
+        wrong_server.ciphertext,
+        &wrong_recipient_secret_buf,
+    );
+    try testing.expect(!std.mem.eql(u8, wrong_server.secret, wrong_recipient_secret));
 }
