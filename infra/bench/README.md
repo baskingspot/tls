@@ -20,6 +20,8 @@ Do not run either command against the rewritten roots. The new configuration rep
 
 ## Bootstrap
 
+The base stack finds the shared `baskingspot-bench` network by tag. Apply `stacks/bench-network/` from `baskingspot/infra` once before the first base-stack apply.
+
 Set `TF_VAR_account_id` to the twelve-digit AWS account ID. Use an IAM-capable AWS profile for both stacks. Apply IAM before the base stack:
 
 ```sh

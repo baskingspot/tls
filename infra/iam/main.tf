@@ -44,7 +44,7 @@ provider "aws" {
 }
 
 module "bench" {
-  source = "git::https://github.com/baskingspot/infra//modules/bench-iam?ref=653c441d3219bf5d532d5f7e60db367ed2d4a0e6"
+  source = "git::https://github.com/baskingspot/infra//modules/bench-iam?ref=cff88dc4c6f30a2ee314c60f55f49675bb4557f3"
 
   project           = local.project
   region            = local.region

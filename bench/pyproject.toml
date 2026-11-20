@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "tls benchmark workloads for the baskingspot EC2 harness."
 requires-python = ">=3.15"
 dependencies = [
-  "ec2bench @ git+https://github.com/baskingspot/infra@653c441d3219bf5d532d5f7e60db367ed2d4a0e6#subdirectory=harness",
+  "ec2bench @ git+https://github.com/baskingspot/infra@cff88dc4c6f30a2ee314c60f55f49675bb4557f3#subdirectory=harness",
 ]
 
 [project.scripts]
