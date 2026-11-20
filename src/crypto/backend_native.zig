@@ -4,10 +4,12 @@
 //! remain unsupported in this slice.
 const std = @import("std");
 const crypto = std.crypto;
+const mem = std.mem;
 const testing = std.testing;
 const assert = std.debug.assert;
 
 const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
+const Certificate = @import("../certificate_parser.zig");
 const ParameterSet = @import("mlkem_parameters.zig").ParameterSet;
 const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
 const aes_gcm = @import("aes_gcm_native.zig");
@@ -127,7 +129,7 @@ pub fn aeadInit(suite: CipherSuite, key_bytes: []const u8) AeadError!AeadContext
 }
 
 pub fn aeadDeinit(ctx: *AeadContext) void {
-    crypto.secureZero(u8, std.mem.asBytes(ctx));
+    crypto.secureZero(u8, mem.asBytes(ctx));
 }
 
 pub fn aeadEncrypt(
@@ -263,7 +265,7 @@ pub fn freeKey(key: anytype) void {
 }
 
 pub fn freeEcKey(key: *EcKey) void {
-    crypto.secureZero(u8, std.mem.asBytes(key));
+    crypto.secureZero(u8, mem.asBytes(key));
     key.* = undefined;
 }
 
@@ -440,9 +442,36 @@ pub fn privateKeyPairsWithCertificate(
     key: pkey,
     leaf_cert_der: []const u8,
 ) error{InvalidEncoding}!bool {
-    _ = key;
-    _ = leaf_cert_der;
-    return error.InvalidEncoding;
+    // One exact DER certificate, matching the libcrypto loader's trailing-byte
+    // rejection. No signature or path validation belongs to this comparison.
+    const outer = Certificate.der.Element.parse(leaf_cert_der, 0) catch
+        return error.InvalidEncoding;
+    if (outer.identifier.tag != .sequence or outer.slice.end != leaf_cert_der.len)
+        return error.InvalidEncoding;
+    const leaf = Certificate.parse(.{ .buffer = leaf_cert_der, .index = 0 }) catch
+        return error.InvalidEncoding;
+
+    switch (key) {
+        .p256_private => |*secret| {
+            const curve = switch (leaf.pub_key_algo) {
+                .X9_62_id_ecPublicKey => |curve| curve,
+                else => return false,
+            };
+            if (curve != .X9_62_prime256v1) return false;
+            const public_key = publicFromSecret(P256, secret) catch return false;
+            return mem.eql(u8, &public_key, leaf.pubKey());
+        },
+        .p384_private => |*secret| {
+            const curve = switch (leaf.pub_key_algo) {
+                .X9_62_id_ecPublicKey => |curve| curve,
+                else => return false,
+            };
+            if (curve != .secp384r1) return false;
+            const public_key = publicFromSecret(P384, secret) catch return false;
+            return mem.eql(u8, &public_key, leaf.pubKey());
+        },
+        else => return false,
+    }
 }
 
 pub fn privateKeyFromP256Scalar(scalar: *const [32]u8) SignatureError!pkey {
@@ -605,12 +634,12 @@ test "native capabilities keep RSA and ML-KEM unsupported" {
         .rsa_pss_rsae_sha512,
     };
     for (rsa_schemes) |scheme| {
-        try testing.expect(std.mem.findScalar(
+        try testing.expect(mem.findScalar(
             SignatureScheme,
             capabilities.certificate_verify_schemes,
             scheme,
         ) == null);
-        try testing.expect(std.mem.findScalar(
+        try testing.expect(mem.findScalar(
             SignatureScheme,
             capabilities.certificate_signature_schemes,
             scheme,
@@ -649,7 +678,7 @@ test "native AEAD deinit clears the key and suite" {
     const key: [32]u8 = @splat(0xa5);
     var ctx = try aeadInit(.aes_256_gcm_sha384, &key);
     aeadDeinit(&ctx);
-    for (std.mem.asBytes(&ctx)) |byte| try testing.expectEqual(@as(u8, 0), byte);
+    for (mem.asBytes(&ctx)) |byte| try testing.expectEqual(@as(u8, 0), byte);
 }
 
 // RFC 8032 §7.1 TEST 1 — empty-message Ed25519 known-answer vector.
@@ -662,7 +691,7 @@ test "native Ed25519 matches RFC 8032 TEST 1" {
     );
 
     var key = try ed25519.keyPairFromSeed(&seed);
-    defer crypto.secureZero(u8, std.mem.asBytes(&key));
+    defer crypto.secureZero(u8, mem.asBytes(&key));
     try testing.expectEqualSlices(u8, &expected_public, &key.public_key.toBytes());
 
     var signature: [ed25519.signature_length]u8 = undefined;

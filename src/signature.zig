@@ -103,9 +103,10 @@ pub const PrivateKey = struct {
     /// means the input is not exactly one DER-encoded X.509 certificate —
     /// distinct outcomes, so a rotation log can tell a wrong pairing from a
     /// corrupt file. Both
-    /// inputs are borrowed: the parsed X509 is provider-owned and freed
-    /// inside the backend wrapper, and the private key is only read, so
-    /// ownership and zeroization stay with `deinit`. Rotation lifetime: a
+    /// inputs are borrowed. Libcrypto owns and frees its parsed X509 inside
+    /// the backend wrapper, while native parses DER without allocation. The
+    /// private key is only read, so ownership and zeroization stay with
+    /// `deinit`. Rotation lifetime: a
     /// `PrivateKey` must outlive every `Signer` it handed out — swap
     /// credentials only when no in-flight handshake holds the old signer.
     pub fn pairsWith(self: *const PrivateKey, leaf_cert_der: []const u8) PairError!void {

@@ -24,7 +24,7 @@ commit because the branch moved.
 | Record layer, framing, alerts, `close_notify` | Proven | RFC 8446 §5 tests, fuzz targets, and tlsfuzzer |
 | Certificate chains, hostname verification, leaf policy | Proven | Chain and policy tests, name-constraint fixtures, and TLS-Anvil |
 | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 | Proven | Record tests and OpenSSL interop for each |
-| Opt-in `native` crypto primitives | Partial | 299 native tests pass in Debug. ECDH and ECDSA match libcrypto. Real P-256 and Ed25519 certificates verify. Handshakes, ML-KEM, and RSA remain unsupported |
+| Opt-in `native` crypto primitives | Partial | 300 native tests pass in Debug. ECDH and ECDSA match libcrypto. Real P-256 and Ed25519 certificates verify. Handshakes, ML-KEM, and RSA remain unsupported |
 | X25519 and P-256 key exchange | Proven | Handshake tests and OpenSSL interop |
 | P-384 key exchange | Proven, opt-in | Bidirectional OpenSSL interop on every non-FIPS libcrypto backend. Native has primitive differential evidence only |
 | RFC 10024 hybrid groups | Proven, opt-in | Provider-backed ML-KEM on OpenSSL, AWS-LC, and BoringSSL; OpenSSL interop and the upstream tlsfuzzer matrix |

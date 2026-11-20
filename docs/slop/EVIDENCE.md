@@ -158,9 +158,9 @@ certificate-chain signatures. The base revision is `21d7c0a`. The host is
 Linux arm64 with Zig 0.17.0 and OpenSSL 3.6.5.
 
 `just check-native` ran Debug, ReleaseSafe, ReleaseFast, and a baseline-CPU
-native suite. Every native run discovered 311 tests, passed 299, failed none,
-and skipped 12. The baseline-CPU libcrypto run discovered 1,018 tests, passed
-1,013, and retained five existing skips. `ldd` printed `not a dynamic
+native suite. Every native run discovered 312 tests, passed 300, failed none,
+and skipped 12. The baseline-CPU libcrypto run discovered 1,019 tests, passed
+1,014, and retained five existing skips. `ldd` printed `not a dynamic
 executable` for the installed native Debug test binary.
 
 The native skips include the ten from the primitive-backend slice. This slice
@@ -205,6 +205,20 @@ real leaf and intermediate DER in `tests/fixtures/fixtures.zig` and the root in
 The 30 PEM files under `docs/research/TLS_ANVIL_91_CHAIN_FIXTURE/` all contain
 RSA signatures, so they cannot exercise this slice without violating its RSA
 non-goal.
+
+Review follow-up implemented native certificate/key pairing instead of
+returning `InvalidEncoding` for every input. The comparison parses exact DER,
+checks the SubjectPublicKeyInfo algorithm and named curve, and compares the
+derived SEC1 public key. Genuine mismatches return false. P-256 and P-384 use
+the same path. Other certificate algorithms are mismatches rather than parser
+failures.
+
+The P-256 fixture test accepts `server_ecdsa_scalar` with
+`server_ecdsa_cert_der`. It rejects the client ECDSA certificate and an RSA
+certificate. Garbage DER and a trailing byte return `InvalidEncoding`. A
+mutation returned false for every certificate and failed the matching
+assertion. A second mutation returned true and failed the mismatch assertion.
+The restored focused test passed.
 
 The differential host is Linux arm64. No macOS comparison ran locally. The
 existing `check-native` CI job runs on Ubuntu, not macOS.

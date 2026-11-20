@@ -11,7 +11,8 @@ All notable changes to tls are recorded here. The format follows
   X25519, P-256/P-384 ECDH, all three TLS AEAD suites, SHA-256/SHA-384, HMAC,
   HKDF, and raw-seed Ed25519 operations work without libcrypto. ECDSA P-256 and
   P-384 support CertificateVerify signatures and certificate chains. Chains
-  also support Ed25519 signatures. ML-KEM, RSA, DER/PEM private-key loading,
+  also support Ed25519 signatures. Native P-256 scalar credentials can pair
+  with their leaf certificates. ML-KEM, RSA, DER/PEM private-key loading,
   and handshakes remain unsupported. The default still auto-detects OpenSSL,
   AWS-LC, or BoringSSL from the selected headers (#199).
 - The `hkdf.Hkdf` type constructor is public for backends that select their own

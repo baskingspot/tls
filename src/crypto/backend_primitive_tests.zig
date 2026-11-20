@@ -14,6 +14,7 @@ const backend_native = @import("backend_native.zig");
 const hmac = @import("../hmac.zig");
 const Hkdf = @import("../hkdf.zig").Hkdf;
 const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
+const fixtures = @import("fixtures");
 const P256 = std.crypto.ecc.P256;
 const P384 = std.crypto.ecc.P384;
 
@@ -140,6 +141,35 @@ test "backend.x25519: small-order public key is rejected (IdentityElement)" {
     try testing.expectError(
         error.IdentityElement,
         backend.x25519.sharedSecretDerive(&priv, &peer, &shared),
+    );
+}
+
+// RFC 8446 §4.4.2 and §4.4.3 — a native P-256 scalar pairs only with the
+// certificate carrying its SEC1 public key. Mismatches are independent of DER
+// validity, and trailing bytes do not describe one CertificateEntry.
+test "backend.native: P-256 certificate key pairing accepts a match and rejects a mismatch" {
+    var key = try backend_native.privateKeyFromP256Scalar(&fixtures.server_ecdsa_scalar);
+    defer backend_native.freeEcKey(&key);
+    try testing.expect(try backend_native.privateKeyPairsWithCertificate(
+        key,
+        &fixtures.server_ecdsa_cert_der,
+    ));
+    try testing.expect(!try backend_native.privateKeyPairsWithCertificate(
+        key,
+        &fixtures.client_ecdsa_cert_der,
+    ));
+    try testing.expect(!try backend_native.privateKeyPairsWithCertificate(
+        key,
+        &fixtures.rsa_pss_cert_der,
+    ));
+    try testing.expectError(
+        error.InvalidEncoding,
+        backend_native.privateKeyPairsWithCertificate(key, "garbage"),
+    );
+    const trailing = fixtures.server_ecdsa_cert_der ++ [_]u8{0};
+    try testing.expectError(
+        error.InvalidEncoding,
+        backend_native.privateKeyPairsWithCertificate(key, &trailing),
     );
 }
 
