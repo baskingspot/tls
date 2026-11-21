@@ -71,6 +71,11 @@ All notable changes to tls are recorded here. The format follows
 - A certificate-authenticated server selects CertificateVerify only from the
   client's offered schemes. No match for the configured credential fails with
   fatal `handshake_failure` before signature generation (#208).
+- `handshake_core.Client` selects client CertificateVerify only from the
+  CertificateRequest offer. An empty intersection returns
+  `error.NoCommonSignatureScheme` before authentication output and maps to
+  fatal `handshake_failure`. `handshake_core.Server` preserves the same
+  parse-time error instead of mapping it to `unexpected_message` (#212).
 - A native server with no signature scheme in common with a ClientHello now
   sends `handshake_failure` instead of `illegal_parameter`. ECDSA verification
   classifies a point-at-infinity public key as an invalid encoding (#199).
