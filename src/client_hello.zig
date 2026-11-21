@@ -1078,6 +1078,8 @@ pub const ParseError = error{
     UnsupportedTlsVersion,
     UnsupportedKeyShare,
     MalformedKeyShare,
+    /// No offered CertificateVerify scheme overlaps this build. RFC 8446
+    /// §4.2.3 negotiation failure, distinct from a forbidden peer selection.
     NoCommonSignatureScheme,
     IllegalParameter,
     /// `ParseOptions.received` had no slot left.

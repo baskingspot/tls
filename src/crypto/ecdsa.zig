@@ -195,6 +195,7 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
         ) VerifyError!void {
             const key = Scheme.PublicKey.fromSec1(public_key) catch
                 return error.InvalidEncoding;
+            key.p.rejectIdentity() catch return error.InvalidEncoding;
             const signature = Scheme.Signature.fromDer(encoded_signature) catch
                 return error.SignatureVerificationFailed;
             signature.verify(msg, key) catch return error.SignatureVerificationFailed;

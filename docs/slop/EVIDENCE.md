@@ -217,6 +217,97 @@ API, so the AWS-LC and BoringSSL lanes skip them.
 The uv override selected a writable worktree-local Python directory. It changed
 no crypto option.
 
+## 2026-11-19 native wire evidence and capability controls (#199)
+
+Scope: native OpenSSL interop, malformed EC points, and capability exclusions.
+The base revision is `5e409b3`. The host is Linux arm64 with Zig 0.17.0 and
+OpenSSL 3.6.5.
+
+The focused native command built `conformance/` with `zig build -Dcrypto=native`.
+It ran `test_tls13.py`, `test_tls13_mlkem.py`, `test_openssl_interop.py`,
+`test_malformed_key_share.py`, and `test_capability_markers.py` under `-v`.
+The run collected 43 cases. It passed 41 and reported two named `UNSUPPORTED`
+cases. The exclusions are RSA-PSS CertificateVerify and
+`secp384r1_mlkem1024` server key exchange. The complete default-backend control
+passed every supported case, including all six new wire cases. Its two
+inverse-marker cases produced ordinary skips. No default backend changed.
+
+The client harness loads a caller-selected PEM anchor through `TLS_CA_FILE`.
+Its `TLS_CLIENT_GROUP` control adds P-384 or hybrid key material to an offer.
+OpenSSL supplies the independent peer in the OpenSSL interop cases.
+
+Chain and hostname evidence has three cases:
+
+- A trusted chain and `localhost` hostname complete a handshake and exchange application data.
+- `wrong.example` produces `CertificateHostMismatch`. OpenSSL receives `certificate_unknown`.
+- An unrelated trust anchor produces `CertificateIssuerNotFound`. OpenSSL receives `unknown_ca`.
+
+A native client negotiates `x25519_mlkem768` with an OpenSSL server restricted
+to `X25519MLKEM768`. With OpenSSL restricted to X25519, the same native offer
+falls back and exchanges data. With OpenSSL restricted to P-521, no shared
+group exists. The client receives `PeerAlert` and retains `handshake_failure`.
+
+OpenSSL restricted to P-384 proves native P-384 key exchange. A P-384 OpenSSL
+certificate proves native ECDSA P-384 CertificateVerify and chain verification.
+Both successful cases exchange application data.
+
+Direct native tests cover an off-curve point, the SEC1 infinity encoding,
+and a truncated uncompressed point. Each class runs on P-256 and P-384 for
+both ECDH and ECDSA. ECDH returns `IdentityElement`. ECDSA returns
+`InvalidEncoding`. The ECDSA infinity case initially returned
+`SignatureVerificationFailed`. `crypto/ecdsa.zig` now rejects identity during
+key decoding. An ECDH mutation replaced malformed points with the base point.
+The ECDH test failed by receiving success instead of `IdentityElement`.
+Restored code passed all native tests.
+
+A separate Python socket server parses the ClientHello and requires the selected
+group. It then sends a hand-built ServerHello with an invalid key share and
+reads the client's alert record. For both P-256 and P-384, off-curve, infinity,
+and wrong-length inputs produce the exact bytes `15 03 03 00 02 02 2f`.
+The final two bytes are fatal `illegal_parameter`. Off-curve input returns
+`IdentityElement`. Infinity and wrong lengths return `UnsupportedKeyShareGroup`.
+EOF or another alert fails the test. A mutation mapped both error paths to
+`decode_error`. All six cases then failed on the alert byte: `0x32` replaced
+the expected `0x2f`. Restored code passed the focused and complete gates.
+
+The native RSA-PSS-only offer initially produced `illegal_parameter`.
+ClientHello parsing now raises `NoCommonSignatureScheme`. Its alert mapping
+is `handshake_failure`, while CertificateVerify scheme faults retain their
+existing mappings. Restoring the old mapping made the wire control fail by
+receiving `illegal_parameter`. The restored control passed.
+
+The ML-KEM negative control generates a real 1,665-byte
+`secp384r1_mlkem1024` key share. A native server rejects the unsupported offer
+with `handshake_failure`. This control and the RSA control run beneath
+`requires_capability_false` on the native lane. They skip on capable backends.
+
+Five marker tests prove these harness contracts:
+
+- The string-valued `backend` entry cannot satisfy `requires_capability`.
+- An empty marker produces an error.
+- A false boolean capability reports `UNSUPPORTED` through a fixture user property.
+- `pytest.skip("UNSUPPORTED fake")` remains an ordinary skip.
+- `requires_capability_false` runs only when its capability is false.
+
+A TLS-Anvil client run selected package
+`de.rub.nds.tlstest.suite.tests.client.tls13.rfc8446`. It discovered 65 tests.
+Feature extraction saw X25519, P-256, ECDSA-SHA256, and ECDSA-SHA384 offers,
+but reported no supported TLS version. It disabled all 65 cases in 4.716
+seconds. `KeyShare.rejectsPointsNotOnCurve` did not execute. This attempt is
+not TLS-Anvil evidence. The primitive and wire tests above cover the requested
+point classes without that gap.
+
+The default Zig suite passed 1,022 tests and skipped six. The native Debug
+suite discovered 335 tests, passed 322, and retained 13 accounted skips.
+
+`UV_PYTHON_INSTALL_DIR="$PWD/.tmp/uv-python" just ci` passed. Every native
+mode passed 322 tests with 13 skips and no failures. The complete native
+conformance run collected 127 cases, passed 125, and reported two named
+exclusions. The complete default conformance run passed 125 with two
+inverse-marker skips. The full gate included all backends, integrations,
+memory checks, and lint. The native test binary printed `not a dynamic
+executable` under `ldd`.
+
 ## 2026-11-19 native EC key exchange and signatures (#199)
 
 Scope: native P-256/P-384 key exchange, ECDSA CertificateVerify, and
