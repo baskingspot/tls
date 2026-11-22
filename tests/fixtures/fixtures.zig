@@ -214,3 +214,8 @@ pub const native_p256_sec1_pem: []const u8 = rawSection("native_p256_sec1_pem");
 pub const native_p384_pkcs8_der = decodeSection("native_p384_pkcs8_der");
 pub const native_ed25519_pkcs8_der = decodeSection("native_ed25519_pkcs8_der");
 pub const native_rsa_pkcs1_der = decodeSection("native_rsa_pkcs1_der");
+pub const native_ec_parameters_pem: []const u8 = rawSection("native_ec_parameters_pem");
+pub const native_server_cert_pem: []const u8 = rawSection("native_server_cert_pem");
+pub const native_p256_sec1_compressed_der =
+    decodeSection("native_p256_sec1_compressed_der");
+pub const native_p384_sec1_der = decodeSection("native_p384_sec1_der");

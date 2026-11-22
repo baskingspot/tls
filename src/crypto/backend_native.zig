@@ -472,11 +472,22 @@ pub const SignatureError = error{
     UnsupportedPrimitive,
     UnsupportedSignatureScheme,
 };
+
+/// A key constructed from raw scalar bytes: the signing seam's own errors, plus
+/// key material that is not a scalar in [1, n-1]. Kept out of `SignatureError`
+/// because the handshake error tables are written once for every backend, and
+/// libcrypto reports the same input as a provider failure (baskingspot/tls#88).
+pub const ScalarKeyError = SignatureError || error{InvalidPrivateKey};
+
+/// signatureSign-only extension: a load never signs, so the deterministic
+/// nonce error stays out of the loader set (baskingspot/tls#82).
+pub const SignError = SignatureError || error{DeterministicNonceUnsupported};
 pub const KeyLoadError = SignatureError || error{
     CurveMismatch,
     EncryptedPrivateKeyUnsupported,
     InvalidDer,
     InvalidPemEncoding,
+    InvalidPrivateKey,
     PemLabelMismatch,
     PrivateKeyTooLarge,
     PublicKeyMismatch,
@@ -484,8 +495,8 @@ pub const KeyLoadError = SignatureError || error{
     UnsupportedCurve,
     UnsupportedKeyAlgorithm,
     UnsupportedPemLabel,
+    UnsupportedPointFormat,
 };
-pub const SignError = SignatureError || error{DeterministicNonceUnsupported};
 pub const NonceMode = ecdsa.NonceMode;
 pub const KeySchemeError = error{UnsupportedKeyScheme};
 
@@ -622,7 +633,10 @@ fn ecKeyFromSecret(curve: EcCurve, secret: []const u8) KeyLoadError!pkey {
         .p384 => if (secret.len != 48)
             error.InvalidDer
         else
-            p384PrivateKeyFromSecret(secret[0..48]) catch return error.LibcryptoFailed,
+            p384PrivateKeyFromSecret(secret[0..48]) catch |err| switch (err) {
+                error.IdentityElement => error.InvalidPrivateKey,
+                error.LibcryptoFailed => error.LibcryptoFailed,
+            },
     };
 }
 
@@ -637,18 +651,28 @@ fn validateSec1PublicKey(
         return error.InvalidDer;
     const actual = bit_string[1..];
     switch (key) {
-        .p256_private => |*secret| {
-            const expected = publicFromSecret(P256, secret) catch
-                return error.LibcryptoFailed;
-            if (!mem.eql(u8, actual, &expected)) return error.PublicKeyMismatch;
-        },
-        .p384_private => |*secret| {
-            const expected = publicFromSecret(P384, secret) catch
-                return error.LibcryptoFailed;
-            if (!mem.eql(u8, actual, &expected)) return error.PublicKeyMismatch;
-        },
+        .p256_private => |*secret| try expectSec1Point(P256, actual, secret),
+        .p384_private => |*secret| try expectSec1Point(P384, actual, secret),
         else => unreachable,
     }
+}
+
+// SEC 1 §2.3.3 — the optional public key may use the compressed form, which
+// `openssl ec -conv_form compressed` writes. Decode the point and compare it
+// to the one the scalar derives, so a valid key loads as it does on libcrypto.
+fn expectSec1Point(
+    comptime Curve: type,
+    actual: []const u8,
+    secret: *const [Curve.scalar.encoded_length]u8,
+) KeyLoadError!void {
+    const point = switch (actual[0]) {
+        0x02, 0x03, 0x04 => Curve.fromSec1(actual) catch return error.PublicKeyMismatch,
+        // Hybrid points are legal SEC 1, and std.crypto cannot decode them.
+        0x06, 0x07 => return error.UnsupportedPointFormat,
+        else => return error.InvalidDer,
+    };
+    const expected = publicFromSecret(Curve, secret) catch return error.LibcryptoFailed;
+    if (!mem.eql(u8, &point.toUncompressedSec1(), &expected)) return error.PublicKeyMismatch;
 }
 
 fn sec1PrivateKeyFromDer(der: []const u8, outer_curve: ?EcCurve) KeyLoadError!pkey {
@@ -729,13 +753,15 @@ pub fn privateKeyFromDer(der: []const u8) KeyLoadError!pkey {
 const PemBlock = struct {
     label: []const u8,
     body: []const u8,
+    next: usize,
 };
 
-fn parsePemBlock(pem: []const u8) KeyLoadError!PemBlock {
-    const begin_prefix = "-----BEGIN ";
-    const begin = mem.find(u8, pem, begin_prefix) orelse
-        return error.InvalidPemEncoding;
-    const label_start = begin + begin_prefix.len;
+const pem_begin_prefix = "-----BEGIN ";
+
+fn parsePemBlock(pem: []const u8, start: usize) KeyLoadError!?PemBlock {
+    const begin = start + (mem.find(u8, pem[start..], pem_begin_prefix) orelse
+        return null);
+    const label_start = begin + pem_begin_prefix.len;
     const begin_end = label_start + (mem.find(u8, pem[label_start..], "-----") orelse
         return error.InvalidPemEncoding);
     if (begin_end == label_start) return error.InvalidPemEncoding;
@@ -752,7 +778,11 @@ fn parsePemBlock(pem: []const u8) KeyLoadError!PemBlock {
     ) orelse return error.InvalidPemEncoding);
     if (!mem.eql(u8, pem[label_start..begin_end], pem[end_label_start..end_label_end]))
         return error.PemLabelMismatch;
-    return .{ .label = pem[label_start..begin_end], .body = pem[body_start..end] };
+    return .{
+        .label = pem[label_start..begin_end],
+        .body = pem[body_start..end],
+        .next = end_label_end + "-----".len,
+    };
 }
 
 const pem_decoder = std.base64.standard.decoderWithIgnore("\t\n\x0b\x0c\r ");
@@ -761,30 +791,35 @@ const pem_decoder = std.base64.standard.decoderWithIgnore("\t\n\x0b\x0c\r ");
 const max_private_key_der_len = 8192;
 
 pub fn privateKeyFromPem(pem: []const u8) KeyLoadError!pkey {
-    const block = try parsePemBlock(pem);
-    if (mem.eql(u8, block.label, "ENCRYPTED PRIVATE KEY") or
-        mem.find(u8, block.body, "Proc-Type: 4,ENCRYPTED") != null)
-        return error.EncryptedPrivateKeyUnsupported;
-    if (mem.eql(u8, block.label, "RSA PRIVATE KEY")) return error.RsaUnsupported;
+    var position: usize = 0;
+    while (try parsePemBlock(pem, position)) |block| {
+        position = block.next;
+        if (mem.eql(u8, block.label, "ENCRYPTED PRIVATE KEY") or
+            mem.find(u8, block.body, "Proc-Type: 4,ENCRYPTED") != null)
+            return error.EncryptedPrivateKeyUnsupported;
+        if (mem.eql(u8, block.label, "RSA PRIVATE KEY")) return error.RsaUnsupported;
 
-    const Format = enum { pkcs8, sec1 };
-    const format: Format = if (mem.eql(u8, block.label, "PRIVATE KEY"))
-        .pkcs8
-    else if (mem.eql(u8, block.label, "EC PRIVATE KEY"))
-        .sec1
-    else
-        return error.UnsupportedPemLabel;
+        const Format = enum { pkcs8, sec1 };
+        const format: Format = if (mem.eql(u8, block.label, "PRIVATE KEY"))
+            .pkcs8
+        else if (mem.eql(u8, block.label, "EC PRIVATE KEY"))
+            .sec1
+        else {
+            continue;
+        };
 
-    var der: [max_private_key_der_len]u8 = undefined;
-    defer crypto.secureZero(u8, &der);
-    const der_len = pem_decoder.decode(&der, block.body) catch |err| return switch (err) {
-        error.NoSpaceLeft => error.PrivateKeyTooLarge,
-        error.InvalidCharacter, error.InvalidPadding => error.InvalidPemEncoding,
-    };
-    return switch (format) {
-        .pkcs8 => pkcs8PrivateKeyFromDer(der[0..der_len]),
-        .sec1 => sec1PrivateKeyFromDer(der[0..der_len], null),
-    };
+        var der: [max_private_key_der_len]u8 = undefined;
+        defer crypto.secureZero(u8, &der);
+        const der_len = pem_decoder.decode(&der, block.body) catch |err| return switch (err) {
+            error.NoSpaceLeft => error.PrivateKeyTooLarge,
+            error.InvalidCharacter, error.InvalidPadding => error.InvalidPemEncoding,
+        };
+        return switch (format) {
+            .pkcs8 => pkcs8PrivateKeyFromDer(der[0..der_len]),
+            .sec1 => sec1PrivateKeyFromDer(der[0..der_len], null),
+        };
+    }
+    return if (position == 0) error.InvalidPemEncoding else error.UnsupportedPemLabel;
 }
 
 pub fn keyScheme(key: pkey) KeySchemeError!SignatureScheme {
@@ -839,8 +874,13 @@ pub fn privateKeyPairsWithCertificate(
     }
 }
 
-pub fn privateKeyFromP256Scalar(scalar: *const [32]u8) SignatureError!pkey {
-    return p256PrivateKeyFromSecret(scalar) catch return error.LibcryptoFailed;
+pub fn privateKeyFromP256Scalar(scalar: *const [32]u8) ScalarKeyError!pkey {
+    return p256PrivateKeyFromSecret(scalar) catch |err| switch (err) {
+        // RFC 6979 §2.2 — a scalar of zero or at least the group order is not
+        // a private key, and that is not a provider failure.
+        error.IdentityElement => error.InvalidPrivateKey,
+        error.LibcryptoFailed => error.LibcryptoFailed,
+    };
 }
 
 fn signatureSignEcdsa(
@@ -1285,6 +1325,112 @@ test "native DER rejects bad lengths curve mismatches and wrong public keys" {
     wrong_public[wrong_public.len - 1] ^= 1;
     try testing.expectError(error.PublicKeyMismatch, privateKeyFromDer(&wrong_public));
 }
+
+// RFC 7468 §3 — a PEM file may hold several blocks. `openssl ecparam -genkey`
+// writes EC PARAMETERS before the key, and `cat server.crt server.key` puts a
+// certificate first. libcrypto loads both; the loader returns the first key
+// block instead of rejecting the file's first block.
+test "native PEM skips non-key blocks before the first private key" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+
+    // openssl ecparam -name prime256v1 -genkey -out key.pem
+    var ecparam_pem: PemFile = .{};
+    ecparam_pem.add(fixtures.native_ec_parameters_pem);
+    ecparam_pem.add(fixtures.native_p256_sec1_pem);
+    var ecparam_key = try privateKeyFromPem(ecparam_pem.text());
+    defer freeEcKey(&ecparam_key);
+    try testing.expectEqual(SignatureScheme.ecdsa_secp256r1_sha256, try keyScheme(ecparam_key));
+
+    // cat server.crt server.key
+    var combined_pem: PemFile = .{};
+    combined_pem.add(fixtures.native_server_cert_pem);
+    combined_pem.add(fixtures.ec_p256_key_pem);
+    var combined_key = try privateKeyFromPem(combined_pem.text());
+    defer freeEcKey(&combined_key);
+    try testing.expect(try privateKeyPairsWithCertificate(combined_key, &fixtures.server_cert_der));
+
+    // A file with no key block keeps the label error instead of the parse error.
+    try testing.expectError(
+        error.UnsupportedPemLabel,
+        privateKeyFromPem(fixtures.native_server_cert_pem),
+    );
+}
+
+// SEC 1 §2.3.3 — the optional public key may use the compressed form, which
+// `openssl ec -conv_form compressed` writes. The loader decompresses it and
+// compares the point, so the key loads as it does on libcrypto.
+test "native SEC1 accepts a compressed public point" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    var key = try privateKeyFromDer(&fixtures.native_p256_sec1_compressed_der);
+    defer freeEcKey(&key);
+    try testing.expect(try privateKeyPairsWithCertificate(key, &fixtures.server_cert_der));
+
+    // The comparison decodes the point, so a different x is still a mismatch.
+    var wrong_point = fixtures.native_p256_sec1_compressed_der;
+    wrong_point[wrong_point.len - 1] ^= 1;
+    try testing.expectError(error.PublicKeyMismatch, privateKeyFromDer(&wrong_point));
+
+    // Hybrid points are legal SEC 1 and std.crypto cannot decode them.
+    var hybrid_point = fixtures.native_p256_sec1_der;
+    hybrid_point[hybrid_point.len - 65] = 0x06;
+    try testing.expectError(error.UnsupportedPointFormat, privateKeyFromDer(&hybrid_point));
+}
+
+// SEC 1 §3.2.1 — zero and the curve order are not private scalars in [1, n - 1].
+// Invalid key material is distinct from a provider failure on every native path.
+test "native private-key loading rejects invalid scalars by name" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    const p256_order = hex("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551");
+    // P-384 order n, 48 bytes.
+    const p384_order = hex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" ++
+        "FFFFFFFFFFFFFFFFC7634D81F4372DDF" ++
+        "581A0DB248B0A77AECEC196ACCC52973");
+
+    const zero_scalar: [32]u8 = @splat(0);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromP256Scalar(&zero_scalar));
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromP256Scalar(&p256_order));
+
+    // SEC 1 §3.2.1 — 7 is the scalar in a P-256 ECPrivateKey, 8 in a P-384 one:
+    // the P-384 SEQUENCE length needs three length bytes instead of two.
+    var zero_p256 = fixtures.native_p256_sec1_der;
+    @memset(zero_p256[7..39], 0);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromDer(&zero_p256));
+
+    var order_p256 = fixtures.native_p256_sec1_der;
+    @memcpy(order_p256[7..39], &p256_order);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromDer(&order_p256));
+
+    var zero_p384 = fixtures.native_p384_sec1_der;
+    @memset(zero_p384[8..56], 0);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromDer(&zero_p384));
+
+    var order_p384 = fixtures.native_p384_sec1_der;
+    @memcpy(order_p384[8..56], &p384_order);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromDer(&order_p384));
+}
+
+/// Concatenated PEM blocks with no separator, the shape `cat` and
+/// `openssl ecparam -genkey` produce.
+const PemFile = struct {
+    bytes: [1024]u8 = undefined,
+    len: usize = 0,
+
+    fn add(self: *PemFile, block: []const u8) void {
+        const trimmed = mem.trimEnd(u8, block, "\n");
+        assert(self.len + trimmed.len + 1 <= self.bytes.len);
+        @memcpy(self.bytes[self.len..][0..trimmed.len], trimmed);
+        self.len += trimmed.len;
+        self.bytes[self.len] = '\n';
+        self.len += 1;
+    }
+
+    fn text(self: *const PemFile) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
 
 fn hex(comptime encoded: []const u8) [encoded.len / 2]u8 {
     comptime assert(encoded.len % 2 == 0);

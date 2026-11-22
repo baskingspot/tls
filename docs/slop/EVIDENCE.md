@@ -5,6 +5,46 @@ run IDs, per-claim tables, and forensic notes. The human-facing status page is
 `PRODUCTION_READINESS.md`; this file is where you check whether a claim on that
 page is true.
 
+## 2026-11-22 native key loading review fixes (#218)
+
+Scope: the review findings on the native PEM and DER loader. The base revision
+is `613a8bb`. OpenSSL 3.6.5 produced every fixture. The compressed SEC1 and
+P-384 SEC1 sections reproduce their documented `openssl ec` command byte for
+byte, and the `EC PARAMETERS` section is the block `openssl ecparam -genkey`
+writes.
+
+Four changes, each with a test that failed before it:
+
+- The loader reads every PEM block and returns the first key block. Before, a
+  non-key first block returned `UnsupportedPemLabel`. The test builds both
+  layouts the way they arise: the `EC PARAMETERS` block from
+  `openssl ecparam -genkey` followed by the SEC1 key, and `server.crt` followed
+  by `server.key`.
+- A compressed SEC1 public key is decompressed before the point comparison, so
+  `openssl ec -conv_form compressed` output loads. A hybrid point returns
+  `error.UnsupportedPointFormat`.
+- A scalar of zero or at least the curve order returns `error.InvalidPrivateKey`
+  on the SEC1/PKCS#8 load path and on `privateKeyFromP256Scalar`. `IdentityElement`
+  is the underlying verdict, and the loader translates it.
+- `PrivateKey.fromDer`, `fromPem`, and `fromP256Scalar` no longer advertise
+  `error.DeterministicNonceUnsupported`, and `fromDer`/`fromPem` no longer
+  advertise `error.UnsupportedKeyScheme`. `InvalidPrivateKey` stays out of
+  `SignatureError` because the handshake error tables are one table for every
+  backend and libcrypto reports the same input as a provider failure (#88).
+
+Mutation checks, each restored afterwards:
+
+- `continue` to `return error.UnsupportedPemLabel` for a non-key block failed
+  the layout test at the `privateKeyFromPem` call.
+- Rejecting `0x02`/`0x03` failed the compressed-point test.
+- Removing the point comparison failed the mismatch assertion.
+- Restoring `error.LibcryptoFailed` in `privateKeyFromP256Scalar` failed the
+  scalar test at the zero-scalar assertion, and the same mutation on the P-384
+  path failed it at the SEC1 P-384 case.
+
+Test counts: native suite 331 passed, 0 failed, 13 skipped of 344. Default
+backend suite 1,039 passed, 0 failed, 6 skipped of 1,045.
+
 ## 2026-11-21 native PEM and DER private keys (#216)
 
 Scope: native PKCS#8 and SEC1 key loading, plus the server startup path. The

@@ -11,9 +11,10 @@ const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 pub const SignError = backend.sign.SignError;
 pub const NonceMode = backend.sign.NonceMode;
 
-/// `fromPemAuto` load failure: backend load errors plus the scheme-inference
-/// rejection (#112). Kept separate from `SignError` so the sign-only errors
-/// do not widen the loaders.
+/// `fromPemAuto` load failure: the explicit loader errors plus the
+/// scheme-inference rejection (#112). `fromPem` and `fromDer` return
+/// `backend.sign.LoadError` directly, so this alias adds
+/// `UnsupportedKeyScheme` only to automatic loading.
 pub const LoadError = backend.sign.LoadError || error{UnsupportedKeyScheme};
 
 /// `pairsWith` contract (#113): the leaf parsed but its key does not pair
@@ -95,7 +96,7 @@ pub const PrivateKey = struct {
     /// the default `.random`, which adds fresh OS entropy (RFC 6979 §3.6).
     nonce_mode: NonceMode,
 
-    pub fn fromDer(scheme: SignatureScheme, der: []const u8) LoadError!PrivateKey {
+    pub fn fromDer(scheme: SignatureScheme, der: []const u8) backend.sign.LoadError!PrivateKey {
         return .{
             .scheme = scheme,
             .key = try backend.sign.privateKeyFromDer(der),
@@ -103,7 +104,7 @@ pub const PrivateKey = struct {
         };
     }
 
-    pub fn fromPem(scheme: SignatureScheme, pem: []const u8) LoadError!PrivateKey {
+    pub fn fromPem(scheme: SignatureScheme, pem: []const u8) backend.sign.LoadError!PrivateKey {
         return .{
             .scheme = scheme,
             .key = try backend.sign.privateKeyFromPem(pem),
@@ -128,7 +129,7 @@ pub const PrivateKey = struct {
         return .{ .scheme = scheme, .key = key, .nonce_mode = .random };
     }
 
-    pub fn fromP256Scalar(scalar: *const [32]u8) SignError!PrivateKey {
+    pub fn fromP256Scalar(scalar: *const [32]u8) backend.sign.ScalarKeyError!PrivateKey {
         return .{
             .scheme = .ecdsa_secp256r1_sha256,
             .key = try backend.sign.privateKeyFromP256Scalar(scalar),

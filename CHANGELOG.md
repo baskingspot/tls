@@ -30,6 +30,19 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- Native key loading reads every block in a PEM file and returns the first key
+  block, so `openssl ecparam -genkey` output and a combined
+  certificate-then-key file load as they do on libcrypto (#218).
+- Native decompresses a compressed SEC1 public key before it compares the point,
+  and returns `error.UnsupportedPointFormat` for a hybrid point.
+- Native returns `error.InvalidPrivateKey` for a scalar of zero or at least the
+  curve order when it loads a key or constructs one from a scalar, instead of
+  `error.LibcryptoFailed`.
+- `PrivateKey.fromDer` and `fromPem` return the backend's key-load error set,
+  and `fromP256Scalar` returns the backend's scalar-key set.
+  `error.DeterministicNonceUnsupported` left all three, and
+  `error.UnsupportedKeyScheme` stays on `fromPemAuto`, which is the only loader
+  that infers a scheme. Native adds `error.InvalidPrivateKey` to its set.
 - Backend EC key handles can hold inline native bytes. Their cleanup functions
   take a pointer to the handle, so native erases caller-owned key material (#199).
 - `-Dcrypto-fips` is now `-Dcrypto-approved-only`, `capabilities.is_fips` is
