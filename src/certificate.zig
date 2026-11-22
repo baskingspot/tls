@@ -17,7 +17,6 @@ const compat = @import("compat.zig");
 const stdx = @import("stdx");
 const buffer = stdx.buffer;
 const certificate_policy = @import("certificate_policy.zig");
-const backend = @import("crypto/backend.zig");
 pub const LeafUsage = certificate_policy.LeafUsage;
 pub const Policy = certificate_policy.Policy;
 pub const PolicyError = certificate_policy.PolicyError;
@@ -618,34 +617,32 @@ fn verifyEcdsa(
 /// enforces the salt length by construction.
 ///
 /// The modulus floor is 1024 bits, the policy this path applied before it moved
-/// off libcrypto. Chain verification keeps its lower 512-bit floor for legacy
-/// issuer keys, which is why the two paths do not share a loader.
+/// off libcrypto. Chain verification uses the same `verifyDer` with its lower
+/// 512-bit floor for legacy issuer keys.
 fn verifyRsaPss(
     comptime Hash: type,
     pub_key: []const u8,
     signed_content: []const u8,
     sig: []const u8,
 ) VerifyError!void {
-    const components = Certificate.rsa.PublicKey.parseDer(pub_key) catch
-        return error.InvalidEncoding;
-    const modulus = components.modulus;
-    switch (modulus.len) {
-        inline 128, 256, 384, 512 => |modulus_len| {
-            const key = Certificate.rsa.PublicKey.fromBytes(components.exponent, modulus) catch
-                return error.InvalidEncoding;
-            // #157 — e = 1 makes the public operation the identity, so every
-            // well-formed PSS encoding would verify with no private key.
-            // fromBytes rejects it along with even and over-wide exponents.
-            // The floor is checked before the signature so a degenerate key
-            // is reported as a bad key, not as a bad signature.
-            if (key.n.bits() < 1024) return error.InvalidEncoding;
-            if (sig.len != modulus_len) return error.SignatureVerificationFailed;
-            const pss = Certificate.rsa.PSSSignature;
-            pss.verify(modulus_len, sig[0..modulus_len].*, signed_content, key, Hash) catch
-                return error.SignatureVerificationFailed;
-        },
-        else => return error.InvalidEncoding,
-    }
+    return Certificate.rsa.PSSSignature.verifyDer(
+        Hash,
+        signed_content,
+        sig,
+        pub_key,
+        1024,
+        .forTls(Hash),
+    ) catch |err| switch (err) {
+        error.CertificateFieldHasWrongDataType,
+        error.CertificateFieldHasInvalidLength,
+        error.CertificatePublicKeyInvalid,
+        error.CertificateSignatureAlgorithmMismatch,
+        error.CertificateSignatureUnsupportedBitCount,
+        => error.InvalidEncoding,
+        error.CertificateSignatureInvalidLength,
+        error.CertificateSignatureInvalid,
+        => error.SignatureVerificationFailed,
+    };
 }
 
 pub const server_certificate_verify_context =
@@ -2618,10 +2615,6 @@ test "verifySignature: valid RSA-PSS SHA-256 signature" {
     const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
     }));
-    if (comptime backend.native_selected) {
-        try testing.expect(!backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256));
-        return;
-    }
     var cv_buf: [512]u8 = undefined;
     const cv = try encodeCertificateVerify(
         &cv_buf,
@@ -2638,10 +2631,6 @@ test "verifySignature: rejects RSA-PSS signature with wrong salt length" {
     const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
     }));
-    if (comptime backend.native_selected) {
-        try testing.expect(!backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256));
-        return;
-    }
     var cv_buf: [512]u8 = undefined;
     const cv = try encodeCertificateVerify(
         &cv_buf,
@@ -3261,9 +3250,6 @@ fn verifyFuzzSeed(input: []const u8) VerifyError!void {
 // and the three key encodings the policy rejects (e = 1, a 2041-bit modulus,
 // an off-curve point).
 test "fuzz: CertificateVerify verification only with well-formed messages" {
-    // The corpus builds and signs with the RSA-PSS fixture before fuzzing.
-    // Native declares RSA unsupported, so this target stays on libcrypto lanes.
-    if (comptime backend.native_selected) return error.SkipZigTest;
     var cert_buf: [2048]u8 = undefined;
     var rsa_cert_buf: [2048]u8 = undefined;
     const p256_pub = try parse(buildCertMsg(&cert_buf, fixtureCertDer()), testPolicy(.{

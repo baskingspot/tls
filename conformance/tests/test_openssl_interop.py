@@ -68,6 +68,42 @@ def _generate_certificate(directory: Path, curve: str = "P-256", subject: str = 
     return cert, key
 
 
+def _generate_rsa_certificate(directory: Path):
+    directory.mkdir(parents=True, exist_ok=True)
+    cert = directory / "rsa-cert.pem"
+    key = directory / "rsa-key.pem"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-sha256",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,digitalSignature,keyCertSign",
+            "-addext",
+            "extendedKeyUsage=serverAuth",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    return cert, key
+
+
 def _generate_rsa_signed_ecdsa_certificate(directory: Path):
     directory.mkdir(parents=True, exist_ok=True)
     root_cert = directory / "root.pem"
@@ -154,7 +190,9 @@ def _generate_rsa_signed_ecdsa_certificate(directory: Path):
     return leaf_cert, leaf_key, root_cert
 
 
-def _start_openssl_server(cert: Path, key: Path, group: str | None = None):
+def _start_openssl_server(
+    cert: Path, key: Path, group: str | None = None, sigalgs: str | None = None
+):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -176,6 +214,8 @@ def _start_openssl_server(cert: Path, key: Path, group: str | None = None):
     ]
     if group is not None:
         command.extend(["-groups", group])
+    if sigalgs is not None:
+        command.extend(["-sigalgs", sigalgs])
     server = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
@@ -394,6 +434,40 @@ def test_tls_client_verifies_rsa_signed_ecdsa_chain_from_openssl(tmp_path):
     cert, key, root = _generate_rsa_signed_ecdsa_certificate(tmp_path)
     server, port = _start_openssl_server(cert, key)
     client = _start_tls_client(port, ca_file=root, host_name="localhost")
+    try:
+        _assert_application_exchange(server, client)
+    finally:
+        _stop(client)
+        _stop(server)
+
+
+@pytest.mark.requires_capability(
+    "client_group.x25519",
+    "certificate_signature.rsa_pkcs1_sha256",
+    "certificate_verify.rsa_pss_rsae_sha256",
+    "certificate_verify.rsa_pss_rsae_sha384",
+)
+@pytest.mark.parametrize("scheme", ["rsa_pss_rsae_sha256", "rsa_pss_rsae_sha384"])
+def test_tls_client_verifies_rsa_pss_certificate_verify_from_openssl(tmp_path, scheme):
+    cert, key = _generate_rsa_certificate(tmp_path)
+    server, port = _start_openssl_server(cert, key, sigalgs=scheme)
+    client = _start_tls_client(port, ca_file=cert, host_name="localhost")
+    try:
+        _assert_application_exchange(server, client)
+    finally:
+        _stop(client)
+        _stop(server)
+
+
+@pytest.mark.requires_capability(
+    "client_group.x25519",
+    "certificate_signature.rsa_pkcs1_sha256",
+    "certificate_verify.rsa_pss_rsae_sha512",
+)
+def test_tls_client_verifies_rsa_pss_sha512_certificate_verify_from_openssl(tmp_path):
+    cert, key = _generate_rsa_certificate(tmp_path)
+    server, port = _start_openssl_server(cert, key, sigalgs="rsa_pss_rsae_sha512")
+    client = _start_tls_client(port, ca_file=cert, host_name="localhost")
     try:
         _assert_application_exchange(server, client)
     finally:

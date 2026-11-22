@@ -73,6 +73,13 @@ fn printCapabilities() void {
             tls.capabilities.supportsCertificateVerifyScheme(scheme),
         );
     }
+    // supported_handshake is the default advertisement list, not the full
+    // verifier surface. Native also verifies explicit SHA-512 offers.
+    printCapability(
+        "certificate_verify",
+        "rsa_pss_rsae_sha512",
+        tls.capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha512),
+    );
     for (tls.SignatureScheme.supported_certificate) |scheme| {
         printCapability(
             "certificate_signature",
@@ -80,6 +87,12 @@ fn printCapabilities() void {
             tls.capabilities.supportsCertificateSignatureScheme(scheme),
         );
     }
+    // RSA-PSS verification does not imply RSA private-key loading or signing.
+    printCapability(
+        "private_key",
+        "rsa_pss_rsae_sha256",
+        tls.capabilities.active_backend != .native,
+    );
     const classical_groups = [_]tls.kex.NamedGroup{ .x25519, .secp256r1, .secp384r1 };
     for (classical_groups) |group| {
         printGroupCapability("client", group, tls.capabilities.supportsGroup(.client, group));

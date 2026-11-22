@@ -55,10 +55,10 @@ library. Production builds use `auto` or an explicit libcrypto backend until
 native is measured and reviewed.
 
 `-Dcrypto=native` opts into `std.crypto` and in-tree primitives without
-libcrypto. Native verifies RSA PKCS#1 v1.5 certificate-chain signatures with
-SHA-256/384/512, and loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM
-and DER. RSA CertificateVerify, RSA keys, and encrypted PEM remain unsupported,
-so a client still fails against RSA-only servers. Use `-Dcrypto=openssl` or
+libcrypto. Native verifies RSA PKCS#1 v1.5 certificate-chain signatures and
+RSA-PSS CertificateVerify with SHA-256/384/512, and loads unencrypted
+P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER. RSA signing and encrypted
+PEM remain unsupported. Use `-Dcrypto=openssl` or
 `-Dcrypto=aws-lc` for those capabilities. ML-KEM-1024 is unsupported on native
 too.
 
@@ -200,10 +200,10 @@ Select crypto primitives at build time:
 | Auto      | Default. Detect the family from the selected headers       |
 
 Native supports X25519, P-256/P-384, ECDSA, Ed25519 chain signatures, RSA
-PKCS#1 v1.5 chain signatures with SHA-256/384/512, and both ML-KEM-768 hybrid
-groups. It loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER,
-and Ed25519 seeds from PKCS#8. RSA CertificateVerify, RSA keys, and encrypted
-PEM remain unsupported, so a client still fails against RSA-only servers. Use
+PKCS#1 v1.5 chain signatures and RSA-PSS CertificateVerify with
+SHA-256/384/512, and both ML-KEM-768 hybrid groups. It loads unencrypted
+P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, and Ed25519 seeds from
+PKCS#8. RSA signing and encrypted PEM remain unsupported. Use
 `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for those capabilities. ML-KEM-1024 is
 unsupported on native too. Production builds use `auto` or an explicit
 libcrypto backend until native is measured and reviewed.

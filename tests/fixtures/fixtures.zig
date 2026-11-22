@@ -200,6 +200,12 @@ pub const wycheproof_rsa_pkcs1_3072_sha384: []const u8 =
     @embedFile("wycheproof/rsa_signature_3072_sha384_test.json");
 pub const wycheproof_rsa_pkcs1_4096_sha512: []const u8 =
     @embedFile("wycheproof/rsa_signature_4096_sha512_test.json");
+pub const wycheproof_rsa_pss_2048_sha256: []const u8 =
+    @embedFile("wycheproof/rsa_pss_2048_sha256_mgf1_32_test.json");
+pub const wycheproof_rsa_pss_2048_sha384: []const u8 =
+    @embedFile("wycheproof/rsa_pss_2048_sha384_mgf1_48_test.json");
+pub const wycheproof_rsa_pss_4096_sha512: []const u8 =
+    @embedFile("wycheproof/rsa_pss_4096_sha512_mgf1_64_test.json");
 
 // --- PEM key fixtures (raw, not base64-decoded) ------------------------------
 

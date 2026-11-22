@@ -24,7 +24,7 @@ commit because the branch moved.
 | Record layer, framing, alerts, `close_notify` | Proven | RFC 8446 §5 tests, fuzz targets, and tlsfuzzer |
 | Certificate chains, hostname verification, leaf policy | Proven | Chain and policy tests, name-constraint fixtures, and TLS-Anvil |
 | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 | Proven | Record tests and OpenSSL interop for each |
-| Opt-in `native` crypto backend | Partial | ECDH, ECDSA, ML-KEM-768, and RSA PKCS#1 v1.5 chain verification match libcrypto. Native client/server examples exchange application data in memory and over TCP. The in-memory server loads its P-256 key from a PKCS#8 PEM file. Native loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, and Ed25519 seeds from PKCS#8. Native/OpenSSL tests cover verified chains, hostname rejection, untrusted anchors, RSA-signed ECDSA chains, P-384 ECDH, P-384 CertificateVerify, and `x25519_mlkem768`. Captured Google, Cloudflare, and example.com chains verify through their RSA issuer roots. All 777 RSA PKCS#1 v1.5 Wycheproof cases match the expected results, and captured signatures match libcrypto on acceptance and tamper rejection. Both excluded capabilities have wire-level failure controls. Native ECDH and ECDSA reject malformed P-256 and P-384 points. A foreign ServerHello with those points receives an exact `illegal_parameter` alert. ML-KEM-1024, RSA CertificateVerify, RSA keys, and encrypted PEM remain unsupported. A native TLS-Anvil client run disabled all 65 RFC 8446 cases after feature extraction failed to detect TLS 1.3. No native TLS-Anvil mutation result exists |
+| Opt-in `native` crypto backend | Partial | ECDH, ECDSA, ML-KEM-768, RSA PKCS#1 v1.5 chain verification, and RSA-PSS CertificateVerify match libcrypto. Native client/server examples exchange application data in memory and over TCP. The in-memory server loads its P-256 key from a PKCS#8 PEM file. Native loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, and Ed25519 seeds from PKCS#8. Native/OpenSSL tests cover verified chains, hostname rejection, untrusted anchors, RSA-signed ECDSA chains, RSA-PSS CertificateVerify with SHA-256/384/512, P-384 ECDH, P-384 CertificateVerify, and `x25519_mlkem768`. Captured Google, Cloudflare, and example.com chains verify through their RSA issuer roots. All 777 RSA PKCS#1 v1.5 and 428 RSA-PSS Wycheproof cases match the expected results. Captured signatures match libcrypto on acceptance and tamper rejection. Both excluded capabilities have wire-level failure controls. Native ECDH and ECDSA reject malformed P-256 and P-384 points. A foreign ServerHello with those points receives an exact `illegal_parameter` alert. ML-KEM-1024, RSA signing, and encrypted PEM remain unsupported. A native TLS-Anvil client run disabled all 65 RFC 8446 cases after feature extraction failed to detect TLS 1.3. No native TLS-Anvil mutation result exists |
 | X25519 and P-256 key exchange | Proven | Handshake tests and OpenSSL interop |
 | P-384 key exchange | Proven, opt-in | Bidirectional OpenSSL interop on every non-FIPS libcrypto backend. Native adds client-side OpenSSL interop to its primitive differential evidence |
 | RFC 10024 hybrid groups | Proven, opt-in | Provider-backed ML-KEM on OpenSSL, AWS-LC, and BoringSSL; OpenSSL interop and the upstream tlsfuzzer matrix. Native ML-KEM-768 adds client-side OpenSSL negotiation and classical fallback to its key-exchange differentials and server-side upstream tlsfuzzer coverage |
@@ -46,11 +46,11 @@ native/native and native/OpenSSL handshakes through the evidence in the table.
 Its facade caller owns all primitive buffers. The C ABI stays libcrypto-only
 and rejects `-Dcapi -Dcrypto=native`.
 
-Native verifies RSA PKCS#1 v1.5 certificate-chain signatures with
-SHA-256/384/512, and loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM
-and DER, plus Ed25519 seeds from PKCS#8. RSA CertificateVerify, RSA keys, and
-encrypted PEM remain unsupported. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc`
-for those capabilities (#215, #216).
+Native verifies RSA PKCS#1 v1.5 certificate-chain signatures and RSA-PSS
+CertificateVerify with SHA-256/384/512, and loads unencrypted P-256/P-384
+PKCS#8 and SEC1 keys from PEM and DER, plus Ed25519 seeds from PKCS#8. RSA
+signing and encrypted PEM remain unsupported. Use `-Dcrypto=openssl` or
+`-Dcrypto=aws-lc` for those capabilities (#215, #216).
 
 The engine itself, meaning parsing, framing, transcript, and record sequencing,
 allocates nothing. The libcrypto backends allocate during setup and inside their
@@ -66,7 +66,8 @@ arithmetic, with RFC 6979 nonces on every backend (#82, #183).
 CertificateVerify accepts ECDSA P-256/P-384 and RSA-PSS only. Ed25519 is a
 chain-signature scheme here. The libcrypto backend covers AEAD, SHA-2, key
 exchange, ML-KEM, and RSA-PSS signing (#183). Native advertises RSA PKCS#1
-v1.5 only for certificate-chain signatures and no RSA CertificateVerify scheme.
+v1.5 certificate-chain signatures and RSA-PSS CertificateVerify, but no RSA
+signing.
 
 ## How a claim gets proven
 
