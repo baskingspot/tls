@@ -1,8 +1,8 @@
 //! Pure-Zig crypto primitives for the opt-in native backend (#199).
 //!
 //! This backend is not a production replacement for libcrypto. ML-KEM-1024 and
-//! RSA CertificateVerify remain unsupported in this slice. RSA PKCS#1 v1.5
-//! certificate signatures verify in `certificate_parser.zig`, outside this seam.
+//! RSA signing remain unsupported in this slice. RSA verification runs in
+//! `certificate_parser.zig`, outside this seam.
 const std = @import("std");
 const crypto = std.crypto;
 const mem = std.mem;
@@ -40,12 +40,15 @@ pub const capabilities = struct {
     pub const server_secp256r1_mlkem768 = true;
     pub const server_secp384r1_mlkem1024 = false;
 
-    // CertificateVerify uses the in-tree ECDSA module. Chain verification also
-    // accepts RSA PKCS#1 v1.5 through the verification-only RSA module.
-    // Ed25519 remains a chain-signature scheme, not a CertificateVerify scheme.
+    // CertificateVerify uses in-tree ECDSA and verification-only RSA-PSS.
+    // Chain verification also accepts RSA PKCS#1 v1.5. Ed25519 remains a
+    // chain-signature scheme, not a CertificateVerify scheme.
     pub const certificate_verify_schemes: []const SignatureScheme = &.{
         .ecdsa_secp256r1_sha256,
         .ecdsa_secp384r1_sha384,
+        .rsa_pss_rsae_sha256,
+        .rsa_pss_rsae_sha384,
+        .rsa_pss_rsae_sha512,
     };
 
     pub const certificate_signature_schemes: []const SignatureScheme = &.{
@@ -1100,9 +1103,9 @@ test "native ECDSA P-256 and P-384 sign, verify, and reject invalid inputs" {
     }
 }
 
-// RFC 8446 §4.2.3 and RFC 10024 — native advertises RSA PKCS#1 v1.5 only
-// for certificate signatures. RSA CertificateVerify and ML-KEM-1024 stay off.
-test "native capabilities scope RSA to PKCS1 certificate signatures" {
+// RFC 8446 §4.2.3 and RFC 10024 — native verifies RSA-PSS CertificateVerify
+// and PKCS#1 chain signatures. RSA signing and ML-KEM-1024 stay off.
+test "native capabilities scope RSA to verification" {
     const pkcs1_schemes = [_]SignatureScheme{
         .rsa_pkcs1_sha256,
         .rsa_pkcs1_sha384,
@@ -1130,7 +1133,8 @@ test "native capabilities scope RSA to PKCS1 certificate signatures" {
             SignatureScheme,
             capabilities.certificate_verify_schemes,
             scheme,
-        ) == null);
+        ) != null);
+        // PSS chain signatures remain outside the native certificate table.
         try testing.expect(mem.findScalar(
             SignatureScheme,
             capabilities.certificate_signature_schemes,

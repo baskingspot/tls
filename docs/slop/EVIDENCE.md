@@ -106,6 +106,60 @@ The changelog records the stricter default-backend parsing and public API
 changes. `PubKeyAlgo.rsassa_pss` is optional. The two unused RSA `fromBytes`
 helpers remain removed.
 
+## 2026-11-22 native RSA-PSS CertificateVerify (#215, verification half)
+
+Scope: `rsa_pss_rsae_sha256/384/512` verification on the opt-in native
+backend. RSA signing remains disabled. The base is the chain-half commit
+`f3618ac`. The host is Linux arm64 with Zig 0.17.0 and OpenSSL 3.6.5.
+
+The #217 PSS parameter parser now has one shared implementation,
+`parseRsaPssParameters`. Certificate chains retain and check those parameters.
+CertificateVerify constructs them with `PssParameters.forTls(Hash)` because its
+wire format carries no DER parameters. Both paths use `matchesTls`. The reuse
+was clean: no second PSS parameter parser or verifier exists.
+
+The shared `PSSSignature.verifyDer` enforces exact signature length, key size,
+and the TLS parameter constraints. MGF1 uses the scheme hash. Salt length
+equals the digest length. The trailer must be `0xbc`. Native advertises all
+three PSS verification schemes and no RSA signing. The default remains `auto`.
+
+The committed Wycheproof v1 files cover 108 SHA-256 cases, 141 SHA-384 cases,
+and 179 SHA-512 cases. All 428 expected results match. Explicit truncation,
+empty, and oversized signatures return `CertificateSignatureInvalidLength`.
+The existing salt-20 CertificateVerify fixture also rejects on native.
+
+The libcrypto differential covers all three hashes. Both implementations
+accept each original CertificateVerify signature. Both reject the same
+final-octet tamper. Libcrypto configures PSS padding, MGF1 with the scheme
+hash, and salt length equal to the digest length.
+
+Three native-client wire cases negotiate RSA-PSS with OpenSSL and exchange
+application data. OpenSSL runs the SHA-256 and SHA-384 cases. Native runs all
+three. The current RSA server exclusions require `private_key` support, not
+verification. Native has no RSA private-key loading or signing, so those three
+cases remain named exclusions. The older two-exclusion report had one RSA-PSS
+case and one ML-KEM-1024 case. #217 later added two more RSA server cases.
+
+Mutation checks produced these failures before restoration:
+
+- Using salt 20 made the wrong-salt CertificateVerify test return void instead
+  of `SignatureVerificationFailed`.
+- Requiring trailer `0xbd` made Wycheproof tcId 1 fail with
+  `CertificateSignatureInvalid`.
+- Accepting an oversized PSS signature made the exact-length test return void
+  instead of `CertificateSignatureInvalidLength`.
+
+Each focused test passed again after restoration.
+
+Root `just ci` exited zero. The native suite ran 348 tests with 336 passed and
+12 skipped. The OpenSSL suite ran 1,061 tests with 1,055 passed and six
+skipped. Native conformance ran 131 cases with four named exclusions. Three
+require RSA private-key loading. One requires ML-KEM-1024. OpenSSL
+conformance ran 133 cases with one skip and the SHA-512 capability exclusion.
+
+Not run: full TLS-Anvil, the external consumer gate, and `just distribution-ci`.
+The default backend remains `auto`.
+
 ## 2026-11-22 native RSA certificate chains (#215, chain half)
 
 Scope: RSA public-key parsing and PKCS#1 v1.5 certificate verification on the

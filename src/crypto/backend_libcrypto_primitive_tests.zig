@@ -483,6 +483,38 @@ fn verifyEcdsaBoth(
     try verifyEcdsaWithLibcrypto(key, scheme, signed_content, sig);
 }
 
+fn verifyRsaPssWithLibcrypto(
+    key: backend.sign.pkey,
+    scheme: SignatureScheme,
+    msg: []const u8,
+    sig: []const u8,
+) !void {
+    _ = c.ERR_set_mark();
+    defer _ = c.ERR_pop_to_mark();
+    const md = switch (scheme) {
+        .rsa_pss_rsae_sha256 => c.EVP_sha256(),
+        .rsa_pss_rsae_sha384 => c.EVP_sha384(),
+        .rsa_pss_rsae_sha512 => c.EVP_sha512(),
+        else => unreachable,
+    } orelse return error.LibcryptoFailed;
+    const ctx = c.EVP_MD_CTX_new() orelse return error.LibcryptoFailed;
+    defer c.EVP_MD_CTX_free(ctx);
+
+    var pctx: ?*c.EVP_PKEY_CTX = null;
+    if (c.EVP_DigestVerifyInit(ctx, &pctx, md, null, key) != 1)
+        return error.LibcryptoFailed;
+    if (c.EVP_PKEY_CTX_set_rsa_padding(pctx, c.RSA_PKCS1_PSS_PADDING) != 1)
+        return error.LibcryptoFailed;
+    if (c.EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, md) != 1)
+        return error.LibcryptoFailed;
+    if (c.EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, c.RSA_PSS_SALTLEN_DIGEST) != 1)
+        return error.LibcryptoFailed;
+    if (c.EVP_DigestVerifyUpdate(ctx, msg.ptr, msg.len) != 1)
+        return error.LibcryptoFailed;
+    if (c.EVP_DigestVerifyFinal(ctx, sig.ptr, sig.len) != 1)
+        return error.LibcryptoFailed;
+}
+
 // RFC 8446 §4.4.3 — CertificateVerify signs caller-assembled bytes; the
 // libcrypto signer and the native verifier must agree on that content.
 test "backend.sign: RSA-PSS SHA-256 signature verifies natively" {
@@ -498,6 +530,7 @@ test "backend.sign: RSA-PSS SHA-256 signature verifies natively" {
     const scheme: SignatureScheme = .rsa_pss_rsae_sha256;
     const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
     try verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash);
+    try verifyRsaPssWithLibcrypto(private_key, scheme, content, sig);
 }
 
 // RFC 8446 §4.4.3 — signature verification must reject a tampered signature.
@@ -519,6 +552,10 @@ test "backend.sign: RSA-PSS SHA-256 tampered signature is rejected natively" {
         error.SignatureVerificationFailed,
         verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash),
     );
+    try testing.expectError(
+        error.LibcryptoFailed,
+        verifyRsaPssWithLibcrypto(private_key, scheme, content, sig),
+    );
 }
 
 // RFC 8446 §4.4.3 — RSA-PSS SHA-384 is advertised for CertificateVerify and
@@ -536,11 +573,16 @@ test "backend.sign: RSA-PSS SHA-384 signature verifies natively and tamper is re
     const scheme: SignatureScheme = .rsa_pss_rsae_sha384;
     const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
     try verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash);
+    try verifyRsaPssWithLibcrypto(private_key, scheme, content, sig);
 
     sig_buf[sig.len - 1] ^= 0xff;
     try testing.expectError(
         error.SignatureVerificationFailed,
         verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash),
+    );
+    try testing.expectError(
+        error.LibcryptoFailed,
+        verifyRsaPssWithLibcrypto(private_key, scheme, content, sig),
     );
 }
 
@@ -780,6 +822,17 @@ test "backend.sign: RSA-PSS SHA-512 signature verifies natively" {
     const scheme: SignatureScheme = .rsa_pss_rsae_sha512;
     const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
     try verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash);
+    try verifyRsaPssWithLibcrypto(private_key, scheme, content, sig);
+
+    sig_buf[sig.len - 1] ^= 0xff;
+    try testing.expectError(
+        error.SignatureVerificationFailed,
+        verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash),
+    );
+    try testing.expectError(
+        error.LibcryptoFailed,
+        verifyRsaPssWithLibcrypto(private_key, scheme, content, sig),
+    );
 }
 
 // RFC 8446 §4.4.3 — the signing output buffer must be large enough or the

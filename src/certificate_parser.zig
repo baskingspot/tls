@@ -2980,6 +2980,19 @@ pub const PssParameters = struct {
     salt_length: u32,
     trailer_field: u32,
 
+    /// The parameters a TLS 1.3 RSA-PSS scheme carries implicitly. Unlike a
+    /// certificate AlgorithmIdentifier, CertificateVerify has no DER to parse.
+    pub fn forTls(comptime Hash: type) PssParameters {
+        const hash = comptime PssHash.fromHash(Hash) orelse
+            @compileError("TLS RSA-PSS requires SHA-256, SHA-384, or SHA-512");
+        return .{
+            .hash = hash,
+            .mgf1_hash = hash,
+            .salt_length = hash.digestLen(),
+            .trailer_field = 1,
+        };
+    }
+
     /// TLS 1.3 RSA-PSS uses MGF1 with the scheme hash, salt length equal to
     /// the digest length, and trailerField 1 (RFC 8446 §4.2.3).
     pub fn matchesTls(self: PssParameters, comptime Hash: type) bool {
@@ -3240,30 +3253,15 @@ fn verifyRsaPss(
     pub_key_algo: Parsed.PubKeyAlgo,
     pub_key: []const u8,
 ) !void {
-    switch (pub_key_algo) {
-        .rsaEncryption => {},
-        .rsassa_pss => |maybe_params| {
-            if (maybe_params) |params| {
-                if (!params.matchesTls(Hash)) return error.CertificateSignatureAlgorithmMismatch;
-            }
-        },
+    const params = switch (pub_key_algo) {
+        .rsaEncryption => PssParameters.forTls(Hash),
+        .rsassa_pss => |maybe_params| if (maybe_params) |params|
+            params
+        else
+            PssParameters.forTls(Hash),
         else => return error.CertificateSignatureAlgorithmMismatch,
-    }
-    const pk_components = try rsa.PublicKey.parseDer(pub_key);
-    const exponent = pk_components.exponent;
-    const modulus = pk_components.modulus;
-    if (exponent.len > modulus.len) return error.CertificatePublicKeyInvalid;
-    if (sig.len != modulus.len) return error.CertificateSignatureInvalidLength;
-
-    switch (modulus.len) {
-        inline 128, 256, 384, 512 => |modulus_len| {
-            const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
-                return error.CertificateSignatureInvalid;
-            rsa.PSSSignature.verify(modulus_len, sig[0..modulus_len].*, msg, public_key, Hash) catch
-                return error.CertificateSignatureInvalid;
-        },
-        else => return error.CertificateSignatureUnsupportedBitCount,
-    }
+    };
+    return rsa.PSSSignature.verifyDer(Hash, msg, sig, pub_key, 512, params);
 }
 
 fn verify_ecdsa(
@@ -3433,11 +3431,49 @@ pub const rsa = struct {
     const Modulus = std.crypto.ff.Modulus(max_modulus_bits);
     const Fe = Modulus.Fe;
 
-    /// RFC 3447 8.1 RSASSA-PSS. CertificateVerify is its only caller inside tls
-    /// (#183): chain verification below uses PKCS#1 v1.5, so no handshake here
-    /// reached this path until CertificateVerify moved off EVP.
+    /// RFC 3447 8.1 RSASSA-PSS, verification only. CertificateVerify and
+    /// PSS-signed certificate chains share this path with their own key floors.
     pub const PSSSignature = struct {
         pub const VerifyError = EncryptError || error{InvalidSignature};
+        pub const VerifyDerError = der.Element.ParseError || error{
+            CertificateFieldHasWrongDataType,
+            CertificatePublicKeyInvalid,
+            CertificateSignatureAlgorithmMismatch,
+            CertificateSignatureInvalidLength,
+            CertificateSignatureInvalid,
+            CertificateSignatureUnsupportedBitCount,
+        };
+
+        /// Verify PSS against an RSAPublicKey DER slice and explicit TLS
+        /// parameters. Certificate chains supply parsed SPKI parameters;
+        /// CertificateVerify supplies `PssParameters.forTls(Hash)`.
+        pub fn verifyDer(
+            comptime Hash: type,
+            msg: []const u8,
+            sig: []const u8,
+            pub_key: []const u8,
+            comptime min_modulus_bits: u32,
+            params: PssParameters,
+        ) VerifyDerError!void {
+            if (!params.matchesTls(Hash)) return error.CertificateSignatureAlgorithmMismatch;
+            const components = try PublicKey.parseDer(pub_key);
+            const exponent = components.exponent;
+            const modulus = components.modulus;
+            if (exponent.len > modulus.len) return error.CertificatePublicKeyInvalid;
+
+            switch (modulus.len) {
+                inline 128, 256, 384, 512 => |modulus_len| {
+                    const public_key = PublicKey.fromBytes(exponent, modulus) catch
+                        return error.CertificatePublicKeyInvalid;
+                    if (public_key.n.bits() < min_modulus_bits)
+                        return error.CertificatePublicKeyInvalid;
+                    if (sig.len != modulus_len) return error.CertificateSignatureInvalidLength;
+                    verify(modulus_len, sig[0..modulus_len].*, msg, public_key, Hash) catch
+                        return error.CertificateSignatureInvalid;
+                },
+                else => return error.CertificateSignatureUnsupportedBitCount,
+            }
+        }
 
         pub fn verify(
             comptime modulus_len: usize,

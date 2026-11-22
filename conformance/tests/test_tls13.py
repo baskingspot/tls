@@ -180,7 +180,7 @@ def test_tls13_handshake_and_application_echo(tls_server):
     run_echo_conversation(tls_server, CIPHERS)
 
 
-@pytest.mark.requires_capability("certificate_verify.rsa_pss_rsae_sha256")
+@pytest.mark.requires_capability("private_key.rsa_pss_rsae_sha256")
 def test_tls13_rsa_pss_handshake_and_application_echo(rsa_server):
     run_echo_conversation(
         rsa_server,
@@ -209,7 +209,7 @@ def test_tls13_excluded_cert_signature_algorithm_is_handshake_failure(tls_server
     Runner(conversation).run()
 
 
-@pytest.mark.requires_capability("certificate_verify.rsa_pss_rsae_sha256")
+@pytest.mark.requires_capability("private_key.rsa_pss_rsae_sha256")
 def test_tls13_omitted_signature_algorithms_cert_excludes_rsa_cert(rsa_server):
     conversation = Connect(rsa_server["host"], rsa_server["port"])
     node = conversation.add_child(
@@ -238,7 +238,7 @@ def test_tls13_omitted_signature_algorithms_cert_allows_matching_ecdsa(tls_serve
     )
 
 
-@pytest.mark.requires_capability("certificate_verify.rsa_pss_rsae_sha256")
+@pytest.mark.requires_capability("private_key.rsa_pss_rsae_sha256")
 def test_tls13_omitted_signature_algorithms_cert_allows_matching_rsa(rsa_server):
     run_echo_conversation(
         rsa_server,
@@ -270,20 +270,6 @@ def test_tls13_unusable_signature_offer_is_handshake_failure(tls_server, crypto_
     else:
         node = node.add_child(ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure))
     node.add_child(ExpectClose())
-    Runner(conversation).run()
-
-
-@pytest.mark.requires_capability_false("certificate_verify.rsa_pss_rsae_sha256")
-def test_tls13_rsa_pss_only_offer_fails_with_handshake_failure(tls_server):
-    conversation = Connect(tls_server["host"], tls_server["port"])
-    node = conversation.add_child(
-        ClientHelloGenerator(
-            CIPHERS,
-            extensions=tls13_extensions(signature_schemes=[SignatureScheme.rsa_pss_rsae_sha256]),
-        )
-    )
-    alert = node.add_child(ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure))
-    alert.add_child(ExpectClose())
     Runner(conversation).run()
 
 

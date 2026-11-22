@@ -72,6 +72,6 @@ The test server reports its backend and cryptographic capabilities through `--ca
 
 A false capability produces an `UNSUPPORTED` result. The fixture attaches a user property to the skip. The final summary counts that property rather than the skip text. A direct `pytest.skip("UNSUPPORTED ...")` remains an ordinary skip.
 
-A `requires_capability_false` marker selects a negative control only when its capability is false. RSA-PSS-only and `secp384r1_mlkem1024` offers have controls that require `handshake_failure`.
+A `requires_capability_false` marker selects a negative control only when its capability is false. A `secp384r1_mlkem1024` offer has a control that requires `handshake_failure`. RSA server cases use `private_key.rsa_pss_rsae_sha256`, because RSA-PSS verification does not imply RSA private-key loading or signing.
 
 BoGo has no runner in this tree. `docs/research/BOGO_DEFERRED.md` records that decision. The real TLS-Anvil catalogues run separately from these native commands.

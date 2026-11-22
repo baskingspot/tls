@@ -78,10 +78,10 @@ Without the `.pc` file a libcrypto build fails while translating the headers
 with a message about the dynamic system library `crypto` and no search paths.
 
 `-Dcrypto=native` opts into pure-Zig primitives without libcrypto. Native
-verifies RSA PKCS#1 v1.5 certificate-chain signatures with SHA-256, SHA-384,
-and SHA-512, and loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM and
-DER. RSA CertificateVerify, RSA keys, and encrypted PEM remain unsupported, so a
-client still fails against RSA-only servers. Use `-Dcrypto=openssl` or
+verifies RSA PKCS#1 v1.5 certificate-chain signatures and RSA-PSS
+CertificateVerify with SHA-256, SHA-384, and SHA-512, and loads unencrypted
+P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER. RSA signing and encrypted
+PEM remain unsupported. Use `-Dcrypto=openssl` or
 `-Dcrypto=aws-lc` for those capabilities. Production builds use `auto` or an
 explicit libcrypto backend until native is measured and reviewed.
 
