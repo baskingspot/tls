@@ -154,7 +154,7 @@ fn handleConnection(
         .ecdsa => harness.testCertDer(),
         .rsa => harness.testRsaCertDer(),
     };
-    hs.setCredentials(&.{cert_der}, signer.signer());
+    try hs.setCredentials(&.{cert_der}, signer.signer());
 
     var in_buf: [tls.frame.header_len + tls.frame.max_ciphertext_len]u8 = undefined;
     var out_buf: [harness.max_wire_record_len]u8 = undefined;

@@ -53,7 +53,14 @@ CIPHERS = [
 ]
 
 
-def tls13_extensions(alpn_protocols=None, signature_schemes=None):
+OMIT_EXTENSION = object()
+
+
+def tls13_extensions(
+    alpn_protocols=None,
+    signature_schemes=None,
+    signature_schemes_cert=None,
+):
     if signature_schemes is None:
         signature_schemes = [
             SignatureScheme.ecdsa_secp256r1_sha256,
@@ -70,10 +77,14 @@ def tls13_extensions(alpn_protocols=None, signature_schemes=None):
         ExtensionType.signature_algorithms: SignatureAlgorithmsExtension().create(
             signature_schemes
         ),
-        ExtensionType.signature_algorithms_cert: SignatureAlgorithmsCertExtension().create(
-            signature_schemes
-        ),
     }
+    if signature_schemes_cert is not OMIT_EXTENSION:
+        cert_schemes = (
+            signature_schemes if signature_schemes_cert is None else signature_schemes_cert
+        )
+        ext[ExtensionType.signature_algorithms_cert] = SignatureAlgorithmsCertExtension().create(
+            cert_schemes
+        )
     if alpn_protocols is not None:
         ext[ExtensionType.alpn] = ALPNExtension().create(alpn_protocols)
     return ext
@@ -141,12 +152,20 @@ def minimal_client_hello_with_ext(ext_type: int, ext_body: bytes) -> bytes:
     return record(ContentType.handshake, handshake)
 
 
-def run_echo_conversation(tls_server, ciphers, signature_schemes=None):
+def run_echo_conversation(
+    tls_server,
+    ciphers,
+    signature_schemes=None,
+    signature_schemes_cert=None,
+):
     conversation = Connect(tls_server["host"], tls_server["port"])
     node = conversation.add_child(
         ClientHelloGenerator(
             ciphers,
-            extensions=tls13_extensions(signature_schemes=signature_schemes),
+            extensions=tls13_extensions(
+                signature_schemes=signature_schemes,
+                signature_schemes_cert=signature_schemes_cert,
+            ),
         )
     )
     node = tls13_handshake(node)
@@ -167,6 +186,68 @@ def test_tls13_rsa_pss_handshake_and_application_echo(rsa_server):
         rsa_server,
         CIPHERS,
         signature_schemes=[SignatureScheme.rsa_pss_rsae_sha256],
+        signature_schemes_cert=[SignatureScheme.rsa_pkcs1_sha256],
+    )
+
+
+def test_tls13_excluded_cert_signature_algorithm_is_handshake_failure(tls_server):
+    conversation = Connect(tls_server["host"], tls_server["port"])
+    node = conversation.add_child(
+        ClientHelloGenerator(
+            CIPHERS,
+            extensions=tls13_extensions(
+                signature_schemes=[SignatureScheme.ecdsa_secp256r1_sha256],
+                signature_schemes_cert=[SignatureScheme.rsa_pkcs1_sha256],
+            ),
+        )
+    )
+    node = node.add_child(ExpectServerHello())
+    ccs = node.add_child(ExpectChangeCipherSpec())
+    alert = ccs.add_child(ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure))
+    ccs.next_sibling = alert
+    alert.add_child(ExpectClose())
+    Runner(conversation).run()
+
+
+@pytest.mark.requires_capability("certificate_verify.rsa_pss_rsae_sha256")
+def test_tls13_omitted_signature_algorithms_cert_excludes_rsa_cert(rsa_server):
+    conversation = Connect(rsa_server["host"], rsa_server["port"])
+    node = conversation.add_child(
+        ClientHelloGenerator(
+            CIPHERS,
+            extensions=tls13_extensions(
+                signature_schemes=[SignatureScheme.rsa_pss_rsae_sha256],
+                signature_schemes_cert=OMIT_EXTENSION,
+            ),
+        )
+    )
+    node = node.add_child(ExpectServerHello())
+    ccs = node.add_child(ExpectChangeCipherSpec())
+    alert = ccs.add_child(ExpectAlert(AlertLevel.fatal, AlertDescription.handshake_failure))
+    ccs.next_sibling = alert
+    alert.add_child(ExpectClose())
+    Runner(conversation).run()
+
+
+def test_tls13_omitted_signature_algorithms_cert_allows_matching_ecdsa(tls_server):
+    run_echo_conversation(
+        tls_server,
+        CIPHERS,
+        signature_schemes=[SignatureScheme.ecdsa_secp256r1_sha256],
+        signature_schemes_cert=OMIT_EXTENSION,
+    )
+
+
+@pytest.mark.requires_capability("certificate_verify.rsa_pss_rsae_sha256")
+def test_tls13_omitted_signature_algorithms_cert_allows_matching_rsa(rsa_server):
+    run_echo_conversation(
+        rsa_server,
+        CIPHERS,
+        signature_schemes=[
+            SignatureScheme.rsa_pss_rsae_sha256,
+            SignatureScheme.rsa_pkcs1_sha256,
+        ],
+        signature_schemes_cert=OMIT_EXTENSION,
     )
 
 

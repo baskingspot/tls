@@ -6,7 +6,10 @@ const assert = std.debug.assert;
 const backend = @import("crypto/backend.zig");
 const compat = @import("compat.zig");
 const memx = @import("memx.zig");
-const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
+const signature_scheme = @import("signature_scheme.zig");
+const SignatureScheme = signature_scheme.SignatureScheme;
+pub const OfferedCertificateSchemes = signature_scheme.OfferedCertificateSchemes;
+pub const max_certificate_signature_schemes = signature_scheme.max_certificate_signature_schemes;
 
 pub const SignError = backend.sign.SignError;
 pub const NonceMode = backend.sign.NonceMode;

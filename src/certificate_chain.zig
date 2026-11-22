@@ -3,6 +3,7 @@ const testing = std.testing;
 
 const certificate = @import("certificate.zig");
 const fuzz_compat = @import("fuzz_compat.zig");
+const OfferedCertificateSchemes = @import("signature_scheme.zig").OfferedCertificateSchemes;
 
 const pem_begin_certificate = "-----BEGIN CERTIFICATE-----";
 const pem_end_certificate = "-----END CERTIFICATE-----";
@@ -81,6 +82,28 @@ pub const CertificateChain = union(enum) {
 
         if (certificate_count == 0) return error.NoCertificate;
         return .init(chain_storage[0..certificate_count]);
+    }
+
+    /// RFC 8446 §4.2.3, §4.4.2.2 — parse this chain and return the set of
+    /// signature schemes a peer must accept to verify it.
+    pub fn requiredSignatureSchemes(
+        self: CertificateChain,
+    ) certificate.ChainSignatureSchemesError!OfferedCertificateSchemes {
+        return switch (self) {
+            .slice => |certs_der| certificate.chainRequiredSignatureSchemes(certs_der),
+            .single => |cert_der| certificate.chainRequiredSignatureSchemes(&.{cert_der}),
+        };
+    }
+
+    /// RFC 8446 §4.2.3, §4.4.2.2 — return true when every validated
+    /// certificate in this chain carries a signature algorithm present in
+    /// `offered`.
+    pub fn matchesSignatureSchemes(
+        self: CertificateChain,
+        offered: OfferedCertificateSchemes,
+    ) bool {
+        const required = self.requiredSignatureSchemes() catch return false;
+        return offered.containsAll(required);
     }
 
     pub fn encodedLen(self: CertificateChain) usize {

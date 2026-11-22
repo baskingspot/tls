@@ -1103,6 +1103,9 @@ pub const Parsed = struct {
     cipher_suites: []const u8,
     legacy_session_id: []const u8,
     signature_schemes: []const u8,
+    /// RFC 8446 §4.2.3 — `signature_algorithms_cert` list when sent by the
+    /// client, or null when omitted (callers fall back to `signature_schemes`).
+    signature_schemes_cert: ?[]const u8,
     server_name: ?[]const u8,
     alpn_protocols: []const u8,
     groups: SupportedGroups,
@@ -1137,6 +1140,7 @@ pub const Parsed = struct {
             .cipher_suites = cipher_suites,
             .legacy_session_id = &.{},
             .signature_schemes = &.{},
+            .signature_schemes_cert = null,
             .server_name = null,
             .alpn_protocols = &.{},
             .groups = .empty,
@@ -1151,6 +1155,12 @@ pub const Parsed = struct {
             .offered_early_data = false,
             .extensions = &.{},
         };
+    }
+
+    /// RFC 8446 §4.2.3 — effective certificate signature-scheme vector:
+    /// `signature_algorithms_cert` when present, else `signature_algorithms`.
+    pub fn certificateSignatureSchemes(self: Parsed) []const u8 {
+        return self.signature_schemes_cert orelse self.signature_schemes;
     }
 
     pub fn offersSuite(self: Parsed, suite: CipherSuite) bool {
@@ -1599,7 +1609,7 @@ pub fn parseWithExtensions(msg: []const u8, opts: ParseOptions) ParseError!Parse
             },
             .signature_algorithms_cert => {
                 if (got_signature_algorithms_cert) return error.DuplicateExtension;
-                _ = try parseSignatureAlgorithms(ext);
+                parsed.signature_schemes_cert = try parseSignatureAlgorithms(ext);
                 got_signature_algorithms_cert = true;
             },
             .key_share => {
@@ -2976,6 +2986,41 @@ test "parse: rejects duplicate signature_algorithms" {
     const dup_sig_algs = [_]u8{ 0x00, 0x0d, 0x00, 0x02, 0x00, 0x02 };
     const new_len = appendExtension(&buf, encoded.len, &dup_sig_algs);
     try testing.expectError(error.DuplicateExtension, parse(buf[0..new_len]));
+}
+
+// RFC 8446 §4.2.3 — parse retains signature_algorithms_cert when present and
+// falls back to signature_algorithms when omitted.
+test "parse: retains signature_algorithms_cert and falls back when omitted" {
+    var buf: [512]u8 = undefined;
+    const encoded = try encodeForTest(&buf, .zero, .zero, null, &.{});
+    const parsed = try parse(encoded);
+    try testing.expect(parsed.signature_schemes_cert != null);
+    try testing.expectEqualSlices(
+        u8,
+        parsed.signature_schemes_cert.?,
+        parsed.certificateSignatureSchemes(),
+    );
+
+    const ext_offset = try findExtensionOffset(encoded, .signature_algorithms_cert);
+    const ext_data_len: usize = memx.readInt(u16, encoded[ext_offset + 2 ..][0..2]);
+    const removed = ext_header_len + ext_data_len;
+    @memmove(
+        buf[ext_offset .. encoded.len - removed],
+        buf[ext_offset + removed .. encoded.len],
+    );
+    const new_len = encoded.len - removed;
+    const extensions_at = handshake_header_len + body_fixed_len - 2;
+    const extensions_len = memx.readInt(u16, buf[extensions_at..][0..2]);
+    memx.writeInt(u16, buf[extensions_at..][0..2], extensions_len - @as(u16, @intCast(removed)));
+    memx.writeInt(u24, buf[1..4], @intCast(new_len - handshake_header_len));
+
+    const omitted = try parse(buf[0..new_len]);
+    try testing.expectEqual(@as(?[]const u8, null), omitted.signature_schemes_cert);
+    try testing.expectEqualSlices(
+        u8,
+        omitted.signature_schemes,
+        omitted.certificateSignatureSchemes(),
+    );
 }
 
 // RFC 8446 §4.2 — duplicate recognized extensions are rejected.

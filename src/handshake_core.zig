@@ -171,7 +171,7 @@ pub const Error = error{
     signature.SignError || aead.Error ||
     server_hello.HrrParseError || client_hello.RetryEncodeError ||
     alert.ParseError || NewSessionTicket.ParseError ||
-    NewSessionTicket.EncodeError ||
+    NewSessionTicket.EncodeError || certificate.ChainSignatureSchemesError ||
     error{
         AlpnProtocolTooLong,
         InvalidServerName,
@@ -214,6 +214,9 @@ pub const Client = struct {
     credentials: ?Credentials,
     /// CertificateVerify schemes offered by the current CertificateRequest.
     offered_signature_schemes: signature.OfferedSchemes,
+    /// Effective certificate signature schemes from the client's ClientHello:
+    /// `signature_algorithms_cert` when present, else `signature_algorithms`.
+    offered_cert_signature_schemes: signature.OfferedCertificateSchemes,
     /// True once the server asked for a client certificate; the flight then
     /// carries Certificate and CertificateVerify before Finished.
     received_certificate_request: bool,
@@ -310,6 +313,7 @@ pub const Client = struct {
             .policy = policy,
             .credentials = null,
             .offered_signature_schemes = .empty,
+            .offered_cert_signature_schemes = .empty,
             .received_certificate_request = false,
             .offered = .empty,
             .allowed_extensions = &.{},
@@ -393,6 +397,13 @@ pub const Client = struct {
     pub fn start(self: *Client, client_hello_msg: []const u8) Error!void {
         if (self.state != .start) return error.UnexpectedMessage;
         try level.check(.client_hello, .plaintext);
+        if (client_hello.parse(client_hello_msg)) |ch| {
+            self.offered_cert_signature_schemes.capture(ch.certificateSignatureSchemes());
+        } else |_| {
+            self.offered_cert_signature_schemes.captureSchemes(
+                backend.capabilities.certificate_signature_schemes,
+            );
+        }
         self.suite.update(client_hello_msg);
         self.queue.push(.{ .message = .{
             .level = .plaintext,
@@ -550,7 +561,16 @@ pub const Client = struct {
                     return;
                 }
                 if (msg_type != .certificate) return error.UnexpectedMessage;
-                const leaf = try certificate.parse(msg, self.policy);
+                var effective_schemes: [
+                    signature.max_certificate_signature_schemes
+                ]SignatureScheme = undefined;
+                var effective_policy = self.policy;
+                effective_policy.certificate_signature_schemes =
+                    self.offered_cert_signature_schemes.intersect(
+                        self.policy.certificate_signature_schemes,
+                        &effective_schemes,
+                    );
+                const leaf = try certificate.parse(msg, effective_policy);
                 if (leaf.len > self.leaf_pub_key.len) return error.CertificateKeyTooLarge;
                 @memcpy(self.leaf_pub_key[0..leaf.len], leaf);
                 self.leaf_pub_key_len = @intCast(leaf.len);
@@ -1307,6 +1327,9 @@ pub const Server = struct {
     selected_alpn: ?[]const u8,
     /// CertificateVerify schemes offered by the current ClientHello.
     offered_signature_schemes: signature.OfferedSchemes,
+    /// Effective certificate signature schemes from the current ClientHello:
+    /// `signature_algorithms_cert` when present, else `signature_algorithms`.
+    offered_cert_signature_schemes: signature.OfferedCertificateSchemes,
     /// The client early traffic secret, when 0-RTT was admitted.
     early_secret: [48]u8,
     early_len: u8,
@@ -1348,6 +1371,7 @@ pub const Server = struct {
             .alpn = &.{},
             .selected_alpn = null,
             .offered_signature_schemes = .empty,
+            .offered_cert_signature_schemes = .empty,
             .state = .wait_client_hello,
             .client_policy = null,
             .client_pub_key = undefined,
@@ -1479,6 +1503,7 @@ pub const Server = struct {
         // extensions rather than adding to them.
         self.extension_sink.len = 0;
         self.offered_signature_schemes.clear();
+        self.offered_cert_signature_schemes.clear();
         const parsed = client_hello.parseWithExtensions(client_hello_msg, .{
             .allowed_extensions = self.allowed_extensions,
             .received = &self.extension_sink,
@@ -1488,6 +1513,7 @@ pub const Server = struct {
             else => return error.UnexpectedMessage,
         };
         self.offered_signature_schemes.capture(parsed.signature_schemes);
+        self.offered_cert_signature_schemes.capture(parsed.certificateSignatureSchemes());
         try self.retainPeerShares(parsed);
         try self.selectAlpnParsed(parsed);
         self.state = .ch_absorbed;
@@ -1902,6 +1928,25 @@ pub const Server = struct {
         }
     }
 
+    /// RFC 8446 §4.2.3, §4.4.2.2, §4.4.3 — pick the first candidate whose
+    /// signer scheme is in `signature_algorithms` and whose certificate chain
+    /// matches the client's effective `signature_algorithms_cert` list. An
+    /// unreadable or empty candidate chain surfaces immediately as a
+    /// configuration error rather than masquerading as a peer mismatch.
+    pub fn selectCredentials(
+        self: *const Server,
+        candidates: []const Credentials,
+    ) (certificate.ChainSignatureSchemesError || error{NoCommonSignatureScheme})!Credentials {
+        if (candidates.len == 0) return error.EmptyCertificateChain;
+        for (candidates) |candidate| {
+            const required = try candidate.chain.requiredSignatureSchemes();
+            if (!self.offered_signature_schemes.contains(candidate.signer.scheme)) continue;
+            if (!self.offered_cert_signature_schemes.containsAll(required)) continue;
+            return candidate;
+        }
+        return error.NoCommonSignatureScheme;
+    }
+
     /// Compose the authenticated server flight as four bare messages at
     /// `.handshake`: EncryptedExtensions, Certificate, CertificateVerify, and
     /// Finished. One `message` output per message, in wire order, because a
@@ -1917,8 +1962,13 @@ pub const Server = struct {
         out: []u8,
     ) Error!void {
         if (self.state != .server_hello_queued) return error.UnexpectedMessage;
-        // RFC 8446 §4.4.3 — the credential's scheme must intersect the offer.
+        // RFC 8446 §4.4.3, §4.4.2.2 — both the CertificateVerify scheme and the
+        // certificate chain's signature algorithms must intersect the client's
+        // offers.
+        const required = try creds.chain.requiredSignatureSchemes();
         if (!self.offered_signature_schemes.contains(creds.signer.scheme))
+            return error.NoCommonSignatureScheme;
+        if (!self.offered_cert_signature_schemes.containsAll(required))
             return error.NoCommonSignatureScheme;
         const cv_scheme = creds.signer.scheme;
 
@@ -3147,6 +3197,220 @@ test "core server: ClientHello parse failures preserve the no-common-scheme aler
         alert.Description.unexpected_message,
         alert.alertForError(error.UnexpectedMessage).?,
     );
+}
+
+// RFC 8446 §4.2.3, §4.4.2.2 — excluded signature_algorithms_cert emits no
+// authentication flight and maps to fatal handshake_failure.
+test "core server: signature_algorithms_cert excludes chain and selects matching candidate" {
+    const cert_ext = [_]u8{ 0x00, 0x32, 0x00, 0x04, 0x00, 0x02, 0x04, 0x01 };
+    var ch_buf: [rfc8448_client_hello.len + cert_ext.len]u8 = undefined;
+    @memcpy(ch_buf[0..rfc8448_client_hello.len], &rfc8448_client_hello);
+    @memcpy(ch_buf[rfc8448_client_hello.len..], &cert_ext);
+    const body_len: u24 = @intCast(ch_buf.len - 4);
+    ch_buf[1] = @truncate(body_len >> 16);
+    ch_buf[2] = @truncate(body_len >> 8);
+    ch_buf[3] = @truncate(body_len);
+    const exts_len_off: usize = 49;
+    const old_exts_len = memx.readInt(u16, ch_buf[exts_len_off..][0..2]);
+    memx.writeInt(
+        u16,
+        ch_buf[exts_len_off..][0..2],
+        old_exts_len + @as(u16, @intCast(cert_ext.len)),
+    );
+
+    var slots: [16]level.Output = undefined;
+    var server: Server = .init(&slots);
+    defer server.deinit();
+    try server.provideWithSecret(
+        .plaintext,
+        &ch_buf,
+        .aes_128_gcm_sha256,
+        &rfc8448_server_hello,
+        &dhe_rfc8448,
+    );
+    while (server.next()) |_| {}
+
+    var key = try signature.PrivateKey.fromP256Scalar(fixtures.server_ecdsa_scalar[0..32]);
+    defer key.deinit();
+    const ecdsa_cred: Credentials = .{
+        .chain = .{ .single = &fixtures.server_ecdsa_cert_der },
+        .signer = key.signer(),
+    };
+    const rsa_cert_cred: Credentials = .{
+        .chain = .{ .single = &fixtures.rsa_pss_cert_der },
+        .signer = key.signer(),
+    };
+    var flight_buf: [2048]u8 = undefined;
+    try testing.expectError(
+        error.NoCommonSignatureScheme,
+        server.sendFlight(ecdsa_cred, null, &flight_buf),
+    );
+    try testing.expectEqual(
+        alert.Description.handshake_failure,
+        alert.alertForError(error.NoCommonSignatureScheme).?,
+    );
+    try testing.expect(server.next() == null);
+
+    // Server prefers ecdsa_cred first, but signature_algorithms_cert allows
+    // only rsa_pkcs1_sha256 -> selectCredentials picks the second candidate.
+    const picked = try server.selectCredentials(&.{ ecdsa_cred, rsa_cert_cred });
+    try testing.expectEqualSlices(u8, &fixtures.rsa_pss_cert_der, picked.chain.single);
+
+    // Omitted signature_algorithms_cert falls back to signature_algorithms.
+    var fallback_ch = rfc8448_client_hello;
+    const sig_algs = @constCast(client_hello.extension(
+        &fallback_ch,
+        compat.enumToInt(extension_type.ExtensionType.signature_algorithms),
+    ) orelse unreachable);
+    var i: usize = 2;
+    while (i < sig_algs.len) : (i += 2) {
+        memx.writeInt(
+            u16,
+            sig_algs[i..][0..2],
+            compat.enumToInt(SignatureScheme.ecdsa_secp256r1_sha256),
+        );
+    }
+    var fb_slots: [16]level.Output = undefined;
+    var fb_server: Server = .init(&fb_slots);
+    defer fb_server.deinit();
+    try fb_server.provideWithSecret(
+        .plaintext,
+        &fallback_ch,
+        .aes_128_gcm_sha256,
+        &rfc8448_server_hello,
+        &dhe_rfc8448,
+    );
+    while (fb_server.next()) |_| {}
+
+    const ed25519_cert_cred: Credentials = .{
+        .chain = .{ .single = &fixtures.ed25519_cert_der },
+        .signer = key.signer(),
+    };
+    try testing.expectError(
+        error.NoCommonSignatureScheme,
+        fb_server.sendFlight(ed25519_cert_cred, null, &flight_buf),
+    );
+    try testing.expect(fb_server.next() == null);
+    const fb_picked = try fb_server.selectCredentials(&.{ ed25519_cert_cred, ecdsa_cred });
+    try testing.expectEqualSlices(u8, &fixtures.server_ecdsa_cert_der, fb_picked.chain.single);
+
+    // An unreadable chain surfaces InvalidCertificate rather than a peer
+    // NoCommonSignatureScheme mismatch.
+    const bad_cred: Credentials = .{
+        .chain = .{ .single = "not-der" },
+        .signer = key.signer(),
+    };
+    try testing.expectError(
+        error.InvalidCertificate,
+        fb_server.sendFlight(bad_cred, null, &flight_buf),
+    );
+    try testing.expectError(
+        error.InvalidCertificate,
+        fb_server.selectCredentials(&.{bad_cred}),
+    );
+}
+
+// RFC 8446 §4.2.3, §4.4.2.2 — core client rejects a server certificate whose
+// signature algorithm was excluded by its own signature_algorithms_cert or
+// fallback signature_algorithms offer. Uses an ECDSA P-256 certificate so the
+// rejection comes from the client's offer on every backend, including native
+// (whose capability table includes ecdsa_secp256r1_sha256).
+test "core client: signature_algorithms_cert and fallback reject excluded server certificate" {
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+
+    // Encode a Certificate message carrying the ECDSA P-256 leaf (ecdsa-with-SHA256).
+    var ecdsa_cert_buf: [1024]u8 = undefined;
+    const ecdsa_cert_msg = try certificate.encode(
+        &ecdsa_cert_buf,
+        &.{&fixtures.server_ecdsa_cert_der},
+    );
+
+    var flight_buf: [4096]u8 = undefined;
+    const flight = fixtures.rfc8448.b64("server_flight.b64");
+    @memcpy(flight_buf[0..flight.len], flight);
+    var reader: handshake.Reader = .init(flight_buf[0..flight.len]);
+    const ee = (try reader.next()).?;
+
+    // Explicit signature_algorithms_cert=[ecdsa_secp384r1_sha384] excludes the
+    // backend-supported ecdsa_secp256r1_sha256 certificate.
+    const cert_ext_p384 = [_]u8{ 0x00, 0x32, 0x00, 0x04, 0x00, 0x02, 0x05, 0x03 };
+    var ch_buf: [rfc8448_client_hello.len + cert_ext_p384.len]u8 = undefined;
+    @memcpy(ch_buf[0..rfc8448_client_hello.len], &rfc8448_client_hello);
+    @memcpy(ch_buf[rfc8448_client_hello.len..], &cert_ext_p384);
+    const body_len: u24 = @intCast(ch_buf.len - 4);
+    ch_buf[1] = @truncate(body_len >> 16);
+    ch_buf[2] = @truncate(body_len >> 8);
+    ch_buf[3] = @truncate(body_len);
+    const exts_len_off: usize = 49;
+    const old_exts_len = memx.readInt(u16, ch_buf[exts_len_off..][0..2]);
+    memx.writeInt(
+        u16,
+        ch_buf[exts_len_off..][0..2],
+        old_exts_len + @as(u16, @intCast(cert_ext_p384.len)),
+    );
+
+    var slots_a: [16]level.Output = undefined;
+    var client_a: Client = .init(&slots_a, policy);
+    defer client_a.deinit();
+    client_a.offered.insert(.server_name);
+    client_a.offered.insert(.record_size_limit);
+    try client_a.start(&ch_buf);
+    while (client_a.next()) |_| {}
+    try client_a.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    while (client_a.next()) |_| {}
+    try client_a.provideHandshake(.handshake, ee.raw);
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmRejected,
+        client_a.provideHandshake(.handshake, ecdsa_cert_msg),
+    );
+
+    // Omitted signature_algorithms_cert with signature_algorithms=[ecdsa_secp384r1_sha384]
+    // falls back and rejects the same ECDSA P-256 certificate.
+    var fallback_ch = rfc8448_client_hello;
+    const sig_algs = @constCast(client_hello.extension(
+        &fallback_ch,
+        compat.enumToInt(extension_type.ExtensionType.signature_algorithms),
+    ) orelse unreachable);
+    var i: usize = 2;
+    while (i < sig_algs.len) : (i += 2) {
+        memx.writeInt(
+            u16,
+            sig_algs[i..][0..2],
+            compat.enumToInt(SignatureScheme.ecdsa_secp384r1_sha384),
+        );
+    }
+    var slots_b: [16]level.Output = undefined;
+    var client_b: Client = .init(&slots_b, policy);
+    defer client_b.deinit();
+    client_b.offered.insert(.server_name);
+    client_b.offered.insert(.record_size_limit);
+    try client_b.start(&fallback_ch);
+    while (client_b.next()) |_| {}
+    try client_b.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    while (client_b.next()) |_| {}
+    try client_b.provideHandshake(.handshake, ee.raw);
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmRejected,
+        client_b.provideHandshake(.handshake, ecdsa_cert_msg),
+    );
+
+    // Control: signature_algorithms_cert=[ecdsa_secp256r1_sha256] accepts it.
+    var ch_allow = ch_buf;
+    ch_allow[ch_allow.len - 2] = 0x04;
+    ch_allow[ch_allow.len - 1] = 0x03;
+    var slots_c: [16]level.Output = undefined;
+    var client_c: Client = .init(&slots_c, policy);
+    defer client_c.deinit();
+    client_c.offered.insert(.server_name);
+    client_c.offered.insert(.record_size_limit);
+    try client_c.start(&ch_allow);
+    while (client_c.next()) |_| {}
+    try client_c.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    while (client_c.next()) |_| {}
+    try client_c.provideHandshake(.handshake, ee.raw);
+    try client_c.provideHandshake(.handshake, ecdsa_cert_msg);
 }
 
 // RFC 8446 §4.4.3 — an ECDSA credential cannot answer an RSA-PSS-only offer.

@@ -499,9 +499,17 @@ test "ServerConfig.validate reports invalid lists and missing P-384 material" {
     }
 }
 
-const ServerCredentials = struct {
+pub const CredentialError = certificate.ChainSignatureSchemesError;
+
+pub const Credentials = struct {
     chain: CertificateChain,
     signer: Signer,
+};
+
+const ConfiguredCredentials = union(enum) {
+    none,
+    single: Credentials,
+    list: []const Credentials,
 };
 
 state: State,
@@ -532,6 +540,12 @@ selected_alpn: ?[]const u8,
 /// Recognized CertificateVerify schemes from the current ClientHello. Copied
 /// because the caller's ClientHello record does not outlive the next input.
 offered_signature_schemes: signature.OfferedSchemes,
+/// Effective certificate signature schemes from the current ClientHello:
+/// `signature_algorithms_cert` when present, else `signature_algorithms`.
+offered_cert_signature_schemes: signature.OfferedCertificateSchemes,
+/// Required certificate signature schemes precomputed when `.single`
+/// credentials are configured, avoiding per-handshake DER parsing.
+single_cert_schemes: signature.OfferedCertificateSchemes,
 /// SNI hostname sent by the client in the server_name extension (RFC 6066 §3).
 /// Populated after acceptClientHello / handleRecord returns the first write event.
 /// Points into the ClientHello message buffer (the caller-owned record
@@ -599,10 +613,10 @@ early_data_skip_limit: u32,
 /// so processClientHelloMessage can use it.
 psk_lookup: ?PskLookup,
 /// Caller-owned certificate DER slices and signer used for the authenticated
-/// server flight. The DER bytes, slice-of-slices, and PrivateKey backing the
-/// Signer must outlive this handshake. tls stores references and does not copy
-/// or own credential memory.
-server_credentials: ?ServerCredentials,
+/// server flight. The DER bytes, slice-of-slices, candidate slice, and
+/// PrivateKey backing each Signer must outlive this handshake. tls stores
+/// references and does not copy or own credential memory.
+server_credentials: ConfiguredCredentials,
 /// Set before server-flight assembly mutates the transcript, so a terminal
 /// failure cannot be retried into a duplicate Finished or key/nonce reuse.
 server_flight_sent: bool,
@@ -661,6 +675,8 @@ pub fn init(server_config: ServerConfig, config: Config) ServerHandshake {
         .server_finished_hash_len = 0,
         .selected_alpn = null,
         .offered_signature_schemes = .empty,
+        .offered_cert_signature_schemes = .empty,
+        .single_cert_schemes = .empty,
         .client_server_name = null,
         .rx = undefined,
         .tx = undefined,
@@ -690,7 +706,7 @@ pub fn init(server_config: ServerConfig, config: Config) ServerHandshake {
         .early_data_skip_bytes = 0,
         .early_data_skip_limit = server_config.early_data_skip_limit,
         .psk_lookup = server_config.psk_lookup,
-        .server_credentials = null,
+        .server_credentials = .none,
         .server_flight_sent = false,
         .ch_buf = if (config.reassembly) |buf| .init(buf) else .empty,
         .ch_expected = 0,
@@ -847,21 +863,50 @@ fn verifyBinderSha(
 }
 
 /// Store caller-owned credentials for the authenticated server flight.
-/// The certificate DER slices and the PrivateKey backing `signer` must outlive
-/// this handshake. tls keeps references; it does not copy or own credentials.
+/// Validates the chain's DER structure and certificate signature algorithms
+/// now so an unreadable chain fails at configuration time rather than on every
+/// handshake. The certificate DER slices and the PrivateKey backing `signer`
+/// must outlive this handshake. tls keeps references; it does not copy or own
+/// credentials.
 pub fn setCredentials(
     self: *ServerHandshake,
     certs_der: []const []const u8,
     signer: Signer,
-) void {
-    self.setCertificateChain(.init(certs_der), signer);
+) CredentialError!void {
+    try self.setCertificateChain(.init(certs_der), signer);
 }
 
 /// Store a caller-owned certificate chain and signer for the authenticated
-/// server flight. See setCredentials for lifetime requirements.
-pub fn setCertificateChain(self: *ServerHandshake, chain: CertificateChain, signer: Signer) void {
+/// server flight. See setCredentials for lifetime and validation requirements.
+pub fn setCertificateChain(
+    self: *ServerHandshake,
+    chain: CertificateChain,
+    signer: Signer,
+) CredentialError!void {
     assert(self.state == .wait_ch);
-    self.server_credentials = .{ .chain = chain, .signer = signer };
+    const required = try chain.requiredSignatureSchemes();
+    self.single_cert_schemes = required;
+    self.server_credentials = .{ .single = .{ .chain = chain, .signer = signer } };
+}
+
+/// Store caller-owned candidate credentials in server preference order for
+/// the authenticated server flight. Validates every candidate chain at
+/// configuration time. Flight selection picks the first candidate whose signer
+/// scheme is in `signature_algorithms` and whose certificate chain matches the
+/// client's effective `signature_algorithms_cert` list
+/// (RFC 8446 §4.2.3, §4.4.2.2, §4.4.3). The slice, certificate DER bytes, and
+/// PrivateKey backing each Signer must outlive this handshake.
+pub fn setCredentialCandidates(
+    self: *ServerHandshake,
+    candidates: []const Credentials,
+) CredentialError!void {
+    assert(self.state == .wait_ch);
+    if (candidates.len == 0) return error.EmptyCertificateChain;
+    for (candidates) |candidate| {
+        _ = try candidate.chain.requiredSignatureSchemes();
+    }
+    self.single_cert_schemes = .empty;
+    self.server_credentials = .{ .list = candidates };
 }
 
 /// Provide caller-owned storage for reassembling a fragmented plaintext
@@ -1154,6 +1199,7 @@ pub const FlightError =
     encrypted_extensions.EncodeError ||
     certificate_request.EncodeError ||
     certificate.EncodeError ||
+    CredentialError ||
     RecordLayer.EncryptError ||
     SignError ||
     error{ MissingServerCredentials, NoCommonSignatureScheme, PendingWrite };
@@ -1230,6 +1276,7 @@ fn resetNegotiationState(self: *ServerHandshake) void {
     self.selected_psk_index = 0;
     self.selected_alpn = null;
     self.offered_signature_schemes.clear();
+    self.offered_cert_signature_schemes.clear();
     self.client_server_name = null;
     self.ticket_compatibility = .unavailable;
 }
@@ -1340,6 +1387,7 @@ fn processClientHelloMessage(
     // Transactional: a ClientHello that fails after PSK selection must not
     // leave its selection or 0-RTT key state for the next ClientHello (#160).
     self.offered_signature_schemes.clear();
+    self.offered_cert_signature_schemes.clear();
     errdefer self.resetNegotiationState();
     // RFC 8446 §4.2.10 — ClientHello2 closes the HRR early-data skip window.
     // The window is armed only by the HelloRetryRequest response to
@@ -1353,6 +1401,7 @@ fn processClientHelloMessage(
     try self.validateHybridGroups();
     const ch = try client_hello.parse(ch_msg);
     self.offered_signature_schemes.capture(ch.signature_schemes);
+    self.offered_cert_signature_schemes.capture(ch.certificateSignatureSchemes());
 
     // Caller-required extensions must be present. The peer learns
     // `missing_extension` (RFC 8446 §6.2); the caller learns which type through
@@ -1714,6 +1763,7 @@ fn retryClientHelloDigest(ch: *const client_hello.Parsed) RetryClientHelloDigest
     retryClientHelloDigestUpdate(&hash, ch.alpn_protocols);
     retryClientHelloDigestUpdate(&hash, ch.cipher_suites);
     retryClientHelloDigestUpdate(&hash, ch.signature_schemes);
+    retryClientHelloDigestUpdateOptional(&hash, ch.signature_schemes_cert);
     retryClientHelloDigestUpdateOptional(&hash, ch.psk_key_exchange_modes);
 
     const group_count = comptime compat.enumFieldCount(NamedGroup);
@@ -2138,20 +2188,21 @@ pub fn sendAuthenticatedFlightBuffered(
 pub fn sendPreparedServerFlight(self: *ServerHandshake, out: []u8) FlightError!?[]const u8 {
     if (self.pending_write.isPending()) return error.PendingWrite;
     if (self.state != .wait_client_finished or self.server_flight_sent) return null;
-    const credentials = if (self.selected_psk == null)
-        self.server_credentials orelse return error.MissingServerCredentials
-    else
-        null;
+    if (self.selected_psk == null and self.server_credentials == .none)
+        return error.MissingServerCredentials;
     if (out.len < frame.header_len) return error.BufferTooShort;
     self.server_flight_sent = true;
     const flight = if (self.selected_psk != null)
         try self.encodeEncryptedExtensionsFinished(out[frame.header_len..])
-    else
-        try self.encodeAuthenticatedFlight(
-            credentials.?.chain,
-            credentials.?.signer,
+    else blk: {
+        const selected = try self.selectConfiguredCredentials();
+        break :blk try self.encodeAuthenticatedFlightValidated(
+            selected.creds.chain,
+            selected.creds.signer,
+            selected.required_cert_schemes,
             out[frame.header_len..],
         );
+    };
     const record = try self.encryptPreparedServerFlight(flight.len, out);
     self.pending_write.mark();
     return record;
@@ -2171,7 +2222,21 @@ fn encodeAuthenticatedFlight(
     plaintext: []u8,
 ) FlightError![]const u8 {
     assert(self.state == .wait_client_finished);
+    const required = try chain.requiredSignatureSchemes();
+    return self.encodeAuthenticatedFlightValidated(chain, signer, required, plaintext);
+}
+
+fn encodeAuthenticatedFlightValidated(
+    self: *ServerHandshake,
+    chain: CertificateChain,
+    signer: Signer,
+    required_cert_schemes: signature.OfferedCertificateSchemes,
+    plaintext: []u8,
+) FlightError![]const u8 {
+    assert(self.state == .wait_client_finished);
     const cv_scheme = try self.selectCertificateVerifyScheme(signer);
+    if (!self.offered_cert_signature_schemes.containsAll(required_cert_schemes))
+        return error.NoCommonSignatureScheme;
     var pos: usize = 0;
 
     const ee = encrypted_extensions.encodeWithExtensions(
@@ -3043,6 +3108,42 @@ fn selectCertificateVerifyScheme(
     return signer.scheme;
 }
 
+const SelectedCredentials = struct {
+    creds: Credentials,
+    required_cert_schemes: signature.OfferedCertificateSchemes,
+};
+
+const SelectCredentialsError =
+    CredentialError || error{ MissingServerCredentials, NoCommonSignatureScheme };
+
+/// RFC 8446 §4.2.3, §4.4.2.2, §4.4.3 — select the first configured credential
+/// whose CertificateVerify scheme and certificate-chain signature algorithms
+/// both satisfy the client's offers.
+fn selectConfiguredCredentials(
+    self: *const ServerHandshake,
+) SelectCredentialsError!SelectedCredentials {
+    switch (self.server_credentials) {
+        .none => return error.MissingServerCredentials,
+        .single => |creds| {
+            if (!self.offered_signature_schemes.contains(creds.signer.scheme))
+                return error.NoCommonSignatureScheme;
+            if (!self.offered_cert_signature_schemes.containsAll(self.single_cert_schemes))
+                return error.NoCommonSignatureScheme;
+            return .{ .creds = creds, .required_cert_schemes = self.single_cert_schemes };
+        },
+        .list => |candidates| {
+            if (candidates.len == 0) return error.MissingServerCredentials;
+            for (candidates) |candidate| {
+                const required = try candidate.chain.requiredSignatureSchemes();
+                if (!self.offered_signature_schemes.contains(candidate.signer.scheme)) continue;
+                if (!self.offered_cert_signature_schemes.containsAll(required)) continue;
+                return .{ .creds = candidate, .required_cert_schemes = required };
+            }
+            return error.NoCommonSignatureScheme;
+        },
+    }
+}
+
 // Test fixture accessors. Wrapped in functions so the @import of
 // fixtures is never analyzed unless a test actually calls these —
 // the published tarball doesn't include the fixtures module.
@@ -3066,6 +3167,11 @@ fn serverRsaPssCertDer() []const u8 {
     // ziglint-ignore: Z028, Z007
     const f = @import("fixtures");
     return &f.rsa_pss_cert_der;
+}
+fn serverRsaPssSignedCertDer() []const u8 {
+    // ziglint-ignore: Z028, Z007
+    const f = @import("fixtures");
+    return &f.rsa_pss_signed_cert_der;
 }
 fn serverRsaPssKeyPem() []const u8 {
     // ziglint-ignore: Z028, Z007
@@ -3229,6 +3335,111 @@ fn testConfig(keypair: x25519.KeyPair) !Config {
     var keypairs: KeyPairs = try .init(keypair);
     keypairs.p256 = try .generateDeterministic(.init(@splat(0x54)));
     return .{ .keypairs = keypairs, .random = .zero };
+}
+
+fn rewriteSignatureSchemeListForTest(ext_data: []u8, schemes: []const SignatureScheme) void {
+    assert(schemes.len != 0);
+    var i: usize = 2;
+    while (i < ext_data.len) : (i += 2) {
+        const scheme = schemes[(i - 2) / 2 % schemes.len];
+        memx.writeInt(u16, ext_data[i..][0..2], compat.enumToInt(scheme));
+    }
+}
+
+fn removeClientHelloExtensionForTest(
+    ch: []u8,
+    ext_type: extension_type.ExtensionType,
+) []u8 {
+    const ext_len_off = clientHelloExtensionsLenOffset(ch);
+    const exts_len = memx.readInt(u16, ch[ext_len_off..][0..2]);
+    var pos = ext_len_off + 2;
+    const exts_end = pos + exts_len;
+    const target = compat.enumToInt(ext_type);
+    while (pos + 4 <= exts_end) {
+        const et = memx.readInt(u16, ch[pos..][0..2]);
+        const el = memx.readInt(u16, ch[pos + 2 ..][0..2]);
+        const next_pos = pos + 4 + el;
+        if (et == target) {
+            const removed = next_pos - pos;
+            @memmove(ch[pos .. ch.len - removed], ch[next_pos..]);
+            const new_len = ch.len - removed;
+            memx.writeInt(u16, ch[ext_len_off..][0..2], exts_len - @as(u16, @intCast(removed)));
+            const body_len: u24 = @intCast(new_len - handshake_header_len);
+            ch[1] = @truncate(body_len >> 16);
+            ch[2] = @truncate(body_len >> 8);
+            ch[3] = @truncate(body_len);
+            return ch[0..new_len];
+        }
+        pos = next_pos;
+    }
+    unreachable;
+}
+
+fn encodeClientHelloWithSignatureOffersForTest(
+    out: []u8,
+    client_keypair: x25519.KeyPair,
+    sig_schemes: []const SignatureScheme,
+    cert_sig_schemes: ?[]const SignatureScheme,
+) ![]const u8 {
+    const raw = try encodeClientHelloForTest(out, client_keypair.public_key, null, &.{});
+    const sig_algs = @constCast(client_hello.extension(
+        raw,
+        compat.enumToInt(extension_type.ExtensionType.signature_algorithms),
+    ) orelse unreachable);
+    rewriteSignatureSchemeListForTest(sig_algs, sig_schemes);
+    if (cert_sig_schemes) |cert_schemes| {
+        const sig_algs_cert = @constCast(client_hello.extension(
+            raw,
+            compat.enumToInt(extension_type.ExtensionType.signature_algorithms_cert),
+        ) orelse unreachable);
+        rewriteSignatureSchemeListForTest(sig_algs_cert, cert_schemes);
+        return raw;
+    }
+    return removeClientHelloExtensionForTest(out[0..raw.len], .signature_algorithms_cert);
+}
+
+fn acceptWithSignatureOffersForTest(
+    server: *ServerHandshake,
+    sig_schemes: []const SignatureScheme,
+    cert_sig_schemes: ?[]const SignatureScheme,
+    out: []u8,
+) ![]const u8 {
+    const client_keypair: x25519.KeyPair = .generate();
+    var ch_buf: [512]u8 = undefined;
+    const ch = try encodeClientHelloWithSignatureOffersForTest(
+        &ch_buf,
+        client_keypair,
+        sig_schemes,
+        cert_sig_schemes,
+    );
+    var record: [1024]u8 = undefined;
+    const header: frame.Header = .init(.handshake, @intCast(ch.len));
+    header.write(record[0..frame.header_len]);
+    @memcpy(record[frame.header_len..][0..ch.len], ch);
+    return server.acceptClientHello(record[0 .. frame.header_len + ch.len], out);
+}
+
+fn leafCertificateFromFlightForTest(
+    record: []const u8,
+    rx: *RecordLayer,
+    out: []u8,
+) ![]const u8 {
+    var wire_record: [4096]u8 = undefined;
+    @memcpy(wire_record[0..record.len], record);
+    const dec = try rx.decrypt(wire_record[0..record.len]);
+    try testing.expectEqual(.handshake, dec.content_type);
+    var hr: HandshakeReader = .init(dec.content);
+    while (try hr.next()) |msg| {
+        if (msg.type != .certificate) continue;
+        // RFC 8446 §4.4.2: header(4) + context_len(1) + context + list_len(3) + cert_len(3) + cert
+        const ctx_len = msg.raw[4];
+        const first_cert_off = 4 + 1 + ctx_len + 3;
+        const cert_len = memx.readInt(u24, msg.raw[first_cert_off..][0..3]);
+        const cert = msg.raw[first_cert_off + 3 ..][0..cert_len];
+        @memcpy(out[0..cert.len], cert);
+        return out[0..cert.len];
+    }
+    return error.MissingCertificate;
 }
 
 fn acceptWithSignatureSchemesForTest(
@@ -4786,7 +4997,7 @@ test "sendPreparedServerFlight: credentials and pending write are enforced" {
     defer signer.deinit();
     var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
-    server.setCredentials(&.{serverEcdsaCertDer()}, signer.signer());
+    try server.setCredentials(&.{serverEcdsaCertDer()}, signer.signer());
     _ = try server.acceptClientHello(ch_record[0 .. frame.header_len + ch.len], &sh_out);
     server.pending_write.mark();
     try testing.expectError(error.PendingWrite, server.sendPreparedServerFlight(&flight_out));
@@ -4827,7 +5038,7 @@ test "sendPreparedServerFlight: encryption failure preserves handshake write epo
 
     var server: ServerHandshake = .init(.{}, try testConfig(server_keypair));
     defer server.deinit();
-    server.setCredentials(&.{serverEcdsaCertDer()}, signer_api);
+    try server.setCredentials(&.{serverEcdsaCertDer()}, signer_api);
     var server_sh: [256]u8 = undefined;
     const sh_record = try server.acceptClientHello(ch_record, &server_sh);
     try client.processServerHello(sh_record[frame.header_len..]);
@@ -6259,6 +6470,445 @@ test "processClientFinished: required client auth rejects forged CertificateVeri
     );
 }
 
+// RFC 8446 §4.2.3, §4.4.2.2 — reproduce #209: a server must not send a
+// certificate whose signature algorithm is excluded by signature_algorithms_cert.
+test "sendPreparedServerFlight: excluded signature_algorithms_cert gets handshake_failure" {
+    var signer: signature.PrivateKey = try .fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer signer.deinit();
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer server.deinit();
+    try server.setCredentials(&.{serverEcdsaCertDer()}, signer.signer());
+    var sh_out: [256]u8 = undefined;
+    _ = try acceptWithSignatureOffersForTest(
+        &server,
+        &.{.ecdsa_secp256r1_sha256},
+        &.{.rsa_pkcs1_sha256},
+        &sh_out,
+    );
+
+    var flight_rx = try server.tx.clone();
+    defer flight_rx.deinit();
+    var flight_out: [4096]u8 = undefined;
+    const failure: FlightError = if (server.sendPreparedServerFlight(&flight_out)) |record| {
+        // On unpatched code, the server ignores signature_algorithms_cert and
+        // sends the ECDSA-signed certificate the client declared it cannot verify.
+        var leaf_buf: [2048]u8 = undefined;
+        const leaf_der = try leafCertificateFromFlightForTest(record.?, &flight_rx, &leaf_buf);
+        const parsed = try (Certificate{ .buffer = leaf_der, .index = 0 }).parse();
+        try testing.expectEqual(
+            Certificate.Algorithm.ecdsa_with_SHA256,
+            parsed.signature_algorithm,
+        );
+        return error.UnverifiableCertificateEmitted;
+    } else |err| err;
+    try testing.expectEqual(error.NoCommonSignatureScheme, failure);
+    try testing.expectEqual(
+        alert.Description.handshake_failure,
+        alert.alertForError(failure).?,
+    );
+
+    var alert_rx = try server.tx.clone();
+    defer alert_rx.deinit();
+    var alert_out: [64]u8 = undefined;
+    const alert_record = try server.sendAlert(.handshake_failure, &alert_out);
+    var alert_wire: [64]u8 = undefined;
+    @memcpy(alert_wire[0..alert_record.len], alert_record);
+    const dec = try alert_rx.decrypt(alert_wire[0..alert_record.len]);
+    const received = try alert.parse(dec.content);
+    try testing.expectEqual(.fatal, received.level);
+    try testing.expectEqual(.handshake_failure, received.description);
+}
+
+// RFC 8446 §4.2.3, §4.4.2.2 — when signature_algorithms_cert is omitted, the
+// server falls back to signature_algorithms for certificate chain selection.
+test "sendPreparedServerFlight: omitted signature_algorithms_cert falls back" {
+    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+        return error.SkipZigTest;
+    var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
+    defer signer.deinit();
+
+    // rsa_pss_cert_der is signed with sha256WithRSAEncryption (rsa_pkcs1_sha256).
+    // Omitting signature_algorithms_cert with only rsa_pss_rsae_sha256 in
+    // signature_algorithms satisfies CertificateVerify but excludes the cert.
+    var rejected: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer rejected.deinit();
+    try rejected.setCredentials(&.{serverRsaPssCertDer()}, signer.signer());
+    var sh_out: [256]u8 = undefined;
+    _ = try acceptWithSignatureOffersForTest(
+        &rejected,
+        &.{.rsa_pss_rsae_sha256},
+        null,
+        &sh_out,
+    );
+
+    var flight_rx = try rejected.tx.clone();
+    defer flight_rx.deinit();
+    var flight_out: [4096]u8 = undefined;
+    const failure: FlightError = if (rejected.sendPreparedServerFlight(&flight_out)) |rec| {
+        var leaf_buf: [2048]u8 = undefined;
+        const leaf_der = try leafCertificateFromFlightForTest(rec.?, &flight_rx, &leaf_buf);
+        const parsed = try (Certificate{ .buffer = leaf_der, .index = 0 }).parse();
+        try testing.expectEqual(
+            Certificate.Algorithm.sha256WithRSAEncryption,
+            parsed.signature_algorithm,
+        );
+        return error.UnverifiableCertificateEmitted;
+    } else |err| err;
+    try testing.expectEqual(error.NoCommonSignatureScheme, failure);
+    try testing.expectEqual(
+        alert.Description.handshake_failure,
+        alert.alertForError(failure).?,
+    );
+
+    var alert_rx = try rejected.tx.clone();
+    defer alert_rx.deinit();
+    var alert_out: [64]u8 = undefined;
+    const alert_record = try rejected.sendAlert(.handshake_failure, &alert_out);
+    var alert_wire: [64]u8 = undefined;
+    @memcpy(alert_wire[0..alert_record.len], alert_record);
+    const dec = try alert_rx.decrypt(alert_wire[0..alert_record.len]);
+    const received = try alert.parse(dec.content);
+    try testing.expectEqual(.fatal, received.level);
+    try testing.expectEqual(.handshake_failure, received.description);
+
+    // Adding rsa_pkcs1_sha256 to signature_algorithms with signature_algorithms_cert
+    // still omitted allows the fallback path to complete the handshake normally.
+    const client_keypair: x25519.KeyPair = .generate();
+    var ch_buf: [512]u8 = undefined;
+    const ch = try encodeClientHelloWithSignatureOffersForTest(
+        &ch_buf,
+        client_keypair,
+        &.{ .rsa_pss_rsae_sha256, .rsa_pkcs1_sha256 },
+        null,
+    );
+    var ch_record: [1024]u8 = undefined;
+    const header: frame.Header = .init(.handshake, @intCast(ch.len));
+    header.write(ch_record[0..frame.header_len]);
+    @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
+
+    var accepted: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer accepted.deinit();
+    try accepted.setCredentials(&.{serverRsaPssCertDer()}, signer.signer());
+    const sh_record = try accepted.acceptClientHello(
+        ch_record[0 .. frame.header_len + ch.len],
+        &sh_out,
+    );
+    const flight_record = (try accepted.sendPreparedServerFlight(&flight_out)).?;
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .insecure_no_chain_anchor = true,
+    });
+    defer client.deinit();
+    client.injectClientHello(ch);
+    try client.processServerHello(sh_record[frame.header_len..]);
+    var flight_copy: [4096]u8 = undefined;
+    @memcpy(flight_copy[0..flight_record.len], flight_record);
+    var fin_out: [256]u8 = undefined;
+    const ev = try client.handleRecord(flight_copy[0..flight_record.len], &fin_out);
+    try testing.expectEqual(.connected, client.state);
+    accepted.completeWrite();
+    var fin_copy: [256]u8 = undefined;
+    @memcpy(fin_copy[0..ev.write.len], ev.write);
+    var srv_out: [64]u8 = undefined;
+    _ = try accepted.handleRecord(fin_copy[0..ev.write.len], &srv_out);
+    try testing.expectEqual(.connected, accepted.state);
+}
+
+// RFC 8446 §4.2.3, §4.4.2.2 — a client permitting the chain's algorithm in
+// signature_algorithms_cert completes the full handshake normally.
+test "sendPreparedServerFlight: permitted signature_algorithms_cert completes handshake" {
+    var signer: signature.PrivateKey = try .fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer signer.deinit();
+    const client_keypair: x25519.KeyPair = .generate();
+    var ch_buf: [512]u8 = undefined;
+    const ch = try encodeClientHelloWithSignatureOffersForTest(
+        &ch_buf,
+        client_keypair,
+        &.{.ecdsa_secp256r1_sha256},
+        &.{.ecdsa_secp256r1_sha256},
+    );
+    var ch_record: [1024]u8 = undefined;
+    const header: frame.Header = .init(.handshake, @intCast(ch.len));
+    header.write(ch_record[0..frame.header_len]);
+    @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
+
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer server.deinit();
+    try server.setCredentials(&.{serverEcdsaCertDer()}, signer.signer());
+    var sh_out: [256]u8 = undefined;
+    const sh_record = try server.acceptClientHello(
+        ch_record[0 .. frame.header_len + ch.len],
+        &sh_out,
+    );
+    var flight_out: [4096]u8 = undefined;
+    const flight_record = (try server.sendPreparedServerFlight(&flight_out)).?;
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
+        .host_name = "ztls.server.test",
+        .now_sec = 0,
+        .random = .zero,
+        .insecure_no_chain_anchor = true,
+    });
+    defer client.deinit();
+    client.injectClientHello(ch);
+    try client.processServerHello(sh_record[frame.header_len..]);
+    var flight_copy: [4096]u8 = undefined;
+    @memcpy(flight_copy[0..flight_record.len], flight_record);
+    var fin_out: [256]u8 = undefined;
+    const ev = try client.handleRecord(flight_copy[0..flight_record.len], &fin_out);
+    try testing.expectEqual(.connected, client.state);
+    server.completeWrite();
+    var fin_copy: [256]u8 = undefined;
+    @memcpy(fin_copy[0..ev.write.len], ev.write);
+    var srv_out: [64]u8 = undefined;
+    _ = try server.handleRecord(fin_copy[0..ev.write.len], &srv_out);
+    try testing.expectEqual(.connected, server.state);
+}
+
+// RFC 8446 §4.2.3, §4.4.2.2 — a server with two chains picks the one the
+// client can verify via signature_algorithms_cert, rather than its own
+// preference order, even when signature_algorithms allows both signers.
+test "sendPreparedServerFlight: two-chain server selects the chain the client can verify" {
+    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+        return error.SkipZigTest;
+    var rsa_key: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
+    defer rsa_key.deinit();
+    var ecdsa_key: signature.PrivateKey = try .fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer ecdsa_key.deinit();
+
+    const rsa_cred: Credentials = .{
+        .chain = .{ .single = serverRsaPssCertDer() },
+        .signer = rsa_key.signer(),
+    };
+    const ecdsa_cred: Credentials = .{
+        .chain = .{ .single = serverEcdsaCertDer() },
+        .signer = ecdsa_key.signer(),
+    };
+    const both_cv = [_]SignatureScheme{ .rsa_pss_rsae_sha256, .ecdsa_secp256r1_sha256 };
+
+    // Case 1: server prefers RSA first, but client's signature_algorithms_cert
+    // allows only ECDSA -> server must select the second (ECDSA) chain.
+    {
+        const candidates = [_]Credentials{ rsa_cred, ecdsa_cred };
+        const client_keypair: x25519.KeyPair = .generate();
+        var ch_buf: [512]u8 = undefined;
+        const ch = try encodeClientHelloWithSignatureOffersForTest(
+            &ch_buf,
+            client_keypair,
+            &both_cv,
+            &.{.ecdsa_secp256r1_sha256},
+        );
+        var ch_record: [1024]u8 = undefined;
+        const header: frame.Header = .init(.handshake, @intCast(ch.len));
+        header.write(ch_record[0..frame.header_len]);
+        @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
+
+        var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+        defer server.deinit();
+        try server.setCredentialCandidates(&candidates);
+        var sh_out: [256]u8 = undefined;
+        const sh_record = try server.acceptClientHello(
+            ch_record[0 .. frame.header_len + ch.len],
+            &sh_out,
+        );
+        var flight_rx = try server.tx.clone();
+        defer flight_rx.deinit();
+        var flight_out: [4096]u8 = undefined;
+        const flight_record = (try server.sendPreparedServerFlight(&flight_out)).?;
+
+        var leaf_buf: [2048]u8 = undefined;
+        const leaf_der = try leafCertificateFromFlightForTest(flight_record, &flight_rx, &leaf_buf);
+        try testing.expectEqualSlices(u8, serverEcdsaCertDer(), leaf_der);
+
+        var client: ClientHandshake = .init(.{
+            .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
+            .host_name = "ztls.server.test",
+            .now_sec = 0,
+            .random = .zero,
+            .insecure_no_chain_anchor = true,
+        });
+        defer client.deinit();
+        client.injectClientHello(ch);
+        try client.processServerHello(sh_record[frame.header_len..]);
+        var flight_copy: [4096]u8 = undefined;
+        @memcpy(flight_copy[0..flight_record.len], flight_record);
+        var fin_out: [256]u8 = undefined;
+        _ = try client.handleRecord(flight_copy[0..flight_record.len], &fin_out);
+        try testing.expectEqual(.connected, client.state);
+    }
+
+    // Case 2: server prefers ECDSA first, but client's signature_algorithms_cert
+    // allows only rsa_pkcs1_sha256 -> server must select the second (RSA) chain.
+    {
+        const candidates = [_]Credentials{ ecdsa_cred, rsa_cred };
+        const client_keypair: x25519.KeyPair = .generate();
+        var ch_buf: [512]u8 = undefined;
+        const ch = try encodeClientHelloWithSignatureOffersForTest(
+            &ch_buf,
+            client_keypair,
+            &both_cv,
+            &.{.rsa_pkcs1_sha256},
+        );
+        var ch_record: [1024]u8 = undefined;
+        const header: frame.Header = .init(.handshake, @intCast(ch.len));
+        header.write(ch_record[0..frame.header_len]);
+        @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
+
+        var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+        defer server.deinit();
+        try server.setCredentialCandidates(&candidates);
+        var sh_out: [256]u8 = undefined;
+        const sh_record = try server.acceptClientHello(
+            ch_record[0 .. frame.header_len + ch.len],
+            &sh_out,
+        );
+        var flight_rx = try server.tx.clone();
+        defer flight_rx.deinit();
+        var flight_out: [4096]u8 = undefined;
+        const flight_record = (try server.sendPreparedServerFlight(&flight_out)).?;
+
+        var leaf_buf: [2048]u8 = undefined;
+        const leaf_der = try leafCertificateFromFlightForTest(flight_record, &flight_rx, &leaf_buf);
+        try testing.expectEqualSlices(u8, serverRsaPssCertDer(), leaf_der);
+
+        var client: ClientHandshake = .init(.{
+            .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
+            .host_name = null,
+            .now_sec = 0,
+            .random = .zero,
+            .insecure_no_chain_anchor = true,
+        });
+        defer client.deinit();
+        client.injectClientHello(ch);
+        try client.processServerHello(sh_record[frame.header_len..]);
+        var flight_copy: [4096]u8 = undefined;
+        @memcpy(flight_copy[0..flight_record.len], flight_record);
+        var fin_out: [256]u8 = undefined;
+        _ = try client.handleRecord(flight_copy[0..flight_record.len], &fin_out);
+        try testing.expectEqual(.connected, client.state);
+    }
+
+    // Case 3: neither chain matches signature_algorithms_cert -> handshake_failure.
+    {
+        const candidates = [_]Credentials{ rsa_cred, ecdsa_cred };
+        var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+        defer server.deinit();
+        try server.setCredentialCandidates(&candidates);
+        var sh_out: [256]u8 = undefined;
+        _ = try acceptWithSignatureOffersForTest(&server, &both_cv, &.{.ed25519}, &sh_out);
+        var flight_out: [4096]u8 = undefined;
+        try testing.expectError(
+            error.NoCommonSignatureScheme,
+            server.sendPreparedServerFlight(&flight_out),
+        );
+    }
+}
+
+// RFC 8446 §4.2.3, §4.4.2.2 — a server certificate signed with RSASSA-PSS
+// (SHA-256) matches a client offering rsa_pss_rsae_sha256 in
+// signature_algorithms_cert or fallback signature_algorithms, and is rejected
+// when excluded.
+test "sendPreparedServerFlight: RSASSA-PSS signed certificate matches rsa_pss_rsae_sha256" {
+    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+        return error.SkipZigTest;
+    var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
+    defer signer.deinit();
+
+    // Explicit signature_algorithms_cert=[rsa_pss_rsae_sha256] accepts the
+    // RSASSA-PSS-signed certificate and emits it in the server flight.
+    {
+        var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+        defer server.deinit();
+        try server.setCredentials(&.{serverRsaPssSignedCertDer()}, signer.signer());
+        var sh_out: [256]u8 = undefined;
+        _ = try acceptWithSignatureOffersForTest(
+            &server,
+            &.{.rsa_pss_rsae_sha256},
+            &.{.rsa_pss_rsae_sha256},
+            &sh_out,
+        );
+        var flight_rx = try server.tx.clone();
+        defer flight_rx.deinit();
+        var flight_out: [4096]u8 = undefined;
+        const flight_record = (try server.sendPreparedServerFlight(&flight_out)).?;
+        var leaf_buf: [2048]u8 = undefined;
+        const leaf_der = try leafCertificateFromFlightForTest(flight_record, &flight_rx, &leaf_buf);
+        try testing.expectEqualSlices(u8, serverRsaPssSignedCertDer(), leaf_der);
+    }
+
+    // Omitted signature_algorithms_cert falls back to signature_algorithms,
+    // which includes rsa_pss_rsae_sha256 -> succeeds.
+    {
+        var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+        defer server.deinit();
+        try server.setCredentials(&.{serverRsaPssSignedCertDer()}, signer.signer());
+        var sh_out: [256]u8 = undefined;
+        _ = try acceptWithSignatureOffersForTest(
+            &server,
+            &.{.rsa_pss_rsae_sha256},
+            null,
+            &sh_out,
+        );
+        var flight_out: [4096]u8 = undefined;
+        try testing.expect((try server.sendPreparedServerFlight(&flight_out)) != null);
+    }
+
+    // Excluding rsa_pss_rsae_sha256 from signature_algorithms_cert rejects the
+    // RSASSA-PSS-signed certificate with NoCommonSignatureScheme.
+    {
+        var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+        defer server.deinit();
+        try server.setCredentials(&.{serverRsaPssSignedCertDer()}, signer.signer());
+        var sh_out: [256]u8 = undefined;
+        _ = try acceptWithSignatureOffersForTest(
+            &server,
+            &.{.rsa_pss_rsae_sha256},
+            &.{.ecdsa_secp256r1_sha256},
+            &sh_out,
+        );
+        var flight_out: [4096]u8 = undefined;
+        try testing.expectError(
+            error.NoCommonSignatureScheme,
+            server.sendPreparedServerFlight(&flight_out),
+        );
+    }
+}
+
+// Configuration-time validation: unreadable or empty certificate chains fail
+// when credentials are configured instead of surfacing as per-handshake
+// handshake_failure alerts.
+test "setCredentials: unreadable or empty chain fails at configuration time" {
+    var signer: signature.PrivateKey = try .fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer signer.deinit();
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer server.deinit();
+
+    try testing.expectError(
+        error.EmptyCertificateChain,
+        server.setCredentials(&.{}, signer.signer()),
+    );
+    try testing.expectError(
+        error.InvalidCertificate,
+        server.setCredentials(&.{"not-a-der-cert"}, signer.signer()),
+    );
+    try testing.expectError(
+        error.EmptyCertificateChain,
+        server.setCredentialCandidates(&.{}),
+    );
+    try testing.expectError(
+        error.InvalidCertificate,
+        server.setCredentialCandidates(&.{
+            .{ .chain = .{ .single = serverEcdsaCertDer() }, .signer = signer.signer() },
+            .{ .chain = .{ .single = "not-a-der-cert" }, .signer = signer.signer() },
+        }),
+    );
+}
+
 // RFC 8446 §4.4.3 — reproduce #208: an ECDSA credential must not answer an
 // RSA-PSS-only offer with an ECDSA CertificateVerify.
 test "sendPreparedServerFlight: RSA-only offer gets handshake_failure" {
@@ -6266,7 +6916,7 @@ test "sendPreparedServerFlight: RSA-only offer gets handshake_failure" {
     defer signer.deinit();
     var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
     defer server.deinit();
-    server.setCredentials(&.{serverEcdsaCertDer()}, signer.signer());
+    try server.setCredentials(&.{serverEcdsaCertDer()}, signer.signer());
     var sh_out: [256]u8 = undefined;
     const accepted = acceptWithSignatureSchemesForTest(
         &server,

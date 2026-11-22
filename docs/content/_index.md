@@ -351,7 +351,7 @@ var hs: tls.ServerHandshake = .init(.{
 
 var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
 defer signer.deinit();
-hs.setCredentials(&.{cert_der}, signer.signer());
+try hs.setCredentials(&.{cert_der}, signer.signer());
 
 var out: tls.ServerHandshake.OutBuffer = .empty;
 var flight: tls.ServerHandshake.FlightBuffer = .empty;
@@ -519,7 +519,7 @@ defer signer.deinit();
 // RFC 6979 deterministic nonces (baskingspot/tls#82): reproducible
 // CertificateVerify bytes for seeded test harnesses on every backend.
 // signer.nonce_mode = .deterministic;
-server.setCredentials(&.{leaf_cert_der}, signer.signer());
+try server.setCredentials(&.{leaf_cert_der}, signer.signer());
 ```
 
 The certificate chain is a DER slice list in leaf-first order. `sendServerFlightBuffered` uses the configured credentials, owns the authenticated-flight one-shot latch, and returns `null` if there is no server flight to send.

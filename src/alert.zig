@@ -270,6 +270,9 @@ pub fn alertForHandshakeError(err: HandshakeError) ?Description {
         // Configuration the caller owes us, or a backend capability the build
         // does not have.
         error.MissingServerCredentials,
+        error.EmptyCertificateChain,
+        error.InvalidCertificate,
+        error.UnsupportedCertificateSignatureAlgorithm,
         error.DeterministicNonceUnsupported,
         error.InvalidHybridPolicy,
         error.HybridGroupUnavailable,

@@ -40,6 +40,9 @@ pub const server_ecdsa_scalar = decodeSection("server_ecdsa_scalar");
 pub const client_ecdsa_cert_der = decodeSection("client_ecdsa_cert_der");
 pub const client_ecdsa_scalar = decodeSection("client_ecdsa_scalar");
 pub const rsa_pss_cert_der = decodeSection("rsa_pss_cert_der");
+/// RSA-2048 certificate signed with RSASSA-PSS (SHA-256, MGF1-SHA-256, salt 32)
+/// paired with `rsa_pss_key_pem` (#209).
+pub const rsa_pss_signed_cert_der = decodeSection("rsa_pss_signed_cert_der");
 // RSA-8192 retention-capacity fixtures (#124).
 pub const key_capacity_root_der = decodeSection("key_capacity_root_der");
 pub const key_capacity_leaf_der = decodeSection("key_capacity_leaf_der");

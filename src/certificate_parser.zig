@@ -40,6 +40,9 @@ pub const Algorithm = enum {
     md2WithRSAEncryption,
     md5WithRSAEncryption,
     curveEd25519,
+    rsassaPss_with_SHA256,
+    rsassaPss_with_SHA384,
+    rsassaPss_with_SHA512,
 
     pub const map = std.StaticStringMap(Algorithm).initComptime(.{
         .{ &.{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x05 }, .sha1WithRSAEncryption },
@@ -60,9 +63,19 @@ pub const Algorithm = enum {
         return switch (algorithm) {
             .sha1WithRSAEncryption => crypto.hash.Sha1,
             .ecdsa_with_SHA224, .sha224WithRSAEncryption => crypto.hash.sha2.Sha224,
-            .ecdsa_with_SHA256, .sha256WithRSAEncryption => crypto.hash.sha2.Sha256,
-            .ecdsa_with_SHA384, .sha384WithRSAEncryption => crypto.hash.sha2.Sha384,
-            .ecdsa_with_SHA512, .sha512WithRSAEncryption, .curveEd25519 => crypto.hash.sha2.Sha512,
+            .ecdsa_with_SHA256,
+            .sha256WithRSAEncryption,
+            .rsassaPss_with_SHA256,
+            => crypto.hash.sha2.Sha256,
+            .ecdsa_with_SHA384,
+            .sha384WithRSAEncryption,
+            .rsassaPss_with_SHA384,
+            => crypto.hash.sha2.Sha384,
+            .ecdsa_with_SHA512,
+            .sha512WithRSAEncryption,
+            .rsassaPss_with_SHA512,
+            .curveEd25519,
+            => crypto.hash.sha2.Sha512,
             .md2WithRSAEncryption => @compileError("unimplemented"),
             .md5WithRSAEncryption => crypto.hash.Md5,
         };
@@ -1053,6 +1066,17 @@ pub const Parsed = struct {
             },
 
             .curveEd25519 => return verifyEd25519(
+                parsed_subject.message(),
+                parsed_subject.signature(),
+                parsed_issuer.pub_key_algo,
+                parsed_issuer.pubKey(),
+            ),
+
+            inline .rsassaPss_with_SHA256,
+            .rsassaPss_with_SHA384,
+            .rsassaPss_with_SHA512,
+            => |algorithm| return verifyRsaPss(
+                algorithm.Hash(),
                 parsed_subject.message(),
                 parsed_subject.signature(),
                 parsed_issuer.pub_key_algo,
@@ -2437,8 +2461,7 @@ pub fn parse(cert: Certificate) ParseError!Parsed {
     }
 
     const sig_algo = try der.Element.parse(cert_bytes, tbs_certificate.slice.end);
-    const algo_elem = try der.Element.parse(cert_bytes, sig_algo.slice.start);
-    const signature_algorithm = try parseAlgorithm(cert_bytes, algo_elem);
+    const signature_algorithm = try parseSignatureAlgorithmIdentifier(cert_bytes, sig_algo);
     const sig_elem = try der.Element.parse(cert_bytes, sig_algo.slice.end);
     const signature = try parseBitString(cert, sig_elem);
 
@@ -2892,8 +2915,161 @@ test parseYear4 {
     try expectError(error.CertificateTimeInvalid, parseYear4("r:bQ"));
 }
 
-fn parseAlgorithm(bytes: []const u8, element: der.Element) ParseEnumError!Algorithm {
-    return parseEnum(Algorithm, bytes, element);
+const rsassa_pss_oid = [_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A };
+const mgf1_oid = [_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x08 };
+const sha256_oid = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01 };
+const sha384_oid = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02 };
+const sha512_oid = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03 };
+
+const PssHash = enum {
+    sha256,
+    sha384,
+    sha512,
+
+    fn digestLen(self: PssHash) u32 {
+        return switch (self) {
+            .sha256 => 32,
+            .sha384 => 48,
+            .sha512 => 64,
+        };
+    }
+
+    fn algorithm(self: PssHash) Algorithm {
+        return switch (self) {
+            .sha256 => .rsassaPss_with_SHA256,
+            .sha384 => .rsassaPss_with_SHA384,
+            .sha512 => .rsassaPss_with_SHA512,
+        };
+    }
+};
+
+fn parseSignatureAlgorithmIdentifier(bytes: []const u8, sig_algo: der.Element) ParseError!Algorithm {
+    if (sig_algo.identifier.class != .universal or
+        sig_algo.identifier.tag != .sequence or
+        sig_algo.identifier.pc != .constructed)
+        return error.CertificateFieldHasWrongDataType;
+    const algo_elem = try der.Element.parse(bytes, sig_algo.slice.start);
+    if (algo_elem.slice.end > sig_algo.slice.end) return error.CertificateFieldHasInvalidLength;
+    if (algo_elem.identifier.tag != .object_identifier)
+        return error.CertificateFieldHasWrongDataType;
+    const oid_bytes = bytes[algo_elem.slice.start..algo_elem.slice.end];
+    if (Algorithm.map.get(oid_bytes)) |alg| return alg;
+    if (mem.eql(u8, oid_bytes, &rsassa_pss_oid))
+        return parseRsaPssSignatureAlgorithm(bytes, algo_elem.slice.end, sig_algo.slice.end);
+    return error.CertificateHasUnrecognizedObjectId;
+}
+
+/// RFC 4055 §3.1, RFC 8446 §4.2.3 — parse RSASSA-PSS-params for TLS 1.3
+/// RSASSA-PSS certificate signatures (SHA-256/384/512, MGF1 with the same
+/// hash, saltLength equal to the digest length, and trailerField == 1).
+fn parseRsaPssSignatureAlgorithm(
+    bytes: []const u8,
+    params_start: u32,
+    sig_algo_end: u32,
+) ParseError!Algorithm {
+    if (params_start >= sig_algo_end) return error.CertificateHasUnrecognizedObjectId;
+    const params = try der.Element.parse(bytes, params_start);
+    if (params.slice.end != sig_algo_end) return error.CertificateFieldHasInvalidLength;
+    if (params.identifier.class != .universal or
+        params.identifier.tag != .sequence or
+        params.identifier.pc != .constructed)
+        return error.CertificateFieldHasWrongDataType;
+
+    var pos = params.slice.start;
+    var last_tag: ?u8 = null;
+    var hash_alg: ?PssHash = null;
+    var mgf_hash: ?PssHash = null;
+    var salt_len: ?u32 = null;
+    var trailer_field: u32 = 1;
+
+    while (pos < params.slice.end) {
+        const field = try der.Element.parse(bytes, pos);
+        if (field.slice.end > params.slice.end) return error.CertificateFieldHasInvalidLength;
+        pos = field.slice.end;
+        if (field.identifier.class != .context_specific or field.identifier.pc != .constructed)
+            return error.CertificateFieldHasWrongDataType;
+        const tag: u8 = compat.enumToInt(field.identifier.tag);
+        if (last_tag) |prev| {
+            if (tag <= prev) return error.CertificateFieldHasWrongDataType;
+        }
+        last_tag = tag;
+        switch (tag) {
+            0 => hash_alg = try parsePssHashAlgorithm(bytes, field.slice.start, field.slice.end),
+            1 => mgf_hash = try parsePssMaskGenAlgorithm(bytes, field.slice.start, field.slice.end),
+            2 => salt_len = try parseSmallNonNegativeInt(bytes, field.slice.start, field.slice.end),
+            3 => trailer_field = try parseSmallNonNegativeInt(
+                bytes,
+                field.slice.start,
+                field.slice.end,
+            ),
+            else => return error.CertificateFieldHasWrongDataType,
+        }
+    }
+
+    const h = hash_alg orelse return error.CertificateHasUnrecognizedObjectId;
+    const m = mgf_hash orelse return error.CertificateHasUnrecognizedObjectId;
+    if (m != h) return error.CertificateHasUnrecognizedObjectId;
+    if ((salt_len orelse 20) != h.digestLen()) return error.CertificateHasUnrecognizedObjectId;
+    if (trailer_field != 1) return error.CertificateHasUnrecognizedObjectId;
+    return h.algorithm();
+}
+
+fn parsePssHashAlgorithm(bytes: []const u8, start: u32, end: u32) ParseError!PssHash {
+    if (start >= end) return error.CertificateFieldHasInvalidLength;
+    const seq = try der.Element.parse(bytes, start);
+    if (seq.slice.end != end) return error.CertificateFieldHasInvalidLength;
+    if (seq.identifier.class != .universal or
+        seq.identifier.tag != .sequence or
+        seq.identifier.pc != .constructed)
+        return error.CertificateFieldHasWrongDataType;
+    const oid = try der.Element.parse(bytes, seq.slice.start);
+    if (oid.slice.end > seq.slice.end) return error.CertificateFieldHasInvalidLength;
+    if (oid.identifier.tag != .object_identifier)
+        return error.CertificateFieldHasWrongDataType;
+    if (oid.slice.end < seq.slice.end) {
+        const null_elem = try der.Element.parse(bytes, oid.slice.end);
+        if (null_elem.slice.end != seq.slice.end) return error.CertificateFieldHasInvalidLength;
+        if (null_elem.identifier.tag != .null or null_elem.slice.start != null_elem.slice.end)
+            return error.CertificateFieldHasWrongDataType;
+    }
+    const oid_bytes = bytes[oid.slice.start..oid.slice.end];
+    if (mem.eql(u8, oid_bytes, &sha256_oid)) return .sha256;
+    if (mem.eql(u8, oid_bytes, &sha384_oid)) return .sha384;
+    if (mem.eql(u8, oid_bytes, &sha512_oid)) return .sha512;
+    return error.CertificateHasUnrecognizedObjectId;
+}
+
+fn parsePssMaskGenAlgorithm(bytes: []const u8, start: u32, end: u32) ParseError!PssHash {
+    if (start >= end) return error.CertificateFieldHasInvalidLength;
+    const seq = try der.Element.parse(bytes, start);
+    if (seq.slice.end != end) return error.CertificateFieldHasInvalidLength;
+    if (seq.identifier.class != .universal or
+        seq.identifier.tag != .sequence or
+        seq.identifier.pc != .constructed)
+        return error.CertificateFieldHasWrongDataType;
+    const oid = try der.Element.parse(bytes, seq.slice.start);
+    if (oid.slice.end > seq.slice.end) return error.CertificateFieldHasInvalidLength;
+    if (oid.identifier.tag != .object_identifier)
+        return error.CertificateFieldHasWrongDataType;
+    if (!mem.eql(u8, bytes[oid.slice.start..oid.slice.end], &mgf1_oid))
+        return error.CertificateHasUnrecognizedObjectId;
+    return parsePssHashAlgorithm(bytes, oid.slice.end, seq.slice.end);
+}
+
+fn parseSmallNonNegativeInt(bytes: []const u8, start: u32, end: u32) ParseError!u32 {
+    if (start >= end) return error.CertificateFieldHasInvalidLength;
+    const elem = try der.Element.parse(bytes, start);
+    if (elem.slice.end != end) return error.CertificateFieldHasInvalidLength;
+    if (elem.identifier.class != .universal or
+        elem.identifier.tag != .integer or
+        elem.identifier.pc != .primitive)
+        return error.CertificateFieldHasWrongDataType;
+    const raw = bytes[elem.slice.start..elem.slice.end];
+    if (raw.len == 0 or raw[0] & 0x80 != 0 or raw.len > 4)
+        return error.CertificateFieldHasInvalidLength;
+    var value: u32 = 0;
+    for (raw) |b| value = (value << 8) | b;
+    return value;
 }
 
 fn parseAlgorithmCategory(bytes: []const u8, element: der.Element) ParseEnumError!AlgorithmCategory {
@@ -2962,6 +3138,32 @@ fn verifyRsa(
             const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
                 return error.CertificateSignatureInvalid;
             rsa.PKCS1v1_5Signature.verify(modulus_len, sig[0..modulus_len].*, msg, public_key, Hash) catch
+                return error.CertificateSignatureInvalid;
+        },
+        else => return error.CertificateSignatureUnsupportedBitCount,
+    }
+}
+
+fn verifyRsaPss(
+    comptime Hash: type,
+    msg: []const u8,
+    sig: []const u8,
+    pub_key_algo: Parsed.PubKeyAlgo,
+    pub_key: []const u8,
+) !void {
+    if (pub_key_algo != .rsaEncryption and pub_key_algo != .rsassa_pss)
+        return error.CertificateSignatureAlgorithmMismatch;
+    const pk_components = try rsa.PublicKey.parseDer(pub_key);
+    const exponent = pk_components.exponent;
+    const modulus = pk_components.modulus;
+    if (exponent.len > modulus.len) return error.CertificatePublicKeyInvalid;
+    if (sig.len != modulus.len) return error.CertificateSignatureInvalidLength;
+
+    switch (modulus.len) {
+        inline 128, 256, 384, 512 => |modulus_len| {
+            const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
+                return error.CertificateSignatureInvalid;
+            rsa.PSSSignature.verify(modulus_len, sig[0..modulus_len].*, msg, public_key, Hash) catch
                 return error.CertificateSignatureInvalid;
         },
         else => return error.CertificateSignatureUnsupportedBitCount,
