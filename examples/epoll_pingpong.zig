@@ -13,7 +13,10 @@
 //! Run:
 //!     zig build example-epoll_pingpong
 //!
-//! With real certificates:
+//! Libcrypto backends use the RSA PEM fixture. Native uses an embedded P-256
+//! certificate and scalar because it cannot load PEM keys or verify RSA chains.
+//!
+//! With real certificates on an explicit libcrypto backend:
 //!     zig build example-epoll_pingpong -- \
 //!       --cert /path/to/chain.pem \
 //!       --key /path/to/leaf.key \
@@ -34,6 +37,11 @@ const IpAddress = Io.net.IpAddress;
 const builtin = @import("builtin");
 
 const tls = @import("tls");
+const fixtures = @import("fixtures");
+
+const cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
+const scalar: []const u8 = &fixtures.server_ecdsa_scalar;
+const default_certs = [_][]const u8{cert_der};
 
 comptime {
     if (builtin.os.tag != .linux) @compileError("epoll_pingpong is Linux-only");
@@ -58,7 +66,8 @@ const ReadyEvent = struct {
 const host = "127.0.0.1";
 const default_cert = "tests/fixtures/rsa_pss/server.crt";
 const default_key = "tests/fixtures/rsa_pss/server.key";
-const default_host_name = "rsa-pss.test";
+const default_libcrypto_host_name = "rsa-pss.test";
+const default_native_host_name = "ztls.server.test";
 const default_rounds = 4;
 const alpn = "pingpong";
 
@@ -239,19 +248,20 @@ fn pong(buf: []u8, round: usize) []const u8 {
 // -- Configuration ------------------------------------------------------------
 
 const Args = struct {
-    cert: []const u8,
-    key: []const u8,
-    trust: []const u8,
+    cert: ?[]const u8,
+    key: ?[]const u8,
+    trust: ?[]const u8,
     host: []const u8,
     rounds: u32,
     port: u16,
 
     fn init(process_args: std.process.Args) !Args {
+        const native = tls.capabilities.active_backend == .native;
         var result: Args = .{
-            .cert = default_cert,
-            .key = default_key,
-            .trust = default_cert,
-            .host = default_host_name,
+            .cert = if (native) null else default_cert,
+            .key = if (native) null else default_key,
+            .trust = if (native) null else default_cert,
+            .host = if (native) default_native_host_name else default_libcrypto_host_name,
             .rounds = default_rounds,
             .port = 0,
         };
@@ -340,9 +350,11 @@ pub fn main(init: std.process.Init) !u8 {
         return 1;
     };
 
-    const cert_pem = try Io.Dir.cwd().readFileAlloc(io, args.cert, arena, .limited(1 << 20));
-    var cert_list = try parsePemCerts(arena, cert_pem);
-    const certs = try cert_list.toOwnedSlice(arena);
+    const certs: []const []const u8 = if (args.cert) |cert_path| blk: {
+        const cert_pem = try Io.Dir.cwd().readFileAlloc(io, cert_path, arena, .limited(1 << 20));
+        var cert_list = try parsePemCerts(arena, cert_pem);
+        break :blk try cert_list.toOwnedSlice(arena);
+    } else &default_certs;
 
     var shared: Shared = .{};
     var server_result: ?anyerror = null;
@@ -428,8 +440,10 @@ fn serverRun(
     shared.port = actual_port;
     shared.ready.set(io);
 
-    const key_pem = try Io.Dir.cwd().readFileAlloc(io, args.key, arena, .limited(1 << 20));
-    var private_key: tls.signature.PrivateKey = try .fromPemAuto(key_pem);
+    var private_key: tls.signature.PrivateKey = if (args.key) |key_path| blk: {
+        const key_pem = try Io.Dir.cwd().readFileAlloc(io, key_path, arena, .limited(1 << 20));
+        break :blk try .fromPemAuto(key_pem);
+    } else try .fromP256Scalar(scalar[0..32]);
     defer private_key.deinit();
     try private_key.pairsWith(certs[0]);
 
@@ -547,13 +561,15 @@ fn clientRun(io: Io, arena: Allocator, args: *const Args, port: u16) !void {
     var conn: Conn = try .init(epoll_fd, fd, linux.EPOLL.OUT);
 
     var bundle: crypto.Certificate.Bundle = .empty;
-    const trust_pem = try Io.Dir.cwd().readFileAlloc(io, args.trust, arena, .limited(1 << 20));
-    const trust_list = try parsePemCerts(arena, trust_pem);
     const now_sec = Io.Timestamp.now(io, .real).toSeconds();
-    for (trust_list.items) |trust_der| {
-        const cert_start: u32 = @intCast(bundle.bytes.items.len);
-        try bundle.bytes.appendSlice(arena, trust_der);
-        try bundle.parseCert(arena, cert_start, now_sec);
+    if (args.trust) |trust_path| {
+        const trust_pem = try Io.Dir.cwd().readFileAlloc(io, trust_path, arena, .limited(1 << 20));
+        const trust_list = try parsePemCerts(arena, trust_pem);
+        for (trust_list.items) |trust_der| {
+            const cert_start: u32 = @intCast(bundle.bytes.items.len);
+            try bundle.bytes.appendSlice(arena, trust_der);
+            try bundle.parseCert(arena, cert_start, now_sec);
+        }
     }
 
     var random: tls.Random = .empty;
@@ -566,7 +582,10 @@ fn clientRun(io: Io, arena: Allocator, args: *const Args, port: u16) !void {
         .now_sec = now_sec,
         .random = random,
         .alpn_protocols = &.{alpn},
-        .bundle = &bundle,
+        .bundle = if (args.trust == null) null else &bundle,
+        // The embedded server fixture is self-signed. Match tcp_loopback and
+        // verify its hostname and CertificateVerify without a chain anchor.
+        .insecure_no_chain_anchor = args.trust == null,
         .reassembly = &hs_storage.buffer,
     });
     defer hs.deinit();

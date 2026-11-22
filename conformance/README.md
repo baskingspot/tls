@@ -52,15 +52,17 @@ The report script:
 
 The parser exits 0 only when the report has no unexpected pass/fail/skipped classifications; it exits 1 when review is required. Synthetic parser tests and wrapper helper tests run in `just ci`; real TLS-Anvil server execution runs in the dedicated scheduled/manual workflow, while client execution has a manual workflow with strict normalized evidence.
 
-### Native backend
+### Crypto backends
 
-From the repository root, run:
+The default backend is `auto`, which detects the selected libcrypto family. From the repository root, run the native suite with:
 
 ```sh
 just conformance/ci-native
 ```
 
 This command forwards `-Dcrypto=native` to tls. It includes both OpenSSL interop directions and the tlsfuzzer cases.
+
+Run `just conformance/ci` for the auto-detected libcrypto control. Run `just conformance/tlsfuzzer-openssl` for an explicit OpenSSL run. Run `just conformance/tlsfuzzer` for the default auto-detected suite without the helper tests.
 
 The client wrapper accepts `TLS_CA_FILE` for trust anchors and `TLS_HOST_NAME` for hostname verification. `TLS_CLIENT_GROUP` adds a selected classical or hybrid group to the offer. The OpenSSL cases cover chain and hostname failures, P-384 ECDH, P-384 CertificateVerify, and hybrid negotiation outcomes.
 

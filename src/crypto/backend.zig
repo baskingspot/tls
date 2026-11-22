@@ -1,7 +1,7 @@
 //! Crypto provider selection.
 //!
-//! The default auto-detects the libcrypto family from its headers. `native`
-//! selects pure-Zig primitives and does not import the libcrypto facade.
+//! The default `auto` backend detects the libcrypto family from its headers.
+//! Opt-in `native` selects pure-Zig primitives and does not import the facade.
 const std = @import("std");
 const testing = std.testing;
 const assert = std.debug.assert;
@@ -22,7 +22,7 @@ const backend_boringssl = if (native_selected) struct {} else @import("backend_b
 // ziglint-ignore: Z028 — native must not import any libcrypto backend.
 const backend_openssl = if (native_selected) struct {} else @import("backend_openssl.zig");
 
-/// Runtime dispatch stays on libcrypto by default (#138). Native uses std's
+/// Libcrypto uses runtime dispatch (#138). Opt-in native uses std's
 /// compile-time-selected SHA-256 and SHA-384 implementation.
 // ziglint-ignore: Z028 — the non-native arm owns the libcrypto SHA import.
 pub const sha2 = if (native_selected) backend_native.sha2 else @import("sha2.zig");
@@ -168,7 +168,7 @@ comptime {
     );
 
     // FIPS capability tables must be a strict subset of their non-FIPS
-    // counterparts. Native has no approved-only profile in this slice.
+    // counterparts. Native has no approved-only profile.
     if (!native_selected) {
         assertSubset(
             backend_openssl.capabilities_approved.cipher_suites,

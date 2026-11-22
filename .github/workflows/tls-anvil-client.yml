@@ -67,7 +67,7 @@ jobs:
             esac
             scripts/assert-libcrypto-family.sh "$CRYPTO_BACKEND"
             cd conformance
-            zig build
+            zig build -Dcrypto="$CRYPTO_BACKEND"
             test -x zig-out/bin/anvil_client
             test -f zig-out/tools/TLS-Anvil.jar
             test -d zig-out/tools/lib

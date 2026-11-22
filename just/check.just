@@ -1,17 +1,17 @@
 [doc("Unit tests (Debug)")]
 [group("check")]
 test:
-    zig build test --summary all
+    zig build test -Dcrypto=openssl --summary all
 
 [doc("Unit tests (ReleaseSafe): the option matrix, because lazy analysis hides code that only instantiates in release modes")]
 [group("check")]
 test-release-safe:
-    zig build test -Doptimize=ReleaseSafe --summary all
+    zig build test -Dcrypto=openssl -Doptimize=ReleaseSafe --summary all
 
 [doc("Unit tests (ReleaseFast)")]
 [group("check")]
 test-release-fast:
-    zig build test -Doptimize=ReleaseFast --summary all
+    zig build test -Dcrypto=openssl -Doptimize=ReleaseFast --summary all
 
 [doc("The per-version gate: the Debug and release-mode test suites")]
 [group("check")]
@@ -25,7 +25,7 @@ check-native:
     zig build test -Dcrypto=native --summary all
     zig build test -Dcrypto=native -Doptimize=ReleaseSafe --summary all
     zig build test -Dcrypto=native -Doptimize=ReleaseFast --summary all
-    zig build test -Dcpu=baseline --summary all
+    zig build test -Dcrypto=openssl -Dcpu=baseline --summary all
     zig build test -Dcrypto=native -Dcpu=baseline --summary all
     zig build test-bin -Dcrypto=native --summary all
     if [ "$(uname -s)" = Linux ]; then
@@ -40,6 +40,10 @@ check-native:
     fi
     zig build example-in_memory_handshake -Dcrypto=native --summary all
     zig build example-tcp_loopback -Dcrypto=native --summary all
+    if [ "$(uname -s)" = Linux ]; then
+        zig build example-epoll_pingpong -Dcrypto=native --summary all
+        zig build example-iouring_pingpong -Dcrypto=native --summary all
+    fi
     just conformance/ci-native
 
 # Runs the whole `test` step, not one filtered target. Zig 0.17 returns
@@ -70,11 +74,11 @@ check-backend-aws-lc:
     cache_dir=$(mktemp -d)
     log=$(mktemp)
     trap 'rm -rf "$cache_dir" "$log"' EXIT
-    PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build test --summary all --verbose --cache-dir "$cache_dir" 2>&1 | tee "$log"
-    PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build bench-bin --summary all --verbose --cache-dir "$cache_dir" 2>&1 | tee -a "$log"
-    PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build bench --cache-dir "$cache_dir" -- --filter 'BenchmarkRecordEncryptPrepared/TLS_AES_128_GCM_SHA256/1350' --count=1 --benchtime=1x --no-env
-    PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build example-in_memory_handshake --summary all --cache-dir "$cache_dir"
-    (cd conformance && PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build --summary all --verbose --cache-dir "$cache_dir/conformance") 2>&1 | tee -a "$log"
+    PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build test -Dcrypto=aws-lc --summary all --verbose --cache-dir "$cache_dir" 2>&1 | tee "$log"
+    PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build bench-bin -Dcrypto=aws-lc --summary all --verbose --cache-dir "$cache_dir" 2>&1 | tee -a "$log"
+    PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build bench -Dcrypto=aws-lc --cache-dir "$cache_dir" -- --filter 'BenchmarkRecordEncryptPrepared/TLS_AES_128_GCM_SHA256/1350' --count=1 --benchtime=1x --no-env
+    PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build example-in_memory_handshake -Dcrypto=aws-lc --summary all --cache-dir "$cache_dir"
+    (cd conformance && PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build -Dcrypto=aws-lc --summary all --verbose --cache-dir "$cache_dir/conformance") 2>&1 | tee -a "$log"
     (cd conformance && PKG_CONFIG_PATH="$aws_lc_pkg_config_path" uv run pytest -q tests/test_tls13.py)
     grep -F -- "-I$aws_lc_include_dir" "$log" >/dev/null || {
         echo "AWS-LC include path was not used: $aws_lc_include_dir" >&2
@@ -100,11 +104,11 @@ check-backend-boringssl:
     cache_dir=$(mktemp -d)
     log=$(mktemp)
     trap 'rm -rf "$cache_dir" "$log"' EXIT
-    PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build test --summary all --verbose --cache-dir "$cache_dir" 2>&1 | tee "$log"
-    PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build bench-bin --summary all --verbose --cache-dir "$cache_dir" 2>&1 | tee -a "$log"
-    PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build bench --cache-dir "$cache_dir" -- --filter 'BenchmarkRecordEncryptPrepared/TLS_AES_128_GCM_SHA256/1350' --count=1 --benchtime=1x --no-env
-    PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build example-in_memory_handshake --summary all --cache-dir "$cache_dir"
-    (cd conformance && PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build --summary all --verbose --cache-dir "$cache_dir/conformance") 2>&1 | tee -a "$log"
+    PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build test -Dcrypto=boringssl --summary all --verbose --cache-dir "$cache_dir" 2>&1 | tee "$log"
+    PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build bench-bin -Dcrypto=boringssl --summary all --verbose --cache-dir "$cache_dir" 2>&1 | tee -a "$log"
+    PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build bench -Dcrypto=boringssl --cache-dir "$cache_dir" -- --filter 'BenchmarkRecordEncryptPrepared/TLS_AES_128_GCM_SHA256/1350' --count=1 --benchtime=1x --no-env
+    PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build example-in_memory_handshake -Dcrypto=boringssl --summary all --cache-dir "$cache_dir"
+    (cd conformance && PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build -Dcrypto=boringssl --summary all --verbose --cache-dir "$cache_dir/conformance") 2>&1 | tee -a "$log"
     (cd conformance && PKG_CONFIG_PATH="$boringssl_pkg_config_path" uv run pytest -q tests/test_tls13.py)
     grep -F -- "-I$boringssl_include_dir" "$log" >/dev/null || {
         echo "BoringSSL include path was not used: $boringssl_include_dir" >&2
@@ -130,11 +134,11 @@ check-backends:
     global_cache_dir=$(mktemp -d)
     trap 'rm -rf "$cache_dir" "$global_cache_dir"' EXIT
     PKG_CONFIG_PATH="$aws_lc_pkg_config_path" scripts/assert-libcrypto-family.sh aws-lc
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build test --summary all --cache-dir "$cache_dir/aws-lc"
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build test -Dcrypto=aws-lc --summary all --cache-dir "$cache_dir/aws-lc"
     PKG_CONFIG_PATH="$boringssl_pkg_config_path" scripts/assert-libcrypto-family.sh boringssl
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build test --summary all --cache-dir "$cache_dir/boringssl"
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build test -Dcrypto=boringssl --summary all --cache-dir "$cache_dir/boringssl"
 
-[doc("Test the approved-algorithm profile, run a handshake in it, and reject BoringSSL")]
+[doc("Test the approved-algorithm profile, run a handshake in it, and reject BoringSSL and native")]
 [group("check")]
 check-approved-builds:
     #!/usr/bin/env bash
@@ -149,15 +153,15 @@ check-approved-builds:
     global_cache_dir=$(mktemp -d)
     log=$(mktemp)
     trap 'rm -rf "$cache_dir" "$global_cache_dir" "$log"' EXIT
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" zig build test -Dcrypto-approved-only=true --summary all --cache-dir "$cache_dir/openssl"
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build test -Dcrypto-approved-only=true --summary all --cache-dir "$cache_dir/aws-lc"
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" zig build test -Dcrypto=openssl -Dcrypto-approved-only=true --summary all --cache-dir "$cache_dir/openssl"
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build test -Dcrypto=aws-lc -Dcrypto-approved-only=true --summary all --cache-dir "$cache_dir/aws-lc"
     # A compile alone cannot prove the profile negotiates: the errq check drives
     # a full client/server handshake and a record path under the restricted
     # table.
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" zig build errq-alloc-check -Dcrypto-approved-only=true --cache-dir "$cache_dir/openssl-errq"
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build errq-alloc-check -Dcrypto-approved-only=true --cache-dir "$cache_dir/aws-lc-errq"
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" zig build errq-alloc-check -Dcrypto=openssl -Dcrypto-approved-only=true --cache-dir "$cache_dir/openssl-errq"
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build errq-alloc-check -Dcrypto=aws-lc -Dcrypto-approved-only=true --cache-dir "$cache_dir/aws-lc-errq"
     set +e
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build test-bin -Dcrypto-approved-only=true --cache-dir "$cache_dir/boringssl" >"$log" 2>&1
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build test-bin -Dcrypto=boringssl -Dcrypto-approved-only=true --cache-dir "$cache_dir/boringssl" >"$log" 2>&1
     status=$?
     set -e
     if [ "$status" -eq 0 ]; then
@@ -165,6 +169,15 @@ check-approved-builds:
         exit 1
     fi
     grep -F -- '-Dcrypto-approved-only=true is unsupported with BoringSSL' "$log" >/dev/null
+    set +e
+    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" zig build test-bin -Dcrypto=native -Dcrypto-approved-only=true --cache-dir "$cache_dir/native" >"$log" 2>&1
+    status=$?
+    set -e
+    if [ "$status" -eq 0 ]; then
+        echo "native accepted the approved-only policy" >&2
+        exit 1
+    fi
+    grep -F -- '-Dcrypto-approved-only=true is unsupported with native' "$log" >/dev/null
 
 [doc("Format all code")]
 [group("check")]
@@ -236,7 +249,18 @@ consumer-gate-selftest:
 capi-ci:
     #!/usr/bin/env bash
     set -euo pipefail
-    zig build -Dcapi --summary all
+    log=$(mktemp)
+    trap 'rm -f "$log"' EXIT
+    set +e
+    zig build -Dcapi -Dcrypto=native --summary all >"$log" 2>&1
+    status=$?
+    set -e
+    if [ "$status" -eq 0 ]; then
+        echo "native accepted the C ABI build" >&2
+        exit 1
+    fi
+    grep -F -- '-Dcapi requires a libcrypto -Dcrypto backend' "$log" >/dev/null
+    zig build -Dcapi -Dcrypto=openssl --summary all
     lib=$(find zig-out -name 'libbaskingspot_tls.a' -print -quit)
     if [ -z "$lib" ]; then
         echo "libbaskingspot_tls.a not found in zig-out" >&2

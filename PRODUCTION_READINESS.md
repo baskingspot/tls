@@ -40,11 +40,17 @@ commit because the branch moved.
 
 The default build infers a libcrypto backend from the selected headers. OpenSSL,
 AWS-LC, and BoringSSL are each CI-gated and each passed the same conformance
-run. Production builds must keep a libcrypto backend until native is measured
-and reviewed. The opt-in `-Dcrypto=native` path completes native/native and
-native/OpenSSL handshakes through the evidence in the table. Its facade caller
-owns all primitive buffers. The C ABI stays libcrypto-only and rejects
-`-Dcapi -Dcrypto=native`.
+run. Production builds use `auto` or an explicit libcrypto backend until native
+is measured and reviewed. The opt-in `-Dcrypto=native` path completes
+native/native and native/OpenSSL handshakes through the evidence in the table.
+Its facade caller owns all primitive buffers. The C ABI stays libcrypto-only
+and rejects `-Dcapi -Dcrypto=native`.
+
+Native rejects any RSA signature in a certificate chain. A client with default
+settings therefore fails against much of the public web even when the server
+key is ECDSA. Native also cannot load PEM/DER private keys, so a server cannot
+load its key from a file. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for either
+capability (#215, #216).
 
 The engine itself, meaning parsing, framing, transcript, and record sequencing,
 allocates nothing. The libcrypto backends allocate during setup and inside their
@@ -67,9 +73,10 @@ A claim is proven when a command in this repository fails if the claim becomes
 false. Four gates carry most of the weight.
 
 **`just ci`** runs the unit tests, the handshake replays against OpenSSL, the
-libcrypto and native backend lanes, the examples, the C ABI example, the
-distribution smoke test, the default conformance subproject, and native
-conformance. It is the gate a change must pass before it lands.
+libcrypto and native backend lanes, the examples, the C ABI example,
+auto-detected libcrypto conformance, and native conformance. It is the gate a change must pass before
+it lands. **`just distribution-ci`** runs the distribution smoke as its own CI
+job.
 
 **TLS-Anvil** runs the full test catalogue against a wrapper around the engine,
 as both client and server, on all three backends. The most recent all-backend

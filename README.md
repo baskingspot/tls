@@ -22,7 +22,7 @@ TLS-Anvil and tlsfuzzer. The API is not frozen, so pin a commit.
 ## What is in it
 
 - [Why this exists](https://baskingspot.dev/tls/#why-this-exists): when to reach for it, when to use something mature instead, and what the engine and libcrypto each do. TLS 1.3 only, on Linux and macOS.
-- [Supported surface](https://baskingspot.dev/tls/#supported-surface): what CI exercises, what the caller owns, and what is out of scope. The libcrypto backend is OpenSSL, AWS-LC, or BoringSSL, chosen at build time.
+- [Supported surface](https://baskingspot.dev/tls/#supported-surface): what CI exercises, what the caller owns, and what is out of scope. Libcrypto is the default. Native crypto is an opt-in with explicit capability limits.
 - [The buffer model](https://baskingspot.dev/tls/#the-buffer-model): the engine owns the protocol, you own every buffer, and `RecordBuffer` frames a byte stream into records.
 - [The drive loop](https://baskingspot.dev/tls/#the-drive-loop): working client and server code, the `pending_write` interlock, close semantics, and peer alerts.
 - [Credentials and negotiation](https://baskingspot.dev/tls/#credentials-and-negotiation): server credentials, certificate policy, tickets, SNI, ALPN, and the RFC 10024 hybrid groups.
@@ -64,7 +64,8 @@ The [guide](https://baskingspot.dev/tls/#install) has the full setup.
 
 The library and every integration module build on Zig 0.17.
 
-The default build needs libcrypto and `pkg-config` to find it. The module calls
+The default `auto` backend detects OpenSSL, AWS-LC, or BoringSSL from the
+selected headers. It needs libcrypto and `pkg-config`. The module calls
 `linkSystemLibrary("crypto")`, and the C ABI step runs `pkg-config --variable=libdir
 libcrypto` directly, so supplying a library path is not enough:
 
@@ -73,8 +74,16 @@ buildInputs = [ pkgs.openssl.dev pkgs.openssl.out pkgs.pkg-config ];
 PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
 ```
 
-Without the `.pc` file the build fails while translating the OpenSSL headers
+Without the `.pc` file a libcrypto build fails while translating the headers
 with a message about the dynamic system library `crypto` and no search paths.
+
+`-Dcrypto=native` opts into pure-Zig primitives without libcrypto. Native
+rejects any RSA signature in a certificate chain, so a client with default
+settings fails against much of the public web even when the server key is
+ECDSA. Native also cannot load PEM/DER private keys, so a server cannot load
+its key from a file. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for either
+capability. Production builds use `auto` or an explicit libcrypto backend until
+native is measured and reviewed.
 
 ## Documentation
 

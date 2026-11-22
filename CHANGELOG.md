@@ -14,12 +14,16 @@ All notable changes to tls are recorded here. The format follows
   also support Ed25519 signatures. Native P-256 scalar credentials can pair
   with their leaf certificates. The backend supports RFC 10024
   `x25519_mlkem768` and `secp256r1_mlkem768` key exchange in both roles.
-  ML-KEM-1024, `secp384r1_mlkem1024`, RSA, and DER/PEM private-key loading
-  remain unsupported. Native client and server handshakes exchange application
-  data in memory, over TCP, and against OpenSSL in both roles. Conformance cases
-  that require absent RSA or ML-KEM-1024 capabilities report `UNSUPPORTED` with
-  the backend and capability names. The default still auto-detects OpenSSL,
-  AWS-LC, or BoringSSL from the selected headers (#199).
+- Native rejects any RSA signature in a certificate chain. A client with default
+  settings therefore fails against much of the public web even when the server
+  key is ECDSA. Native also cannot load PEM/DER private keys, so a server cannot
+  load its key from a file. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for
+  either capability. ML-KEM-1024 and `secp384r1_mlkem1024` remain unsupported
+  (#199, #215, #216).
+- Native client and server handshakes exchange application data in memory, over
+  TCP, and against OpenSSL in both roles. Conformance cases that require absent
+  RSA or ML-KEM-1024 capabilities report `UNSUPPORTED` with the backend and
+  capability names (#199).
 - The `hkdf.Hkdf` type constructor is public for backends that select their own
   runtime and comptime hash pair.
 
