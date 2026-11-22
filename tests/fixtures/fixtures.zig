@@ -204,3 +204,13 @@ pub const ed25519_key_pem: []const u8 = rawSection("ed25519_key_pem");
 /// secp224r1 PKCS#8 key — loads everywhere but has no TLS 1.3 ECDSA scheme
 /// (RFC 8446 §4.2.3): the deterministic loads-then-rejects inference vector.
 pub const ec_secp224r1_key_pem: []const u8 = rawSection("ec_secp224r1_key_pem");
+
+// --- OpenSSL-generated private-key containers (#216) ------------------------
+// DER stays base64-encoded in the txtar archive. SEC1 PEM stays raw. All keys
+// derive from the existing public fixtures; no tracked binary files are added.
+pub const native_p256_pkcs8_der = decodeSection("native_p256_pkcs8_der");
+pub const native_p256_sec1_der = decodeSection("native_p256_sec1_der");
+pub const native_p256_sec1_pem: []const u8 = rawSection("native_p256_sec1_pem");
+pub const native_p384_pkcs8_der = decodeSection("native_p384_pkcs8_der");
+pub const native_ed25519_pkcs8_der = decodeSection("native_ed25519_pkcs8_der");
+pub const native_rsa_pkcs1_der = decodeSection("native_rsa_pkcs1_der");

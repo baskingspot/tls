@@ -11,15 +11,16 @@ All notable changes to tls are recorded here. The format follows
   X25519, P-256/P-384 ECDH, all three TLS AEAD suites, SHA-256/SHA-384, HMAC,
   HKDF, and raw-seed Ed25519 operations work without libcrypto. ECDSA P-256 and
   P-384 support CertificateVerify signatures and certificate chains. Chains
-  also support Ed25519 signatures. Native P-256 scalar credentials can pair
-  with their leaf certificates. The backend supports RFC 10024
+  also support Ed25519 signatures. Native loads unencrypted P-256/P-384 PKCS#8
+  and SEC1 keys from PEM and DER, and Ed25519 seeds from PKCS#8. These keys can
+  pair with their leaf certificates. The backend supports RFC 10024
   `x25519_mlkem768` and `secp256r1_mlkem768` key exchange in both roles.
 - Native rejects any RSA signature in a certificate chain. A client with default
   settings therefore fails against much of the public web even when the server
-  key is ECDSA. Native also cannot load PEM/DER private keys, so a server cannot
-  load its key from a file. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for
-  either capability. ML-KEM-1024 and `secp384r1_mlkem1024` remain unsupported
-  (#199, #215, #216).
+  key is ECDSA. RSA keys and encrypted PEM also remain unsupported, with named
+  load errors. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for RSA or encrypted
+  keys. ML-KEM-1024 and `secp384r1_mlkem1024` remain unsupported (#199, #215,
+  #216).
 - Native client and server handshakes exchange application data in memory, over
   TCP, and against OpenSSL in both roles. Conformance cases that require absent
   RSA or ML-KEM-1024 capabilities report `UNSUPPORTED` with the backend and

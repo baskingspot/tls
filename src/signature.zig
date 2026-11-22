@@ -14,7 +14,7 @@ pub const NonceMode = backend.sign.NonceMode;
 /// `fromPemAuto` load failure: backend load errors plus the scheme-inference
 /// rejection (#112). Kept separate from `SignError` so the sign-only errors
 /// do not widen the loaders.
-pub const LoadError = SignError || error{UnsupportedKeyScheme};
+pub const LoadError = backend.sign.LoadError || error{UnsupportedKeyScheme};
 
 /// `pairsWith` contract (#113): the leaf parsed but its key does not pair
 /// with the loaded private key (`CertificateKeyMismatch`), or the DER is
@@ -95,7 +95,7 @@ pub const PrivateKey = struct {
     /// the default `.random`, which adds fresh OS entropy (RFC 6979 §3.6).
     nonce_mode: NonceMode,
 
-    pub fn fromDer(scheme: SignatureScheme, der: []const u8) SignError!PrivateKey {
+    pub fn fromDer(scheme: SignatureScheme, der: []const u8) LoadError!PrivateKey {
         return .{
             .scheme = scheme,
             .key = try backend.sign.privateKeyFromDer(der),
@@ -103,7 +103,7 @@ pub const PrivateKey = struct {
         };
     }
 
-    pub fn fromPem(scheme: SignatureScheme, pem: []const u8) SignError!PrivateKey {
+    pub fn fromPem(scheme: SignatureScheme, pem: []const u8) LoadError!PrivateKey {
         return .{
             .scheme = scheme,
             .key = try backend.sign.privateKeyFromPem(pem),
@@ -115,9 +115,9 @@ pub const PrivateKey = struct {
     /// key (#112). The explicit `fromPem` stays caller-pins-scheme; this
     /// path derives the scheme from the key's exact type and curve, then
     /// gates it against the active backend's advertised CertificateVerify
-    /// schemes — so a key whose scheme this backend cannot sign (Ed25519,
-    /// P-521 today) fails here with `error.UnsupportedKeyScheme`, at load
-    /// time instead of at the first handshake signature.
+    /// schemes. A key the backend loads but cannot sign (Ed25519 or P-521
+    /// today) fails here with `error.UnsupportedKeyScheme`, at load time
+    /// instead of at the first handshake signature.
     pub fn fromPemAuto(pem: []const u8) LoadError!PrivateKey {
         var key = try backend.sign.privateKeyFromPem(pem);
         // Two fallible steps: a scheme-rejected key must not leak the

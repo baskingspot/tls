@@ -24,7 +24,7 @@ commit because the branch moved.
 | Record layer, framing, alerts, `close_notify` | Proven | RFC 8446 §5 tests, fuzz targets, and tlsfuzzer |
 | Certificate chains, hostname verification, leaf policy | Proven | Chain and policy tests, name-constraint fixtures, and TLS-Anvil |
 | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 | Proven | Record tests and OpenSSL interop for each |
-| Opt-in `native` crypto backend | Partial | ECDH, ECDSA, and ML-KEM-768 match libcrypto. Native client/server examples exchange application data in memory and over TCP. Native/OpenSSL tests cover verified chains, hostname rejection, untrusted anchors, P-384 ECDH, P-384 CertificateVerify, and `x25519_mlkem768`. Both excluded capabilities have wire-level failure controls. Native ECDH and ECDSA reject malformed P-256 and P-384 points. A foreign ServerHello with those points receives an exact `illegal_parameter` alert. ML-KEM-1024, RSA, and DER/PEM private-key loading remain unsupported. A native TLS-Anvil client run disabled all 65 RFC 8446 cases after feature extraction failed to detect TLS 1.3. No native TLS-Anvil mutation result exists |
+| Opt-in `native` crypto backend | Partial | ECDH, ECDSA, and ML-KEM-768 match libcrypto. Native client/server examples exchange application data in memory and over TCP. The in-memory server loads its P-256 key from a PKCS#8 PEM file. Native loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, and Ed25519 seeds from PKCS#8. Native/OpenSSL tests cover verified chains, hostname rejection, untrusted anchors, P-384 ECDH, P-384 CertificateVerify, and `x25519_mlkem768`. Both excluded capabilities have wire-level failure controls. Native ECDH and ECDSA reject malformed P-256 and P-384 points. A foreign ServerHello with those points receives an exact `illegal_parameter` alert. ML-KEM-1024 and RSA remain unsupported. A native TLS-Anvil client run disabled all 65 RFC 8446 cases after feature extraction failed to detect TLS 1.3. No native TLS-Anvil mutation result exists |
 | X25519 and P-256 key exchange | Proven | Handshake tests and OpenSSL interop |
 | P-384 key exchange | Proven, opt-in | Bidirectional OpenSSL interop on every non-FIPS libcrypto backend. Native adds client-side OpenSSL interop to its primitive differential evidence |
 | RFC 10024 hybrid groups | Proven, opt-in | Provider-backed ML-KEM on OpenSSL, AWS-LC, and BoringSSL; OpenSSL interop and the upstream tlsfuzzer matrix. Native ML-KEM-768 adds client-side OpenSSL negotiation and classical fallback to its key-exchange differentials and server-side upstream tlsfuzzer coverage |
@@ -48,9 +48,10 @@ and rejects `-Dcapi -Dcrypto=native`.
 
 Native rejects any RSA signature in a certificate chain. A client with default
 settings therefore fails against much of the public web even when the server
-key is ECDSA. Native also cannot load PEM/DER private keys, so a server cannot
-load its key from a file. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for either
-capability (#215, #216).
+key is ECDSA. Native loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from
+PEM and DER, and Ed25519 seeds from PKCS#8. RSA keys and encrypted PEM remain
+unsupported. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for RSA or encrypted
+keys (#215, #216).
 
 The engine itself, meaning parsing, framing, transcript, and record sequencing,
 allocates nothing. The libcrypto backends allocate during setup and inside their

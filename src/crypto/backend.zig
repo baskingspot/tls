@@ -407,16 +407,20 @@ pub const aead = struct {
 
 pub const sign = struct {
     pub const Error = sign_impl.SignatureError;
+    pub const LoadError = if (native_selected)
+        backend_native.KeyLoadError
+    else
+        sign_impl.SignatureError;
     pub const SignError = sign_impl.SignError;
     pub const NonceMode = sign_impl.NonceMode;
 
     /// A libcrypto pointer or an inline native key, depending on the backend.
     pub const pkey = sign_impl.EcKey;
-    pub inline fn privateKeyFromDer(der: []const u8) Error!pkey {
+    pub inline fn privateKeyFromDer(der: []const u8) LoadError!pkey {
         return sign_impl.privateKeyFromDer(der);
     }
 
-    pub inline fn privateKeyFromPem(pem: []const u8) Error!pkey {
+    pub inline fn privateKeyFromPem(pem: []const u8) LoadError!pkey {
         return sign_impl.privateKeyFromPem(pem);
     }
 

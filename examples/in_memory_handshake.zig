@@ -9,18 +9,41 @@ const print = std.debug.print;
 const mem = std.mem;
 const testing = std.testing;
 const assert = std.debug.assert;
+const Io = std.Io;
 
 const tls = @import("tls");
 
 const fixtures = @import("fixtures");
-const cert_der: []const u8 = &fixtures.server_ecdsa_cert_der;
-const scalar: []const u8 = &fixtures.server_ecdsa_scalar;
+const cert_der: []const u8 = &fixtures.server_cert_der;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    // Load the server's signing key from a fixture P-256 scalar.
-    var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
+    const arena = init.arena.allocator();
+    // Load the server's signing key from the same PKCS#8 PEM file a server uses.
+    const key_pem = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "tests/fixtures/server.key",
+        arena,
+        .limited(1 << 20),
+    );
+    var signer: tls.signature.PrivateKey = try .fromPemAuto(key_pem);
     defer signer.deinit();
+    try signer.pairsWith(cert_der);
+
+    // The explicit PEM and DER entry points construct the same credential.
+    var pem_signer: tls.signature.PrivateKey = try .fromPem(
+        .ecdsa_secp256r1_sha256,
+        key_pem,
+    );
+    defer pem_signer.deinit();
+    try pem_signer.pairsWith(cert_der);
+    var der_signer: tls.signature.PrivateKey = try .fromDer(
+        .ecdsa_secp256r1_sha256,
+        &fixtures.native_p256_pkcs8_der,
+    );
+    defer der_signer.deinit();
+    try der_signer.pairsWith(cert_der);
+
     const signer_api = signer.signer();
 
     // Fresh ephemeral X25519 keypairs for client and server.
@@ -35,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
     // ── Client setup ────────────────────────
     var client: tls.ClientHandshake = .init(.{
         .keypairs = try .init(client_keypair),
-        .host_name = "ztls.server.test",
+        .host_name = "test.local",
         .now_sec = 0,
         .random = client_random,
         .insecure_no_chain_anchor = true,

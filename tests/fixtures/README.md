@@ -82,6 +82,25 @@ different libcrypto paths, so both containers are pinned. Verify a regenerated
 fixture decrypts back to the plaintext key with
 `openssl pkey -in encrypted_pkcs8.pem -passin pass:ztls-fixture-passphrase`.
 
+## Native private-key containers (#216)
+
+The `native_*` sections cover each supported private-key container. OpenSSL 3.6.5
+produced them from the existing public fixture keys. The archive stores DER as
+base64 text and SEC1 PEM as raw text.
+
+```sh
+openssl pkey -in server.key -outform DER -out p256-pkcs8.der
+openssl ec -in server.key -out p256-sec1.pem
+openssl ec -in server.key -outform DER -out p256-sec1.der
+openssl pkey -in p384.pem -outform DER -out p384-pkcs8.der
+openssl pkey -in ed25519.pem -outform DER -out ed25519-pkcs8.der
+openssl rsa -in rsa_pss/server.key -traditional -outform DER -out rsa-pkcs1.der
+```
+
+Extract `p384.pem` and `ed25519.pem` from their existing raw txtar sections
+first. Add each output to `fixtures.txtar` and add its extractor to
+`fixtures.zig`. Do not add the loose DER files to Git.
+
 ## Guardrails
 
 - `just lint-fixtures` rejects tracked `.der`, `.bin`, and `.sig` files under
