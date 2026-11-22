@@ -25,7 +25,9 @@ const ecdsa = @import("crypto/ecdsa.zig");
 const extension_type = @import("extension_type.zig");
 const ExtensionType = extension_type.ExtensionType;
 const handshake = @import("handshake.zig");
-pub const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
+const signature_scheme = @import("signature_scheme.zig");
+const OfferedCertificateSchemes = signature_scheme.OfferedCertificateSchemes;
+pub const SignatureScheme = signature_scheme.SignatureScheme;
 const wire = @import("wire.zig");
 
 /// Test-only overrides for the fields a certificate test varies.
@@ -452,6 +454,28 @@ pub fn parse(msg: []const u8, policy: Policy) ParseError![]const u8 {
     }
 
     return leaf_pub_key orelse error.EmptyCertificateList;
+}
+
+/// RFC 8446 §4.2.3, §4.4.2.2 — return true when every validated certificate in
+/// `certs_der` uses a signature algorithm offered in `offered`. The leaf
+/// (index 0) is always checked, matching `parse`; subsequent self-signed
+/// certificates (presented trust anchors) are exempt. Empty or unparseable
+/// chains return false.
+pub fn chainMatchesSignatureSchemes(
+    certs_der: []const []const u8,
+    offered: OfferedCertificateSchemes,
+) bool {
+    if (certs_der.len == 0) return false;
+    for (certs_der, 0..) |cert_der, index| {
+        const cert: Certificate = .{ .buffer = cert_der, .index = 0 };
+        const parsed = cert.parse() catch return false;
+        if (index > 0 and mem.eql(u8, parsed.subject(), parsed.issuer())) continue;
+        const scheme = certificate_policy.certificateSignatureScheme(
+            parsed.signature_algorithm,
+        ) orelse return false;
+        if (!offered.contains(scheme)) return false;
+    }
+    return true;
 }
 
 fn verifyChainCertificateSignatureAlgorithms(
@@ -2359,6 +2383,42 @@ test "certificate signature policy skips self-signed chain certificates" {
         ),
     };
     try verifyChainCertificateSignatureAlgorithms(&chain, &schemes);
+}
+
+// RFC 8446 §4.4.2.2 — chainMatchesSignatureSchemes enforces the leaf and
+// non-self-signed intermediates while skipping a presented self-signed root.
+test "chainMatchesSignatureSchemes: leaf, intermediate, and self-signed root" {
+    var ecdsa_only: OfferedCertificateSchemes = .empty;
+    ecdsa_only.captureSchemes(&.{.ecdsa_secp256r1_sha256});
+    var rsa_only: OfferedCertificateSchemes = .empty;
+    rsa_only.captureSchemes(&.{.rsa_pkcs1_sha256});
+
+    try testing.expect(chainMatchesSignatureSchemes(
+        &.{&fixtures.server_ecdsa_cert_der},
+        ecdsa_only,
+    ));
+    try testing.expect(!chainMatchesSignatureSchemes(
+        &.{&fixtures.server_ecdsa_cert_der},
+        rsa_only,
+    ));
+    try testing.expect(chainMatchesSignatureSchemes(&.{&fixtures.rsa_pss_cert_der}, rsa_only));
+    try testing.expect(!chainMatchesSignatureSchemes(&.{&fixtures.rsa_pss_cert_der}, ecdsa_only));
+    // Non-self-signed intermediate must match; self-signed root at index > 0 is exempt.
+    try testing.expect(chainMatchesSignatureSchemes(
+        &.{ &fixtures.chain_leaf_der, &fixtures.chain_intermediate_der },
+        ecdsa_only,
+    ));
+    try testing.expect(!chainMatchesSignatureSchemes(
+        &.{ &fixtures.chain_leaf_der, &fixtures.chain_intermediate_der },
+        rsa_only,
+    ));
+    try testing.expect(chainMatchesSignatureSchemes(
+        &.{ &fixtures.chain_leaf_der, &fixtures.rsa_pss_cert_der },
+        ecdsa_only,
+    ));
+    // Empty and malformed DER chains are never selectable.
+    try testing.expect(!chainMatchesSignatureSchemes(&.{}, ecdsa_only));
+    try testing.expect(!chainMatchesSignatureSchemes(&.{"not-der"}, ecdsa_only));
 }
 
 // RFC 8446 §4.4.2.2 — a leaf with no KeyUsage/EKU restrictions and a supported

@@ -34,7 +34,10 @@ pub fn addNativeSteps(b: *Build, opts: struct {
         });
         const run_core_tests = b.addRunArtifact(core_tests);
         run_core_tests.has_side_effects = true;
-        run_core_tests.addArg("--filter=CertificateRequest offer,ClientHello parse failures");
+        const filter =
+            "--filter=CertificateRequest offer,ClientHello parse failures," ++
+            "signature_algorithms_cert";
+        run_core_tests.addArg(filter);
         test_step.dependOn(&run_core_tests.step);
     }
 

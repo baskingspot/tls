@@ -660,6 +660,9 @@ legacy_session_id: LegacySessionIdBuffer,
 offered_suites: OfferedSuitesBuffer,
 /// Recognized signature schemes offered in ClientHello.signature_algorithms.
 offered_signature_schemes: OfferedSignatureSchemesBuffer,
+/// Effective certificate signature schemes offered in ClientHello:
+/// `signature_algorithms_cert` when present, else `signature_algorithms`.
+offered_cert_signature_schemes: signature.OfferedCertificateSchemes,
 /// Offered ClientHello extensions tracked for validating server responses.
 offered_extensions: OfferedExtensions,
 offered_groups: client_hello.SupportedGroups,
@@ -783,6 +786,7 @@ pub fn init(config: Config) ClientHandshake {
         .legacy_session_id = .empty,
         .offered_suites = .empty,
         .offered_signature_schemes = .empty,
+        .offered_cert_signature_schemes = .empty,
         .offered_extensions = .empty,
         .offered_groups = .empty,
         .offered_key_shares = .empty,
@@ -1170,6 +1174,7 @@ pub fn injectClientHello(self: *ClientHandshake, client_hello_msg: []const u8) v
     self.legacy_session_id.clear();
     self.offered_suites.clear();
     self.offered_signature_schemes.clear();
+    self.offered_cert_signature_schemes.clear();
     self.offered_extensions = .empty;
     self.offered_groups = .empty;
     self.offered_key_shares = .empty;
@@ -1203,10 +1208,14 @@ pub fn injectClientHello(self: *ClientHandshake, client_hello_msg: []const u8) v
             ) != null) continue;
             self.offered_signature_schemes.append(scheme) catch unreachable;
         }
+        self.offered_cert_signature_schemes.capture(ch.certificateSignatureSchemes());
     } else {
         self.offered_signature_schemes.appendSlice(
             backend.capabilities.certificate_verify_schemes,
         ) catch unreachable;
+        self.offered_cert_signature_schemes.captureSchemes(
+            backend.capabilities.certificate_signature_schemes,
+        );
     }
     self.suite.update(client_hello_msg);
     self.state = .wait_sh;
@@ -1948,9 +1957,18 @@ fn processServerCertificate(
     policy: certificate.Policy,
 ) FlightError!void {
     if (msg.type != .certificate) return error.UnexpectedMessage;
+    var effective_schemes: [
+        signature.max_certificate_signature_schemes
+    ]SignatureScheme = undefined;
+    var effective_policy = policy;
+    effective_policy.certificate_signature_schemes =
+        self.offered_cert_signature_schemes.intersect(
+            policy.certificate_signature_schemes,
+            &effective_schemes,
+        );
     // Extract and copy the leaf public key now; it must survive until
     // CertificateVerify, which may arrive in a later record.
-    const pk = try certificate.parse(msg.raw, policy);
+    const pk = try certificate.parse(msg.raw, effective_policy);
     try self.retainPeerCertificate(msg.raw);
     self.leaf_pub_key.clear();
     self.leaf_pub_key.appendSlice(pk) catch return error.CertificateKeyTooLarge;
@@ -3292,6 +3310,89 @@ test "processFlight: rejects Finished before CertificateVerify" {
     var out: [64]u8 = undefined;
     const rec = try hs.sendAlert(.unexpected_message, &out);
     try expectEncryptedAlert(&peer, rec, .unexpected_message);
+}
+
+// RFC 8446 §4.2.3, §4.4.2.2 — client chain verification enforces the effective
+// certificate-signature offer from ClientHello (signature_algorithms_cert when
+// present, else signature_algorithms).
+test "processFlight: rejects server certificate excluded by signature_algorithms_cert" {
+    var hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
+    defer hs.deinit();
+    hs.policy.insecure_no_chain_anchor = true;
+
+    // Append signature_algorithms_cert=[ecdsa_secp256r1_sha256] to the RFC 8448
+    // ClientHello so RSA-PKCS1-SHA256 is excluded for certificates while
+    // CertificateVerify schemes stay untouched.
+    const cert_ext = [_]u8{ 0x00, 0x32, 0x00, 0x04, 0x00, 0x02, 0x04, 0x03 };
+    var ch_buf: [rfc8448_client_hello.len + cert_ext.len]u8 = undefined;
+    @memcpy(ch_buf[0..rfc8448_client_hello.len], &rfc8448_client_hello);
+    @memcpy(ch_buf[rfc8448_client_hello.len..], &cert_ext);
+    const body_len: u24 = @intCast(ch_buf.len - 4);
+    ch_buf[1] = @truncate(body_len >> 16);
+    ch_buf[2] = @truncate(body_len >> 8);
+    ch_buf[3] = @truncate(body_len);
+    const exts_len_off: usize = 49;
+    const old_exts_len = memx.readInt(u16, ch_buf[exts_len_off..][0..2]);
+    memx.writeInt(
+        u16,
+        ch_buf[exts_len_off..][0..2],
+        old_exts_len + @as(u16, @intCast(cert_ext.len)),
+    );
+
+    hs.injectClientHello(&ch_buf);
+    try hs.processServerHello(&rfc8448_server_hello);
+
+    var flight_buf: [1024]u8 = undefined;
+    var hr: HandshakeReader = .init(rfc8448Fixture("server_flight.b64", &flight_buf));
+    const ee = (try hr.next()).?;
+    try hs.processFlight(ee.raw, hs.policy);
+    const cert = (try hr.next()).?;
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmRejected,
+        hs.processFlight(cert.raw, hs.policy),
+    );
+    try testing.expectEqual(
+        alert.Description.unsupported_certificate,
+        alert.alertForError(error.CertificateSignatureAlgorithmRejected).?,
+    );
+}
+
+// RFC 8446 §4.2.3, §4.4.2.2 — when ClientHello omits signature_algorithms_cert,
+// client verification falls back to signature_algorithms.
+test "processFlight: omitted signature_algorithms_cert falls back to signature_algorithms" {
+    var hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
+    defer hs.deinit();
+    hs.policy.insecure_no_chain_anchor = true;
+
+    // RFC 8448 ClientHello omits signature_algorithms_cert. Overwrite its
+    // signature_algorithms entries with ecdsa_secp256r1_sha256 only, excluding
+    // the RFC 8448 server certificate's rsa_pkcs1_sha256 signature.
+    var ch_buf = rfc8448_client_hello;
+    const sig_algs = @constCast(client_hello.extension(
+        &ch_buf,
+        compat.enumToInt(extension_type.ExtensionType.signature_algorithms),
+    ) orelse unreachable);
+    var i: usize = 2;
+    while (i < sig_algs.len) : (i += 2) {
+        memx.writeInt(
+            u16,
+            sig_algs[i..][0..2],
+            compat.enumToInt(SignatureScheme.ecdsa_secp256r1_sha256),
+        );
+    }
+
+    hs.injectClientHello(&ch_buf);
+    try hs.processServerHello(&rfc8448_server_hello);
+
+    var flight_buf: [1024]u8 = undefined;
+    var hr: HandshakeReader = .init(rfc8448Fixture("server_flight.b64", &flight_buf));
+    const ee = (try hr.next()).?;
+    try hs.processFlight(ee.raw, hs.policy);
+    const cert = (try hr.next()).?;
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmRejected,
+        hs.processFlight(cert.raw, hs.policy),
+    );
 }
 
 // RFC 8446 §4.4.3 — CertificateVerify must use a SignatureScheme offered by

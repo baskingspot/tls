@@ -144,20 +144,25 @@ fn verifyLeafAuth(
     );
 }
 
-pub fn verifyCertificateSignatureAlgorithm(
-    algorithm: Certificate.Algorithm,
-    certificate_signature_schemes: []const SignatureScheme,
-) PolicyError!void {
-    const scheme = switch (algorithm) {
-        .sha256WithRSAEncryption => SignatureScheme.rsa_pkcs1_sha256,
+pub fn certificateSignatureScheme(algorithm: Certificate.Algorithm) ?SignatureScheme {
+    return switch (algorithm) {
+        .sha256WithRSAEncryption => .rsa_pkcs1_sha256,
         .sha384WithRSAEncryption => .rsa_pkcs1_sha384,
         .sha512WithRSAEncryption => .rsa_pkcs1_sha512,
         .ecdsa_with_SHA256 => .ecdsa_secp256r1_sha256,
         .ecdsa_with_SHA384 => .ecdsa_secp384r1_sha384,
         .ecdsa_with_SHA512 => .ecdsa_secp521r1_sha512,
         .curveEd25519 => .ed25519,
-        else => return error.CertificateSignatureAlgorithmRejected,
+        else => null,
     };
+}
+
+pub fn verifyCertificateSignatureAlgorithm(
+    algorithm: Certificate.Algorithm,
+    certificate_signature_schemes: []const SignatureScheme,
+) PolicyError!void {
+    const scheme = certificateSignatureScheme(algorithm) orelse
+        return error.CertificateSignatureAlgorithmRejected;
     if (mem.findScalar(SignatureScheme, certificate_signature_schemes, scheme) == null)
         return error.CertificateSignatureAlgorithmRejected;
 }

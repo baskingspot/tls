@@ -22,6 +22,10 @@ All notable changes to tls are recorded here. The format follows
   AWS-LC, or BoringSSL from the selected headers (#199).
 - The `hkdf.Hkdf` type constructor is public for backends that select their own
   runtime and comptime hash pair.
+- `ServerHandshake.setCredentialCandidates` and `handshake_core.Server.selectCredentials`
+  select the first configured certificate chain and signer whose CertificateVerify
+  scheme and certificate-chain signature algorithms satisfy the client's offers
+  (#209).
 
 ### Changed
 
@@ -68,6 +72,12 @@ All notable changes to tls are recorded here. The format follows
 
 ### Fixed
 
+- Both server engines (`ServerHandshake` and `handshake_core.Server`) enforce
+  `signature_algorithms_cert`, falling back to `signature_algorithms` when
+  omitted, during certificate selection. An incompatible chain returns
+  `error.NoCommonSignatureScheme` and maps to fatal `handshake_failure` before
+  any Certificate message is sent. `ClientHandshake` and `handshake_core.Client`
+  apply the same effective offer to server chain verification (#209).
 - A certificate-authenticated server selects CertificateVerify only from the
   client's offered schemes. No match for the configured credential fails with
   fatal `handshake_failure` before signature generation (#208).
