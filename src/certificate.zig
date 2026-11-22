@@ -1338,20 +1338,17 @@ fn addCertsFromFixturePath(bundle: *Certificate.Bundle, path: []const u8) !void 
     );
 }
 
-/// Load an anchor at the same fixed time as chain validation. Using the real
-/// clock here would drop an expired anchor even when the fixture is valid.
-fn addCertsFromFixturePathAt(
+/// Build a trust bundle from committed DER at the same fixed time as chain
+/// validation. PEM loading and the real clock cannot drop the fixture anchor.
+fn addCertFromFixtureDer(
     bundle: *Certificate.Bundle,
-    path: []const u8,
+    der: []const u8,
     now_sec: i64,
 ) !void {
-    return bundle.addCertsFromFilePath(
-        testing.allocator,
-        testing.io,
-        .fromNanoseconds(@as(i96, now_sec) * std.time.ns_per_s),
-        Io.Dir.cwd(),
-        path,
-    );
+    const start: u32 = @intCast(bundle.bytes.items.len);
+    try bundle.bytes.appendSlice(testing.allocator, der);
+    errdefer bundle.bytes.items.len = start;
+    try bundle.parseCert(testing.allocator, start, now_sec);
 }
 
 test "parse: validates leaf against trust bundle" {
@@ -1381,9 +1378,6 @@ test "parse: validates leaf-intermediate-root chain" {
     try testing.expect(pub_key.len > 0);
 }
 
-const public_chain_globalsign_pem = "tests/fixtures/public_chains/globalsign-root-r1.pem";
-const public_chain_aaa_pem = "tests/fixtures/public_chains/aaa-certificate-services.pem";
-
 // RFC 5280 §6.1, RFC 8017 §8.2 — the captured chains verify through the RSA
 // key that signed each cross-signed root. Anchoring at the newer self-signed
 // root instead would skip that RSA link and prove only the ECDSA links.
@@ -1391,14 +1385,14 @@ test "parse: captured public RSA chains verify through RSA issuer roots" {
     const Case = struct {
         name: []const u8,
         host_name: []const u8,
-        anchor_pem: []const u8,
+        anchor_der: []const u8,
         certs_der: []const []const u8,
     };
     const cases = [_]Case{
         .{
             .name = "google.com",
             .host_name = "google.com",
-            .anchor_pem = public_chain_globalsign_pem,
+            .anchor_der = &fixtures.public_globalsign_root_der,
             .certs_der = &.{
                 &fixtures.public_google_leaf_der,
                 &fixtures.public_google_intermediate_der,
@@ -1408,7 +1402,7 @@ test "parse: captured public RSA chains verify through RSA issuer roots" {
         .{
             .name = "www.cloudflare.com",
             .host_name = "www.cloudflare.com",
-            .anchor_pem = public_chain_globalsign_pem,
+            .anchor_der = &fixtures.public_globalsign_root_der,
             .certs_der = &.{
                 &fixtures.public_cloudflare_leaf_der,
                 &fixtures.public_cloudflare_intermediate_der,
@@ -1418,7 +1412,7 @@ test "parse: captured public RSA chains verify through RSA issuer roots" {
         .{
             .name = "example.com",
             .host_name = "example.com",
-            .anchor_pem = public_chain_aaa_pem,
+            .anchor_der = &fixtures.public_aaa_root_der,
             .certs_der = &.{
                 &fixtures.public_example_leaf_der,
                 &fixtures.public_example_intermediate_der,
@@ -1431,7 +1425,7 @@ test "parse: captured public RSA chains verify through RSA issuer roots" {
     for (cases) |case| {
         var bundle: Certificate.Bundle = empty_bundle;
         defer bundle.deinit(testing.allocator);
-        try addCertsFromFixturePathAt(&bundle, case.anchor_pem, fixtures.public_chain_now_sec);
+        try addCertFromFixtureDer(&bundle, case.anchor_der, fixtures.public_chain_now_sec);
 
         var buf: [8192]u8 = undefined;
         const pub_key = parse(

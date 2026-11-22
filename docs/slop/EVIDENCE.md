@@ -96,11 +96,11 @@ fails with `CertificateHasUnrecognizedObjectId`. Optional parameters restore
 verification on native and OpenSSL. The certificate signature still requires
 the TLS PSS parameters.
 
-The captured-chain helper now loads anchors at `public_chain_now_sec`. A
-mutation that loaded GlobalSign R1 at 2033 failed with
-`CertificateIssuerNotFound`. Loading at the fixture time restored all three
-chains. This prevents the 2028 and 2029 anchor expirations from breaking the
-test.
+The captured-chain helper builds the trust bundle from committed DER at
+`public_chain_now_sec`. The PEM anchor files are gone. A mutation that loaded
+GlobalSign R1 at 2033 failed with `CertificateIssuerNotFound`. Loading at the
+fixture time restored all three chains. This prevents the 2028 and 2029 anchor
+expirations from breaking the test.
 
 The changelog records the stricter default-backend parsing and public API
 changes. `PubKeyAlgo.rsassa_pss` is optional. The two unused RSA `fromBytes`

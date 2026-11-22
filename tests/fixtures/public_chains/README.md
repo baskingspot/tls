@@ -22,5 +22,5 @@ The fixed validation time is 2026-11-22 09:23:03 UTC.
 The tests also check the leaf hostname.
 
 The DER bytes live as base64 sections in `../fixtures.txtar`.
-The two PEM files let the test trust-bundle loader read the RSA issuer roots.
+The test trust bundle is built directly from those sections at the fixed validation time.
 OpenSSL 3.6.5 verified all three complete chains through these roots during capture.
