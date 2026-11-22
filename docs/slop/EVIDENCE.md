@@ -456,8 +456,8 @@ Scope: native stays opt-in, the TLS-Anvil backend lanes, and the measured
 capability limits. The base revision is `ec50147`. The host is Linux arm64 with
 Zig 0.17.0 and OpenSSL 3.6.5. The default remains `auto` throughout.
 
-The explicit OpenSSL check recipes passed in Debug, ReleaseSafe, and
-ReleaseFast. The native opt-in suite passed 322 tests with 13 skips, plus three
+`just check` covered the explicit OpenSSL release lanes in Debug, ReleaseSafe,
+and ReleaseFast. The native opt-in suite passed 322 tests with 13 skips, plus three
 core regressions from #213. `zig build test-bin -Dcrypto=native` installed a
 static binary. `ldd zig-out/bin/test` printed `not a dynamic executable`.
 
@@ -467,8 +467,8 @@ own `PKG_CONFIG_PATH`. The Anvil server and client recipes resolve to
 `zig build -Dcrypto=auto`. The workflows pass `CRYPTO_BACKEND` to their explicit
 harness builds. This removes the old OpenSSL/header-family mismatch.
 
-Root `just ci` completed with exit status zero. It covered the explicit OpenSSL
-release lanes, native in all three optimization modes, AWS-LC, BoringSSL, the
+Root `just ci` completed with exit status zero. It covered the Debug OpenSSL
+unit lane, native in all three optimization modes, AWS-LC, BoringSSL, the
 approved profiles, lint, examples, the C ABI example, all integrations, and
 Memcheck. Native conformance passed 126 cases with named RSA-PSS and
 `secp384r1_mlkem1024` exclusions. The auto-detected OpenSSL control passed 126
@@ -478,9 +478,9 @@ the core, nonblocking, std, and kTLS modules from an isolated fetched package.
 The no-argument epoll example uses an embedded P-256 certificate and scalar on
 native. The default `auto` path retains its RSA PEM fixture and key-loading
 coverage. PEM overrides remain available on explicit libcrypto builds. All four
-examples passed with `-Dcrypto=native` and with the default `auto` backend. Native `tls_std` measured 152,176 bytes for
-`Client`, 83,840 for `Server`, and 136,256 for `Server` plus `Scratch` on
-aarch64. The coarse ceilings cover those layouts. The exact caller-buffer delta
+examples passed with `-Dcrypto=native` and with the default `auto` backend.
+Native `tls_std` measured 152,176 bytes for `Client`, 83,840 for `Server`, and
+136,256 for `Server` plus `Scratch` on aarch64. The coarse ceilings cover those layouts. The exact caller-buffer delta
 assertions stayed unchanged.
 
 A clean temporary `baskingspot/http` clone at `c32a46d` used a local archive of

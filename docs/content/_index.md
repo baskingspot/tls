@@ -92,10 +92,10 @@ just integrations/tls-ktls/ci
 ```
 
 These commands use the default auto-detected libcrypto backend. The default
-shell supplies OpenSSL. `nix develop .#aws-lc`
-supplies AWS-LC headers and libraries. `nix develop .#boringssl` supplies
-BoringSSL. Pass `-Dcrypto=aws-lc` or `-Dcrypto=boringssl` to select those
-backends. Pass `-Dcrypto=auto` to detect the family from the shell's headers.
+shell supplies OpenSSL. `nix develop .#aws-lc` supplies AWS-LC headers and
+libraries. `nix develop .#boringssl` supplies BoringSSL. In each shell, `auto`
+detects that backend without a flag. Pass `-Dcrypto=aws-lc` or
+`-Dcrypto=boringssl` only to name the backend explicitly.
 
 `just examples-ci` builds and runs the core paths. The integration gate runs the packaged examples and tests. When this page and the examples disagree, the examples are right.
 
@@ -211,7 +211,8 @@ All three RFC 10024 groups use provider-backed pure ML-KEM with engine-owned
 hybrid composition on OpenSSL, AWS-LC, and BoringSSL. Approved-only builds do
 not advertise them: FIPS 203 approves ML-KEM, but the RFC 10024 composition is
 this library's own construction. `-Dcrypto-approved-only=true` narrows
-negotiation to approved algorithms for explicit OpenSSL or AWS-LC builds.
+negotiation to approved algorithms for OpenSSL or AWS-LC builds, selected
+explicitly or through `auto`.
 Native rejects that combination. The flag is not a validation: several
 operations run outside the linked module, and `PRODUCTION_READINESS.md` lists
 them. A BoGo conformance runner is deferred.
@@ -753,8 +754,8 @@ The raw exports remain available for specialized integrations. They are immediat
 
 The C surface is partial and client only: `include/baskingspot_tls.h`,
 `libbaskingspot_tls.a` from `zig build -Dcapi -Dcrypto=openssl`, and
-`examples/c_client.c`. The C ABI requires an explicit libcrypto backend and
-rejects `-Dcapi -Dcrypto=native`. It is wired into `just ci` as `capi-ci`.
+`examples/c_client.c`. The C ABI requires a libcrypto backend and rejects
+`-Dcapi -Dcrypto=native`. It is wired into `just ci` as `capi-ci`.
 
 The C names are not the package name. A C symbol namespace has to survive being
 linked into programs that already carry LibreSSL, mbedTLS, or wolfSSL, so it
