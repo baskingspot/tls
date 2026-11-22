@@ -47,6 +47,8 @@ pub const rsa_pss_signed_cert_der = decodeSection("rsa_pss_signed_cert_der");
 pub const rsa_pss_spki_cert_der = decodeSection("rsa_pss_spki_cert_der");
 /// PSS signature salt 32 over an SPKI key constrained to the default salt 20.
 pub const rsa_pss_spki_salt20_cert_der = decodeSection("rsa_pss_spki_salt20_cert_der");
+/// RSASSA-PSS SubjectPublicKeyInfo with absent parameters (unrestricted).
+pub const rsa_pss_unrestricted_cert_der = decodeSection("rsa_pss_unrestricted_cert_der");
 // RSA-8192 retention-capacity fixtures (#124).
 pub const key_capacity_root_der = decodeSection("key_capacity_root_der");
 pub const key_capacity_leaf_der = decodeSection("key_capacity_leaf_der");

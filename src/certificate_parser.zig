@@ -573,7 +573,7 @@ pub const Parsed = struct {
 
     pub const PubKeyAlgo = union(AlgorithmCategory) {
         rsaEncryption: void,
-        rsassa_pss: PssParameters,
+        rsassa_pss: ?PssParameters,
         X9_62_id_ecPublicKey: NamedCurve,
         curveEd25519: void,
     };
@@ -2445,11 +2445,15 @@ pub fn parse(cert: Certificate) ParseError!Parsed {
             break :rsa_encryption .rsaEncryption;
         },
         .rsassa_pss => .{
-            .rsassa_pss = try parseRsaPssParameters(
-                cert_bytes,
-                pub_key_algo_elem.slice.end,
-                pub_key_signature_algorithm.slice.end,
-            ),
+            // RFC 4055 §3.1 — absent parameters mean an unrestricted key.
+            .rsassa_pss = if (pub_key_algo_elem.slice.end == pub_key_signature_algorithm.slice.end)
+                null
+            else
+                try parseRsaPssParameters(
+                    cert_bytes,
+                    pub_key_algo_elem.slice.end,
+                    pub_key_signature_algorithm.slice.end,
+                ),
         },
         .X9_62_id_ecPublicKey => pub_key_algo: {
             // RFC 5480 Section 2.1.1.1 Named Curve
@@ -3238,8 +3242,10 @@ fn verifyRsaPss(
 ) !void {
     switch (pub_key_algo) {
         .rsaEncryption => {},
-        .rsassa_pss => |params| {
-            if (!params.matchesTls(Hash)) return error.CertificateSignatureAlgorithmMismatch;
+        .rsassa_pss => |maybe_params| {
+            if (maybe_params) |params| {
+                if (!params.matchesTls(Hash)) return error.CertificateSignatureAlgorithmMismatch;
+            }
         },
         else => return error.CertificateSignatureAlgorithmMismatch,
     }

@@ -1338,6 +1338,22 @@ fn addCertsFromFixturePath(bundle: *Certificate.Bundle, path: []const u8) !void 
     );
 }
 
+/// Load an anchor at the same fixed time as chain validation. Using the real
+/// clock here would drop an expired anchor even when the fixture is valid.
+fn addCertsFromFixturePathAt(
+    bundle: *Certificate.Bundle,
+    path: []const u8,
+    now_sec: i64,
+) !void {
+    return bundle.addCertsFromFilePath(
+        testing.allocator,
+        testing.io,
+        .fromNanoseconds(@as(i96, now_sec) * std.time.ns_per_s),
+        Io.Dir.cwd(),
+        path,
+    );
+}
+
 test "parse: validates leaf against trust bundle" {
     var bundle: Certificate.Bundle = empty_bundle;
     defer bundle.deinit(testing.allocator);
@@ -1415,7 +1431,7 @@ test "parse: captured public RSA chains verify through RSA issuer roots" {
     for (cases) |case| {
         var bundle: Certificate.Bundle = empty_bundle;
         defer bundle.deinit(testing.allocator);
-        try addCertsFromFixturePath(&bundle, case.anchor_pem);
+        try addCertsFromFixturePathAt(&bundle, case.anchor_pem, fixtures.public_chain_now_sec);
 
         var buf: [8192]u8 = undefined;
         const pub_key = parse(
@@ -2527,7 +2543,8 @@ test "certificate_parser: RSASSA-PSS SubjectPublicKeyInfo parameters verify" {
         .index = 0,
     });
     switch (parsed.pub_key_algo) {
-        .rsassa_pss => |params| {
+        .rsassa_pss => |maybe_params| {
+            const params = maybe_params orelse return error.TestUnexpectedResult;
             try testing.expectEqual(Certificate.PssHash.sha256, params.hash);
             try testing.expectEqual(Certificate.PssHash.sha256, params.mgf1_hash);
             try testing.expectEqual(@as(u32, 32), params.salt_length);
@@ -2546,7 +2563,8 @@ test "certificate_parser: RSASSA-PSS SubjectPublicKeyInfo salt constraint is enf
         .index = 0,
     });
     switch (parsed.pub_key_algo) {
-        .rsassa_pss => |params| {
+        .rsassa_pss => |maybe_params| {
+            const params = maybe_params orelse return error.TestUnexpectedResult;
             try testing.expectEqual(Certificate.PssHash.sha256, params.hash);
             try testing.expectEqual(Certificate.PssHash.sha256, params.mgf1_hash);
             try testing.expectEqual(@as(u32, 20), params.salt_length);
@@ -2558,6 +2576,21 @@ test "certificate_parser: RSASSA-PSS SubjectPublicKeyInfo salt constraint is enf
         error.CertificateSignatureAlgorithmMismatch,
         parsed.verify(parsed, fixtures.public_chain_now_sec),
     );
+}
+
+// RFC 4055 §3.1 — absent RSASSA-PSS public-key parameters mean unrestricted.
+// The certificate signature still carries the TLS-required PSS parameters.
+const rsa_pss_unrestricted_now_sec: i64 = 1_795_363_592;
+test "certificate_parser: absent RSASSA-PSS SubjectPublicKeyInfo parameters are unrestricted" {
+    const parsed = try Certificate.parse(.{
+        .buffer = &fixtures.rsa_pss_unrestricted_cert_der,
+        .index = 0,
+    });
+    switch (parsed.pub_key_algo) {
+        .rsassa_pss => |params| try testing.expect(params == null),
+        else => return error.TestUnexpectedResult,
+    }
+    try parsed.verify(parsed, rsa_pss_unrestricted_now_sec);
 }
 
 // RFC 8446 §4.4.2.2 — a leaf with no KeyUsage/EKU restrictions and a supported

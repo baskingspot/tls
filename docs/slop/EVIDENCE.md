@@ -83,6 +83,29 @@ Root `just ci` exited zero. This covered every required gate. The new
 server-from-PEM handshake is native-to-native in memory. Existing OpenSSL
 interop passed separately. No new OpenSSL-peer case combines that peer with PEM
 startup.
+## 2026-11-22 RSA review follow-up (#220)
+
+Review found two P2 defects in the chain PR. The first rejected unrestricted
+RSASSA-PSS public keys on every backend. The second loaded captured-chain
+anchors at the real clock instead of the fixture clock.
+
+The new unrestricted fixture uses the default `openssl genpkey -algorithm
+RSA-PSS` output. Its SubjectPublicKeyInfo contains only the algorithm OID.
+OpenSSL accepts the certificate. Reintroducing the old parameter requirement
+fails with `CertificateHasUnrecognizedObjectId`. Optional parameters restore
+verification on native and OpenSSL. The certificate signature still requires
+the TLS PSS parameters.
+
+The captured-chain helper now loads anchors at `public_chain_now_sec`. A
+mutation that loaded GlobalSign R1 at 2033 failed with
+`CertificateIssuerNotFound`. Loading at the fixture time restored all three
+chains. This prevents the 2028 and 2029 anchor expirations from breaking the
+test.
+
+The changelog records the stricter default-backend parsing and public API
+changes. `PubKeyAlgo.rsassa_pss` is optional. The two unused RSA `fromBytes`
+helpers remain removed.
+
 ## 2026-11-22 native RSA certificate chains (#215, chain half)
 
 Scope: RSA public-key parsing and PKCS#1 v1.5 certificate verification on the

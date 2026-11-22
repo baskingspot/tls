@@ -49,6 +49,13 @@ All notable changes to tls are recorded here. The format follows
   `error.DeterministicNonceUnsupported` left all three, and
   `error.UnsupportedKeyScheme` stays on `fromPemAuto`, which is the only loader
   that infers a scheme. Native adds `error.InvalidPrivateKey` to its set.
+- X.509 RSA SubjectPublicKeyInfo parsing is stricter on every backend.
+  `rsaEncryption` requires exactly NULL parameters. RSASSA-PSS parameters are
+  optional and absent means unrestricted. `PubKeyAlgo.rsassa_pss` now carries
+  `?PssParameters` instead of no payload. RSAPublicKey INTEGERs must be
+  positive and minimally encoded. The verification-only RSA module removed
+  `PSSSignature.fromBytes` and `PKCS1v1_5Signature.fromBytes`; use `verifyDer`
+  for slice-based verification (#215).
 - Backend EC key handles can hold inline native bytes. Their cleanup functions
   take a pointer to the handle, so native erases caller-owned key material (#199).
 - `-Dcrypto-fips` is now `-Dcrypto-approved-only`, `capabilities.is_fips` is
