@@ -210,7 +210,7 @@ pub fn aeadDecrypt(
     };
 }
 
-/// Raw-seed Ed25519 operations. No PEM/DER key loader exists in this slice.
+/// Raw-seed Ed25519 operations. The PKCS#8 loader uses the same constructor.
 pub const ed25519 = struct {
     const Ed = crypto.sign.Ed25519;
 
@@ -255,6 +255,7 @@ pub const pkey = union(enum) {
     p256_public: [65]u8,
     p384_private: [48]u8,
     p384_public: [97]u8,
+    ed25519_private: ed25519.KeyPair,
 };
 pub const EcKey = pkey;
 
@@ -471,24 +472,361 @@ pub const SignatureError = error{
     UnsupportedPrimitive,
     UnsupportedSignatureScheme,
 };
+
+/// A key constructed from raw scalar bytes: the signing seam's own errors, plus
+/// key material that is not a scalar in [1, n-1]. Kept out of `SignatureError`
+/// because the handshake error tables are written once for every backend, and
+/// libcrypto reports the same input as a provider failure (baskingspot/tls#88).
+pub const ScalarKeyError = SignatureError || error{InvalidPrivateKey};
+
+/// signatureSign-only extension: a load never signs, so the deterministic
+/// nonce error stays out of the loader set (baskingspot/tls#82).
 pub const SignError = SignatureError || error{DeterministicNonceUnsupported};
+pub const KeyLoadError = SignatureError || error{
+    CurveMismatch,
+    EncryptedPrivateKeyUnsupported,
+    InvalidDer,
+    InvalidPemEncoding,
+    InvalidPrivateKey,
+    PemLabelMismatch,
+    PrivateKeyTooLarge,
+    PublicKeyMismatch,
+    RsaUnsupported,
+    UnsupportedCurve,
+    UnsupportedKeyAlgorithm,
+    UnsupportedPemLabel,
+    UnsupportedPointFormat,
+};
 pub const NonceMode = ecdsa.NonceMode;
 pub const KeySchemeError = error{UnsupportedKeyScheme};
 
-pub fn privateKeyFromDer(der: []const u8) SignatureError!pkey {
-    _ = der;
-    return error.UnsupportedPrimitive;
+const DerElement = Certificate.der.Element;
+const DerTag = Certificate.der.Tag;
+
+const DerReader = struct {
+    bytes: []const u8,
+    index: u32 = 0,
+
+    fn next(self: *DerReader) KeyLoadError!DerElement {
+        const start: usize = self.index;
+        const element = DerElement.parse(self.bytes, self.index) catch
+            return error.InvalidDer;
+
+        // DER forbids indefinite and non-minimal lengths. The certificate
+        // parser accepts both because X.509 has a different error contract.
+        const length_byte = self.bytes[start + 1];
+        if (length_byte & 0x80 != 0) {
+            if (length_byte & 0x7f == 0) return error.InvalidDer;
+            if (self.bytes[start + 2] == 0) return error.InvalidDer;
+            if (element.slice.end - element.slice.start < 128) return error.InvalidDer;
+        }
+
+        self.index = element.slice.end;
+        return element;
+    }
+
+    fn read(self: *DerReader, tag: DerTag) KeyLoadError!DerElement {
+        const element = try self.next();
+        const expected_pc: Certificate.der.PC = if (tag == .sequence or tag == .sequence_of)
+            .constructed
+        else
+            .primitive;
+        if (element.identifier.class != .universal or
+            element.identifier.pc != expected_pc or
+            element.identifier.tag != tag) return error.InvalidDer;
+        return element;
+    }
+
+    fn readContext(self: *DerReader, tag: u5) KeyLoadError!DerElement {
+        const element = try self.next();
+        if (!isContext(element, tag)) return error.InvalidDer;
+        return element;
+    }
+
+    fn content(self: *const DerReader, element: DerElement) []const u8 {
+        return self.bytes[element.slice.start..element.slice.end];
+    }
+
+    fn done(self: *const DerReader) bool {
+        return self.index == self.bytes.len;
+    }
+};
+
+fn isContext(element: DerElement, tag: u5) bool {
+    return element.identifier.class == .context_specific and
+        element.identifier.pc == .constructed and
+        @backingInt(element.identifier.tag) == tag;
 }
 
-pub fn privateKeyFromPem(pem: []const u8) SignatureError!pkey {
-    _ = pem;
-    return error.UnsupportedPrimitive;
+fn derBody(der: []const u8) KeyLoadError!DerReader {
+    var reader: DerReader = .{ .bytes = der };
+    const outer = try reader.read(.sequence);
+    if (!reader.done()) return error.InvalidDer;
+    return .{ .bytes = reader.content(outer) };
+}
+
+fn readVersion(reader: *DerReader, expected: u8) KeyLoadError!void {
+    const element = try reader.read(.integer);
+    const version = reader.content(element);
+    if (version.len != 1 or version[0] != expected) return error.InvalidDer;
+}
+
+const EcCurve = enum { p256, p384 };
+
+const oid_rsa_encryption = [_]u8{ 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
+const oid_rsassa_pss = [_]u8{ 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0a };
+const oid_ec_public_key = [_]u8{ 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01 };
+const oid_p256 = [_]u8{ 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07 };
+const oid_p384 = [_]u8{ 0x2b, 0x81, 0x04, 0x00, 0x22 };
+const oid_ed25519 = [_]u8{ 0x2b, 0x65, 0x70 };
+
+fn curveFromOid(oid: []const u8) KeyLoadError!EcCurve {
+    if (mem.eql(u8, oid, &oid_p256)) return .p256;
+    if (mem.eql(u8, oid, &oid_p384)) return .p384;
+    return error.UnsupportedCurve;
+}
+
+const PrivateKeyAlgorithm = union(enum) {
+    ec: EcCurve,
+    ed25519,
+};
+
+fn parsePrivateKeyAlgorithm(contents: []const u8) KeyLoadError!PrivateKeyAlgorithm {
+    var reader: DerReader = .{ .bytes = contents };
+    const algorithm_element = try reader.read(.object_identifier);
+    const algorithm = reader.content(algorithm_element);
+    if (mem.eql(u8, algorithm, &oid_rsa_encryption) or
+        mem.eql(u8, algorithm, &oid_rsassa_pss)) return error.RsaUnsupported;
+    if (mem.eql(u8, algorithm, &oid_ed25519)) {
+        // RFC 8410 §3 — Ed25519 AlgorithmIdentifier parameters are absent.
+        if (!reader.done()) return error.InvalidDer;
+        return .ed25519;
+    }
+    if (!mem.eql(u8, algorithm, &oid_ec_public_key))
+        return error.UnsupportedKeyAlgorithm;
+
+    // RFC 5480 §2.1.1.1 — id-ecPublicKey carries a named-curve OID.
+    const parameters_element = try reader.read(.object_identifier);
+    const curve = try curveFromOid(reader.content(parameters_element));
+    if (!reader.done()) return error.InvalidDer;
+    return .{ .ec = curve };
+}
+
+fn ed25519KeyFromPkcs8(private_key: []const u8) KeyLoadError!pkey {
+    // RFC 8410 §7 — the outer OCTET STRING contains a second OCTET STRING,
+    // whose 32 bytes are the seed rather than an expanded secret scalar.
+    var reader: DerReader = .{ .bytes = private_key };
+    const seed_element = try reader.read(.octetstring);
+    const seed = reader.content(seed_element);
+    if (!reader.done() or seed.len != ed25519.seed_length) return error.InvalidDer;
+    const keypair = ed25519.keyPairFromSeed(seed[0..ed25519.seed_length]) catch
+        return error.LibcryptoFailed;
+    return .{ .ed25519_private = keypair };
+}
+
+fn ecKeyFromSecret(curve: EcCurve, secret: []const u8) KeyLoadError!pkey {
+    return switch (curve) {
+        .p256 => if (secret.len != 32)
+            error.InvalidDer
+        else
+            privateKeyFromP256Scalar(secret[0..32]),
+        .p384 => if (secret.len != 48)
+            error.InvalidDer
+        else
+            p384PrivateKeyFromSecret(secret[0..48]) catch |err| switch (err) {
+                error.IdentityElement => error.InvalidPrivateKey,
+                error.LibcryptoFailed => error.LibcryptoFailed,
+            },
+    };
+}
+
+fn validateSec1PublicKey(
+    key: pkey,
+    reader: *const DerReader,
+    element: DerElement,
+) KeyLoadError!void {
+    var public_reader: DerReader = .{ .bytes = reader.content(element) };
+    const bit_string = public_reader.content(try public_reader.read(.bitstring));
+    if (!public_reader.done() or bit_string.len < 2 or bit_string[0] != 0)
+        return error.InvalidDer;
+    const actual = bit_string[1..];
+    switch (key) {
+        .p256_private => |*secret| try expectSec1Point(P256, actual, secret),
+        .p384_private => |*secret| try expectSec1Point(P384, actual, secret),
+        else => unreachable,
+    }
+}
+
+// SEC 1 §2.3.3 — the optional public key may use the compressed form, which
+// `openssl ec -conv_form compressed` writes. Decode the point and compare it
+// to the one the scalar derives, so a valid key loads as it does on libcrypto.
+fn expectSec1Point(
+    comptime Curve: type,
+    actual: []const u8,
+    secret: *const [Curve.scalar.encoded_length]u8,
+) KeyLoadError!void {
+    const point = switch (actual[0]) {
+        0x02, 0x03, 0x04 => Curve.fromSec1(actual) catch return error.PublicKeyMismatch,
+        // Hybrid points are legal SEC 1, and std.crypto cannot decode them.
+        0x06, 0x07 => return error.UnsupportedPointFormat,
+        else => return error.InvalidDer,
+    };
+    const expected = publicFromSecret(Curve, secret) catch return error.LibcryptoFailed;
+    if (!mem.eql(u8, &point.toUncompressedSec1(), &expected)) return error.PublicKeyMismatch;
+}
+
+fn sec1PrivateKeyFromDer(der: []const u8, outer_curve: ?EcCurve) KeyLoadError!pkey {
+    // RFC 5915 §3 — version 1, the scalar, optional named-curve parameters,
+    // and an optional public key. PKCS#8 supplies the curve when [0] is absent.
+    var reader = try derBody(der);
+    try readVersion(&reader, 1);
+    const secret = reader.content(try reader.read(.octetstring));
+    var curve = outer_curve;
+    var public_element: ?DerElement = null;
+
+    if (!reader.done()) {
+        const element = try reader.next();
+        if (isContext(element, 0)) {
+            var parameters: DerReader = .{ .bytes = reader.content(element) };
+            const oid = parameters.content(try parameters.read(.object_identifier));
+            if (!parameters.done()) return error.InvalidDer;
+            const inner_curve = try curveFromOid(oid);
+            if (curve) |expected| {
+                if (inner_curve != expected) return error.CurveMismatch;
+            }
+            curve = inner_curve;
+        } else if (isContext(element, 1)) {
+            public_element = element;
+        } else {
+            return error.InvalidDer;
+        }
+    }
+    if (public_element == null and !reader.done())
+        public_element = try reader.readContext(1);
+    if (!reader.done()) return error.InvalidDer;
+
+    var key = try ecKeyFromSecret(curve orelse return error.InvalidDer, secret);
+    errdefer freeEcKey(&key);
+    if (public_element) |element| try validateSec1PublicKey(key, &reader, element);
+    return key;
+}
+
+fn pkcs8PrivateKeyFromDer(der: []const u8) KeyLoadError!pkey {
+    // RFC 5208 §5 — PrivateKeyInfo version 0, AlgorithmIdentifier, and an
+    // OCTET STRING containing the algorithm-specific private-key structure.
+    var reader = try derBody(der);
+    try readVersion(&reader, 0);
+    const algorithm = try parsePrivateKeyAlgorithm(
+        reader.content(try reader.read(.sequence)),
+    );
+    const private_key = reader.content(try reader.read(.octetstring));
+    if (!reader.done()) _ = try reader.readContext(0); // Optional attributes.
+    if (!reader.done()) return error.InvalidDer;
+
+    return switch (algorithm) {
+        .ec => |curve| sec1PrivateKeyFromDer(private_key, curve),
+        .ed25519 => ed25519KeyFromPkcs8(private_key),
+    };
+}
+
+pub fn privateKeyFromDer(der: []const u8) KeyLoadError!pkey {
+    var reader = try derBody(der);
+    const version = reader.content(try reader.read(.integer));
+    const second = try reader.next();
+    if (version.len == 1 and version[0] == 0) {
+        if (second.identifier.class == .universal and
+            second.identifier.pc == .constructed and
+            second.identifier.tag == .sequence) return pkcs8PrivateKeyFromDer(der);
+        // PKCS#1 RSAPrivateKey has the modulus where PKCS#8 has an
+        // AlgorithmIdentifier. Identify the capability before parsing RSA.
+        if (second.identifier.class == .universal and
+            second.identifier.pc == .primitive and
+            second.identifier.tag == .integer) return error.RsaUnsupported;
+    }
+    if (version.len == 1 and version[0] == 1 and
+        second.identifier.class == .universal and
+        second.identifier.pc == .primitive and
+        second.identifier.tag == .octetstring) return sec1PrivateKeyFromDer(der, null);
+    return error.InvalidDer;
+}
+
+const PemBlock = struct {
+    label: []const u8,
+    body: []const u8,
+    next: usize,
+};
+
+const pem_begin_prefix = "-----BEGIN ";
+
+fn parsePemBlock(pem: []const u8, start: usize) KeyLoadError!?PemBlock {
+    const begin = start + (mem.find(u8, pem[start..], pem_begin_prefix) orelse
+        return null);
+    const label_start = begin + pem_begin_prefix.len;
+    const begin_end = label_start + (mem.find(u8, pem[label_start..], "-----") orelse
+        return error.InvalidPemEncoding);
+    if (begin_end == label_start) return error.InvalidPemEncoding;
+    const body_start = begin_end + "-----".len;
+
+    const end_prefix = "-----END ";
+    const end = body_start + (mem.find(u8, pem[body_start..], end_prefix) orelse
+        return error.InvalidPemEncoding);
+    const end_label_start = end + end_prefix.len;
+    const end_label_end = end_label_start + (mem.find(
+        u8,
+        pem[end_label_start..],
+        "-----",
+    ) orelse return error.InvalidPemEncoding);
+    if (!mem.eql(u8, pem[label_start..begin_end], pem[end_label_start..end_label_end]))
+        return error.PemLabelMismatch;
+    return .{
+        .label = pem[label_start..begin_end],
+        .body = pem[body_start..end],
+        .next = end_label_end + "-----".len,
+    };
+}
+
+const pem_decoder = std.base64.standard.decoderWithIgnore("\t\n\x0b\x0c\r ");
+// Supported EC and Ed25519 keys need only a few hundred bytes. The larger
+// bound lets an RSA-8192 PKCS#8 file reach the named RSA capability error.
+const max_private_key_der_len = 8192;
+
+pub fn privateKeyFromPem(pem: []const u8) KeyLoadError!pkey {
+    var position: usize = 0;
+    while (try parsePemBlock(pem, position)) |block| {
+        position = block.next;
+        if (mem.eql(u8, block.label, "ENCRYPTED PRIVATE KEY") or
+            mem.find(u8, block.body, "Proc-Type: 4,ENCRYPTED") != null)
+            return error.EncryptedPrivateKeyUnsupported;
+        if (mem.eql(u8, block.label, "RSA PRIVATE KEY")) return error.RsaUnsupported;
+
+        const Format = enum { pkcs8, sec1 };
+        const format: Format = if (mem.eql(u8, block.label, "PRIVATE KEY"))
+            .pkcs8
+        else if (mem.eql(u8, block.label, "EC PRIVATE KEY"))
+            .sec1
+        else {
+            continue;
+        };
+
+        var der: [max_private_key_der_len]u8 = undefined;
+        defer crypto.secureZero(u8, &der);
+        const der_len = pem_decoder.decode(&der, block.body) catch |err| return switch (err) {
+            error.NoSpaceLeft => error.PrivateKeyTooLarge,
+            error.InvalidCharacter, error.InvalidPadding => error.InvalidPemEncoding,
+        };
+        return switch (format) {
+            .pkcs8 => pkcs8PrivateKeyFromDer(der[0..der_len]),
+            .sec1 => sec1PrivateKeyFromDer(der[0..der_len], null),
+        };
+    }
+    return if (position == 0) error.InvalidPemEncoding else error.UnsupportedPemLabel;
 }
 
 pub fn keyScheme(key: pkey) KeySchemeError!SignatureScheme {
     return switch (key) {
         .p256_private, .p256_public => .ecdsa_secp256r1_sha256,
         .p384_private, .p384_public => .ecdsa_secp384r1_sha384,
+        .ed25519_private => .ed25519,
     };
 }
 
@@ -498,7 +836,7 @@ pub fn privateKeyPairsWithCertificate(
 ) error{InvalidEncoding}!bool {
     // One exact DER certificate, matching the libcrypto loader's trailing-byte
     // rejection. No signature or path validation belongs to this comparison.
-    const outer = Certificate.der.Element.parse(leaf_cert_der, 0) catch
+    const outer = DerElement.parse(leaf_cert_der, 0) catch
         return error.InvalidEncoding;
     if (outer.identifier.tag != .sequence or outer.slice.end != leaf_cert_der.len)
         return error.InvalidEncoding;
@@ -524,12 +862,25 @@ pub fn privateKeyPairsWithCertificate(
             const public_key = publicFromSecret(P384, secret) catch return false;
             return mem.eql(u8, &public_key, leaf.pubKey());
         },
+        .ed25519_private => |*keypair| {
+            switch (leaf.pub_key_algo) {
+                .curveEd25519 => {},
+                else => return false,
+            }
+            const public_key = keypair.public_key.toBytes();
+            return mem.eql(u8, &public_key, leaf.pubKey());
+        },
         else => return false,
     }
 }
 
-pub fn privateKeyFromP256Scalar(scalar: *const [32]u8) SignatureError!pkey {
-    return p256PrivateKeyFromSecret(scalar) catch return error.LibcryptoFailed;
+pub fn privateKeyFromP256Scalar(scalar: *const [32]u8) ScalarKeyError!pkey {
+    return p256PrivateKeyFromSecret(scalar) catch |err| switch (err) {
+        // RFC 6979 §2.2 — a scalar of zero or at least the group order is not
+        // a private key, and that is not a provider failure.
+        error.IdentityElement => error.InvalidPrivateKey,
+        error.LibcryptoFailed => error.LibcryptoFailed,
+    };
 }
 
 fn signatureSignEcdsa(
@@ -837,6 +1188,249 @@ test "native Ed25519 matches RFC 8032 TEST 1" {
     var short: [ed25519.signature_length - 1]u8 = undefined;
     try testing.expectError(error.BufferTooShort, ed25519.sign(&key, "", &short));
 }
+
+// RFC 5208 §5 and RFC 5915 §3 — existing OpenSSL fixtures load through both
+// public input forms, and each DER load constructs the same native key as PEM.
+test "native PKCS#8 loads P-256 and P-384 from PEM and DER" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    var p256_pem = try privateKeyFromPem(fixtures.ec_p256_key_pem);
+    defer freeEcKey(&p256_pem);
+    var p256_der = try privateKeyFromDer(&fixtures.native_p256_pkcs8_der);
+    defer freeEcKey(&p256_der);
+    try testing.expectEqual(SignatureScheme.ecdsa_secp256r1_sha256, try keyScheme(p256_der));
+    try testing.expect(try privateKeyPairsWithCertificate(
+        p256_der,
+        &fixtures.server_cert_der,
+    ));
+    const p256_pem_public = try p256RawPublicKeyFromPrivate(p256_pem);
+    const p256_der_public = try p256RawPublicKeyFromPrivate(p256_der);
+    try testing.expectEqualSlices(u8, &p256_pem_public, &p256_der_public);
+
+    var p384_pem = try privateKeyFromPem(fixtures.ec_p384_key_pem);
+    defer freeEcKey(&p384_pem);
+    var p384_der = try privateKeyFromDer(&fixtures.native_p384_pkcs8_der);
+    defer freeEcKey(&p384_der);
+    try testing.expectEqual(SignatureScheme.ecdsa_secp384r1_sha384, try keyScheme(p384_der));
+    const p384_pem_public = try p384RawPublicKeyFromPrivate(p384_pem);
+    const p384_der_public = try p384RawPublicKeyFromPrivate(p384_der);
+    try testing.expectEqualSlices(u8, &p384_pem_public, &p384_der_public);
+}
+
+// RFC 7468 §2 and RFC 5915 §3 — SEC1 armor accepts CRLF, carries its own
+// named curve, and checks the optional public key against the private scalar.
+test "native SEC1 loads P-256 from PEM and DER with CRLF tolerance" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    var der_key = try privateKeyFromDer(&fixtures.native_p256_sec1_der);
+    defer freeEcKey(&der_key);
+    try testing.expect(try privateKeyPairsWithCertificate(der_key, &fixtures.server_cert_der));
+
+    var crlf: [512]u8 = undefined;
+    var crlf_len: usize = 0;
+    for (fixtures.native_p256_sec1_pem) |byte| {
+        if (byte == '\n') {
+            crlf[crlf_len] = '\r';
+            crlf_len += 1;
+        }
+        crlf[crlf_len] = byte;
+        crlf_len += 1;
+    }
+    var pem_key = try privateKeyFromPem(crlf[0..crlf_len]);
+    defer freeEcKey(&pem_key);
+    const der_public = try p256RawPublicKeyFromPrivate(der_key);
+    const pem_public = try p256RawPublicKeyFromPrivate(pem_key);
+    try testing.expectEqualSlices(u8, &der_public, &pem_public);
+}
+
+// RFC 8410 §3 and §7 — the nested OCTET STRING contains an Ed25519 seed.
+// Scheme inference still rejects it for CertificateVerify at the facade.
+test "native PKCS#8 loads the same Ed25519 seed from PEM and DER" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    var pem_key = try privateKeyFromPem(fixtures.ed25519_key_pem);
+    defer freeEcKey(&pem_key);
+    var der_key = try privateKeyFromDer(&fixtures.native_ed25519_pkcs8_der);
+    defer freeEcKey(&der_key);
+    try testing.expectEqual(SignatureScheme.ed25519, try keyScheme(pem_key));
+    const pem_public = switch (pem_key) {
+        .ed25519_private => |keypair| keypair.public_key.toBytes(),
+        else => unreachable,
+    };
+    const der_public = switch (der_key) {
+        .ed25519_private => |keypair| keypair.public_key.toBytes(),
+        else => unreachable,
+    };
+    try testing.expectEqualSlices(u8, &pem_public, &der_public);
+}
+
+// RFC 5208 §5 and RFC 8017 §A.1.1 — RSA containers are recognized as RSA.
+// Unsupported curves are capability failures too, not malformed DER (#215/#216).
+test "native private-key loading names unsupported algorithms" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    for ([_][]const u8{
+        fixtures.rsa_pss_key_pem,
+        fixtures.rsa_pkcs1_key_pem,
+    }) |pem| {
+        try testing.expectError(error.RsaUnsupported, privateKeyFromPem(pem));
+    }
+    try testing.expectError(
+        error.RsaUnsupported,
+        privateKeyFromDer(&fixtures.native_rsa_pkcs1_der),
+    );
+    for ([_][]const u8{
+        fixtures.ec_p521_key_pem,
+        fixtures.ec_secp224r1_key_pem,
+    }) |pem| {
+        try testing.expectError(error.UnsupportedCurve, privateKeyFromPem(pem));
+    }
+}
+
+// RFC 7468 §2 — label mismatch, truncated base64, and encrypted containers
+// have distinct errors. Both encrypted PKCS#8 and legacy encryption are named.
+test "native PEM rejects wrong labels truncated base64 and encrypted keys" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    const wrong_label = "-----BEGIN PRIVATE KEY-----\nMIGHA\n-----END EC PRIVATE KEY-----";
+    try testing.expectError(error.PemLabelMismatch, privateKeyFromPem(wrong_label));
+    const truncated = "-----BEGIN PRIVATE KEY-----\nMIGHA\n-----END PRIVATE KEY-----";
+    try testing.expectError(error.InvalidPemEncoding, privateKeyFromPem(truncated));
+    for ([_][]const u8{
+        fixtures.rsa_pss_key_encrypted_pkcs8_pem,
+        fixtures.rsa_pss_key_encrypted_legacy_pem,
+    }) |pem| {
+        try testing.expectError(error.EncryptedPrivateKeyUnsupported, privateKeyFromPem(pem));
+    }
+}
+
+// RFC 5915 §3 and RFC 5480 §2.1.1.1 — outer and inner curves must agree.
+// Invalid lengths and an inconsistent optional public key are separate failures.
+test "native DER rejects bad lengths curve mismatches and wrong public keys" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    const bad_length = [_]u8{ 0x30, 0x04, 0x02, 0x01, 0x00 };
+    try testing.expectError(error.InvalidDer, privateKeyFromDer(&bad_length));
+    const trailing = fixtures.native_p256_pkcs8_der ++ [_]u8{0};
+    try testing.expectError(error.InvalidDer, privateKeyFromDer(&trailing));
+
+    // PKCS#8 says P-256 while the inner SEC1 parameters say P-384.
+    const curve_mismatch = hex("305A020100301306072A8648CE3D020106082A8648CE3D030107" ++
+        "0440303E02010104300101010101010101010101010101010101010101010101010101010101010101" ++
+        "01010101010101010101010101010101" ++
+        "A00706052B81040022");
+    try testing.expectError(error.CurveMismatch, privateKeyFromDer(&curve_mismatch));
+
+    var wrong_public = fixtures.native_p256_sec1_der;
+    wrong_public[wrong_public.len - 1] ^= 1;
+    try testing.expectError(error.PublicKeyMismatch, privateKeyFromDer(&wrong_public));
+}
+
+// RFC 7468 §3 — a PEM file may hold several blocks. `openssl ecparam -genkey`
+// writes EC PARAMETERS before the key, and `cat server.crt server.key` puts a
+// certificate first. libcrypto loads both; the loader returns the first key
+// block instead of rejecting the file's first block.
+test "native PEM skips non-key blocks before the first private key" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+
+    // openssl ecparam -name prime256v1 -genkey -out key.pem
+    var ecparam_pem: PemFile = .{};
+    ecparam_pem.add(fixtures.native_ec_parameters_pem);
+    ecparam_pem.add(fixtures.native_p256_sec1_pem);
+    var ecparam_key = try privateKeyFromPem(ecparam_pem.text());
+    defer freeEcKey(&ecparam_key);
+    try testing.expectEqual(SignatureScheme.ecdsa_secp256r1_sha256, try keyScheme(ecparam_key));
+
+    // cat server.crt server.key
+    var combined_pem: PemFile = .{};
+    combined_pem.add(fixtures.native_server_cert_pem);
+    combined_pem.add(fixtures.ec_p256_key_pem);
+    var combined_key = try privateKeyFromPem(combined_pem.text());
+    defer freeEcKey(&combined_key);
+    try testing.expect(try privateKeyPairsWithCertificate(combined_key, &fixtures.server_cert_der));
+
+    // A file with no key block keeps the label error instead of the parse error.
+    try testing.expectError(
+        error.UnsupportedPemLabel,
+        privateKeyFromPem(fixtures.native_server_cert_pem),
+    );
+}
+
+// SEC 1 §2.3.3 — the optional public key may use the compressed form, which
+// `openssl ec -conv_form compressed` writes. The loader decompresses it and
+// compares the point, so the key loads as it does on libcrypto.
+test "native SEC1 accepts a compressed public point" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    var key = try privateKeyFromDer(&fixtures.native_p256_sec1_compressed_der);
+    defer freeEcKey(&key);
+    try testing.expect(try privateKeyPairsWithCertificate(key, &fixtures.server_cert_der));
+
+    // The comparison decodes the point, so a different x is still a mismatch.
+    var wrong_point = fixtures.native_p256_sec1_compressed_der;
+    wrong_point[wrong_point.len - 1] ^= 1;
+    try testing.expectError(error.PublicKeyMismatch, privateKeyFromDer(&wrong_point));
+
+    // Hybrid points are legal SEC 1 and std.crypto cannot decode them.
+    var hybrid_point = fixtures.native_p256_sec1_der;
+    hybrid_point[hybrid_point.len - 65] = 0x06;
+    try testing.expectError(error.UnsupportedPointFormat, privateKeyFromDer(&hybrid_point));
+}
+
+// SEC 1 §3.2.1 — zero and the curve order are not private scalars in [1, n - 1].
+// Invalid key material is distinct from a provider failure on every native path.
+test "native private-key loading rejects invalid scalars by name" {
+    // ziglint-ignore: Z007 -- Fixture imports stay test-local for published packages (#66).
+    const fixtures = @import("fixtures");
+    const p256_order = hex("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551");
+    // P-384 order n, 48 bytes.
+    const p384_order = hex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" ++
+        "FFFFFFFFFFFFFFFFC7634D81F4372DDF" ++
+        "581A0DB248B0A77AECEC196ACCC52973");
+
+    const zero_scalar: [32]u8 = @splat(0);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromP256Scalar(&zero_scalar));
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromP256Scalar(&p256_order));
+
+    // SEC 1 §3.2.1 — 7 is the scalar in a P-256 ECPrivateKey, 8 in a P-384 one:
+    // the P-384 SEQUENCE length needs three length bytes instead of two.
+    var zero_p256 = fixtures.native_p256_sec1_der;
+    @memset(zero_p256[7..39], 0);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromDer(&zero_p256));
+
+    var order_p256 = fixtures.native_p256_sec1_der;
+    @memcpy(order_p256[7..39], &p256_order);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromDer(&order_p256));
+
+    var zero_p384 = fixtures.native_p384_sec1_der;
+    @memset(zero_p384[8..56], 0);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromDer(&zero_p384));
+
+    var order_p384 = fixtures.native_p384_sec1_der;
+    @memcpy(order_p384[8..56], &p384_order);
+    try testing.expectError(error.InvalidPrivateKey, privateKeyFromDer(&order_p384));
+}
+
+/// Concatenated PEM blocks with no separator, the shape `cat` and
+/// `openssl ecparam -genkey` produce.
+const PemFile = struct {
+    bytes: [1024]u8 = undefined,
+    len: usize = 0,
+
+    fn add(self: *PemFile, block: []const u8) void {
+        const trimmed = mem.trimEnd(u8, block, "\n");
+        assert(self.len + trimmed.len + 1 <= self.bytes.len);
+        @memcpy(self.bytes[self.len..][0..trimmed.len], trimmed);
+        self.len += trimmed.len;
+        self.bytes[self.len] = '\n';
+        self.len += 1;
+    }
+
+    fn text(self: *const PemFile) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
 
 fn hex(comptime encoded: []const u8) [encoded.len / 2]u8 {
     comptime assert(encoded.len % 2 == 0);

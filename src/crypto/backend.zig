@@ -407,16 +407,29 @@ pub const aead = struct {
 
 pub const sign = struct {
     pub const Error = sign_impl.SignatureError;
+    /// A private key loaded from a file or from raw scalar bytes, minus what
+    /// only one backend can name (#218). `signature.PrivateKey.fromPemAuto`
+    /// adds its own `UnsupportedKeyScheme` on top.
+    pub const LoadError = if (native_selected)
+        backend_native.KeyLoadError
+    else
+        sign_impl.SignatureError;
+    /// `privateKeyFromP256Scalar` only: native can name an out-of-range scalar,
+    /// and libcrypto reports the same input as a provider failure (#88).
+    pub const ScalarKeyError = if (native_selected)
+        backend_native.ScalarKeyError
+    else
+        sign_impl.SignatureError;
     pub const SignError = sign_impl.SignError;
     pub const NonceMode = sign_impl.NonceMode;
 
     /// A libcrypto pointer or an inline native key, depending on the backend.
     pub const pkey = sign_impl.EcKey;
-    pub inline fn privateKeyFromDer(der: []const u8) Error!pkey {
+    pub inline fn privateKeyFromDer(der: []const u8) LoadError!pkey {
         return sign_impl.privateKeyFromDer(der);
     }
 
-    pub inline fn privateKeyFromPem(pem: []const u8) Error!pkey {
+    pub inline fn privateKeyFromPem(pem: []const u8) LoadError!pkey {
         return sign_impl.privateKeyFromPem(pem);
     }
 
@@ -433,7 +446,7 @@ pub const sign = struct {
         return sign_impl.privateKeyPairsWithCertificate(key, leaf_cert_der);
     }
 
-    pub inline fn privateKeyFromP256Scalar(scalar: *const [32]u8) Error!pkey {
+    pub inline fn privateKeyFromP256Scalar(scalar: *const [32]u8) ScalarKeyError!pkey {
         return sign_impl.privateKeyFromP256Scalar(scalar);
     }
 
