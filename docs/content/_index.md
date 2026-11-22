@@ -55,11 +55,12 @@ library. Production builds use `auto` or an explicit libcrypto backend until
 native is measured and reviewed.
 
 `-Dcrypto=native` opts into `std.crypto` and in-tree primitives without
-libcrypto. Native loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM
-and DER, and Ed25519 seeds from PKCS#8. RSA signatures, RSA keys, and encrypted
-PEM remain unsupported, so a client with default settings fails against much
-of the public web even when the server key is ECDSA. Use `-Dcrypto=openssl` or
-`-Dcrypto=aws-lc` for RSA or encrypted keys. ML-KEM-1024 is unsupported too.
+libcrypto. Native verifies RSA PKCS#1 v1.5 certificate-chain signatures with
+SHA-256/384/512, and loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM
+and DER. RSA CertificateVerify, RSA keys, and encrypted PEM remain unsupported,
+so a client still fails against RSA-only servers. Use `-Dcrypto=openssl` or
+`-Dcrypto=aws-lc` for those capabilities. ML-KEM-1024 is unsupported on native
+too.
 
 Set `.crypto = .openssl`, `.crypto = .@"aws-lc"`, or `.crypto = .boringssl` in
 `b.dependency` to name a libcrypto family. Use `.crypto = .auto` for header
@@ -198,14 +199,14 @@ Select crypto primitives at build time:
 | BoringSSL | `-Dcrypto=boringssl`. Explicit libcrypto                   |
 | Auto      | Default. Detect the family from the selected headers       |
 
-Native supports X25519, P-256/P-384, ECDSA, Ed25519 chain signatures, and both
-ML-KEM-768 hybrid groups. It loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys
-from PEM and DER, and Ed25519 seeds from PKCS#8. RSA signatures, RSA keys, and
-encrypted PEM remain unsupported, so a client with default settings fails
-against much of the public web even when the server key is ECDSA. Use
-`-Dcrypto=openssl` or `-Dcrypto=aws-lc` for RSA or encrypted keys. ML-KEM-1024
-is unsupported too. Production builds use `auto` or an explicit libcrypto
-backend until native is measured and reviewed.
+Native supports X25519, P-256/P-384, ECDSA, Ed25519 chain signatures, RSA
+PKCS#1 v1.5 chain signatures with SHA-256/384/512, and both ML-KEM-768 hybrid
+groups. It loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER,
+and Ed25519 seeds from PKCS#8. RSA CertificateVerify, RSA keys, and encrypted
+PEM remain unsupported, so a client still fails against RSA-only servers. Use
+`-Dcrypto=openssl` or `-Dcrypto=aws-lc` for those capabilities. ML-KEM-1024 is
+unsupported on native too. Production builds use `auto` or an explicit
+libcrypto backend until native is measured and reviewed.
 
 All three RFC 10024 groups use provider-backed pure ML-KEM with engine-owned
 hybrid composition on OpenSSL, AWS-LC, and BoringSSL. Approved-only builds do

@@ -343,6 +343,67 @@ fn rsaPssPublicKeyBits() ![]const u8 {
     return parsed.pubKey();
 }
 
+fn verifyCertificateWithLibcrypto(subject_der: []const u8, issuer_der: []const u8) !void {
+    _ = c.ERR_set_mark();
+    defer _ = c.ERR_pop_to_mark();
+    var subject_ptr: ?[*]const u8 = subject_der.ptr;
+    const subject = c.d2i_X509(null, &subject_ptr, @intCast(subject_der.len)) orelse
+        return error.InvalidEncoding;
+    defer c.X509_free(subject);
+    if (subject_ptr != subject_der.ptr + subject_der.len) return error.InvalidEncoding;
+
+    var issuer_ptr: ?[*]const u8 = issuer_der.ptr;
+    const issuer = c.d2i_X509(null, &issuer_ptr, @intCast(issuer_der.len)) orelse
+        return error.InvalidEncoding;
+    defer c.X509_free(issuer);
+    if (issuer_ptr != issuer_der.ptr + issuer_der.len) return error.InvalidEncoding;
+
+    const public_key = c.X509_get0_pubkey(issuer) orelse return error.LibcryptoFailed;
+    if (c.X509_verify(subject, public_key) != 1) return error.LibcryptoFailed;
+}
+
+/// Check one real certificate signature through both implementations, then
+/// flip its final signature octet and require the same rejection from both.
+fn expectCertificateSignatureDifferential(subject_der: []const u8, issuer_der: []const u8) !void {
+    const subject = try Certificate.parse(.{ .buffer = subject_der, .index = 0 });
+    const issuer = try Certificate.parse(.{ .buffer = issuer_der, .index = 0 });
+    try subject.verify(issuer, fixtures.public_chain_now_sec);
+    try verifyCertificateWithLibcrypto(subject_der, issuer_der);
+
+    var tampered_buf: [4096]u8 = undefined;
+    @memcpy(tampered_buf[0..subject_der.len], subject_der);
+    const tampered_der = tampered_buf[0..subject_der.len];
+    tampered_der[tampered_der.len - 1] ^= 1;
+    const tampered = try Certificate.parse(.{ .buffer = tampered_der, .index = 0 });
+    try testing.expectError(
+        error.CertificateSignatureInvalid,
+        tampered.verify(issuer, fixtures.public_chain_now_sec),
+    );
+    try testing.expectError(
+        error.LibcryptoFailed,
+        verifyCertificateWithLibcrypto(tampered_der, issuer_der),
+    );
+}
+
+// RFC 5280 §6.1, RFC 8017 §8.2 — every signature in the three captured
+// chains agrees with libcrypto. The cross-root-to-issuer rows exercise RSA;
+// the remaining rows pin the same accept/reject behavior for ECDSA links.
+test "certificate signatures: captured public chains match libcrypto and reject tampering" {
+    const cases = [_][2][]const u8{
+        .{ &fixtures.public_google_leaf_der, &fixtures.public_google_intermediate_der },
+        .{ &fixtures.public_google_intermediate_der, &fixtures.public_gts_cross_root_der },
+        .{ &fixtures.public_gts_cross_root_der, &fixtures.public_globalsign_root_der },
+        .{ &fixtures.public_cloudflare_leaf_der, &fixtures.public_cloudflare_intermediate_der },
+        .{ &fixtures.public_cloudflare_intermediate_der, &fixtures.public_gts_cross_root_der },
+        .{ &fixtures.public_gts_cross_root_der, &fixtures.public_globalsign_root_der },
+        .{ &fixtures.public_example_leaf_der, &fixtures.public_example_intermediate_der },
+        .{ &fixtures.public_example_intermediate_der, &fixtures.public_example_transit_der },
+        .{ &fixtures.public_example_transit_der, &fixtures.public_example_cross_root_der },
+        .{ &fixtures.public_example_cross_root_der, &fixtures.public_aaa_root_der },
+    };
+    for (cases) |case| try expectCertificateSignatureDifferential(case[0], case[1]);
+}
+
 /// Build the CertificateVerify signed content for a transcript hash: the
 /// context string followed by the hash, with no separator. RFC 8446 §4.4.3.
 fn serverSignedContent(buf: []u8, transcript_hash: []const u8) []const u8 {

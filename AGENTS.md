@@ -355,10 +355,11 @@ possible later behind its own backend if the API surface is worth it.
 The opt-in `native` backend is the explicit exception to the libcrypto-only
 backend rule (#199). It uses `std.crypto` and in-tree code, with support limited
 to its capability table. Keep the default on libcrypto auto-detection while
-native is unmeasured and unreviewed. Native loads unencrypted P-256/P-384
-PKCS#8 and SEC1 keys from PEM and DER, and Ed25519 seeds from PKCS#8. RSA
-signatures, RSA keys, and encrypted PEM remain unsupported. Use
-`-Dcrypto=openssl` or `-Dcrypto=aws-lc` for RSA or encrypted keys (#215, #216).
+native is unmeasured and unreviewed. Native verifies RSA PKCS#1 v1.5
+certificate-chain signatures with SHA-256/384/512, and loads unencrypted
+P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, plus Ed25519 seeds from
+PKCS#8. RSA CertificateVerify, RSA keys, and encrypted PEM remain unsupported.
+Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for those capabilities (#215, #216).
 
 The strict no-allocation invariant applies to tls-owned framing, state machine,
 record buffers, and caller-visible TLS I/O. A libcrypto-family production build

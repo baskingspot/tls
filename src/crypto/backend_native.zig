@@ -1,7 +1,8 @@
 //! Pure-Zig crypto primitives for the opt-in native backend (#199).
 //!
 //! This backend is not a production replacement for libcrypto. ML-KEM-1024 and
-//! RSA remain unsupported in this slice.
+//! RSA CertificateVerify remain unsupported in this slice. RSA PKCS#1 v1.5
+//! certificate signatures verify in `certificate_parser.zig`, outside this seam.
 const std = @import("std");
 const crypto = std.crypto;
 const mem = std.mem;
@@ -39,7 +40,8 @@ pub const capabilities = struct {
     pub const server_secp256r1_mlkem768 = true;
     pub const server_secp384r1_mlkem1024 = false;
 
-    // CertificateVerify and chain verification use the in-tree ECDSA module.
+    // CertificateVerify uses the in-tree ECDSA module. Chain verification also
+    // accepts RSA PKCS#1 v1.5 through the verification-only RSA module.
     // Ed25519 remains a chain-signature scheme, not a CertificateVerify scheme.
     pub const certificate_verify_schemes: []const SignatureScheme = &.{
         .ecdsa_secp256r1_sha256,
@@ -47,6 +49,9 @@ pub const capabilities = struct {
     };
 
     pub const certificate_signature_schemes: []const SignatureScheme = &.{
+        .rsa_pkcs1_sha256,
+        .rsa_pkcs1_sha384,
+        .rsa_pkcs1_sha512,
         .ecdsa_secp256r1_sha256,
         .ecdsa_secp384r1_sha384,
         .ed25519,
@@ -1095,18 +1100,32 @@ test "native ECDSA P-256 and P-384 sign, verify, and reject invalid inputs" {
     }
 }
 
-// RFC 8446 §4.2.3 and RFC 10024 — native does not advertise or execute RSA
-// or ML-KEM-1024. Direct calls fail by name instead of probing libcrypto silently.
-test "native capabilities keep RSA and ML-KEM-1024 unsupported" {
-    const rsa_schemes = [_]SignatureScheme{
+// RFC 8446 §4.2.3 and RFC 10024 — native advertises RSA PKCS#1 v1.5 only
+// for certificate signatures. RSA CertificateVerify and ML-KEM-1024 stay off.
+test "native capabilities scope RSA to PKCS1 certificate signatures" {
+    const pkcs1_schemes = [_]SignatureScheme{
         .rsa_pkcs1_sha256,
         .rsa_pkcs1_sha384,
         .rsa_pkcs1_sha512,
+    };
+    for (pkcs1_schemes) |scheme| {
+        try testing.expect(mem.findScalar(
+            SignatureScheme,
+            capabilities.certificate_signature_schemes,
+            scheme,
+        ) != null);
+        try testing.expect(mem.findScalar(
+            SignatureScheme,
+            capabilities.certificate_verify_schemes,
+            scheme,
+        ) == null);
+    }
+    const pss_schemes = [_]SignatureScheme{
         .rsa_pss_rsae_sha256,
         .rsa_pss_rsae_sha384,
         .rsa_pss_rsae_sha512,
     };
-    for (rsa_schemes) |scheme| {
+    for (pss_schemes) |scheme| {
         try testing.expect(mem.findScalar(
             SignatureScheme,
             capabilities.certificate_verify_schemes,

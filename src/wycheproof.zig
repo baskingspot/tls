@@ -17,7 +17,8 @@ const tls = @import("root.zig");
 // through the certificate verify path, and since #183 it is native rather than
 // backend-dispatched. Its Wycheproof vectors (RSA-PSS, ECDSA P-256/P-384) live
 // in src/certificate.zig next to `verifySignedContent`, which is the function
-// they pin. `tls.Certificate.rsa` remains public API in its own right.
+// they pin. RSA PKCS#1 v1.5 vectors live in src/rsa_wycheproof.zig and use the
+// same `verifyDer` entry point as chain verification.
 //
 // No dead/empty wrapper tests are added here. See backend_primitive_tests.zig
 // for P-256/P-384 ECDH coverage and certificate.zig for signature verify.

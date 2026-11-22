@@ -573,7 +573,7 @@ pub const Parsed = struct {
 
     pub const PubKeyAlgo = union(AlgorithmCategory) {
         rsaEncryption: void,
-        rsassa_pss: void,
+        rsassa_pss: ?PssParameters,
         X9_62_id_ecPublicKey: NamedCurve,
         curveEd25519: void,
     };
@@ -2436,7 +2436,25 @@ pub fn parse(cert: Certificate) ParseError!Parsed {
     const pub_key_signature_algorithm = try der.Element.parse(cert_bytes, pub_key_info.slice.start);
     const pub_key_algo_elem = try der.Element.parse(cert_bytes, pub_key_signature_algorithm.slice.start);
     const pub_key_algo: Parsed.PubKeyAlgo = switch (try parseAlgorithmCategory(cert_bytes, pub_key_algo_elem)) {
-        inline else => |tag| @unionInit(Parsed.PubKeyAlgo, @tagName(tag), {}),
+        .rsaEncryption => rsa_encryption: {
+            try parseRsaEncryptionParameters(
+                cert_bytes,
+                pub_key_algo_elem.slice.end,
+                pub_key_signature_algorithm.slice.end,
+            );
+            break :rsa_encryption .rsaEncryption;
+        },
+        .rsassa_pss => .{
+            // RFC 4055 §3.1 — absent parameters mean an unrestricted key.
+            .rsassa_pss = if (pub_key_algo_elem.slice.end == pub_key_signature_algorithm.slice.end)
+                null
+            else
+                try parseRsaPssParameters(
+                    cert_bytes,
+                    pub_key_algo_elem.slice.end,
+                    pub_key_signature_algorithm.slice.end,
+                ),
+        },
         .X9_62_id_ecPublicKey => pub_key_algo: {
             // RFC 5480 Section 2.1.1.1 Named Curve
             // ECParameters ::= CHOICE {
@@ -2448,6 +2466,7 @@ pub fn parse(cert: Certificate) ParseError!Parsed {
             const named_curve = try parseNamedCurve(cert_bytes, params_elem);
             break :pub_key_algo .{ .X9_62_id_ecPublicKey = named_curve };
         },
+        .curveEd25519 => .curveEd25519,
     };
     const pub_key_elem = try der.Element.parse(cert_bytes, pub_key_signature_algorithm.slice.end);
     const pub_key = try parseBitString(cert, pub_key_elem);
@@ -2921,12 +2940,12 @@ const sha256_oid = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01 }
 const sha384_oid = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02 };
 const sha512_oid = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03 };
 
-const PssHash = enum {
+pub const PssHash = enum {
     sha256,
     sha384,
     sha512,
 
-    fn digestLen(self: PssHash) u32 {
+    pub fn digestLen(self: PssHash) u32 {
         return switch (self) {
             .sha256 => 32,
             .sha384 => 48,
@@ -2934,12 +2953,47 @@ const PssHash = enum {
         };
     }
 
-    fn algorithm(self: PssHash) Algorithm {
+    pub fn algorithm(self: PssHash) Algorithm {
         return switch (self) {
             .sha256 => .rsassaPss_with_SHA256,
             .sha384 => .rsassaPss_with_SHA384,
             .sha512 => .rsassaPss_with_SHA512,
         };
+    }
+
+    fn fromHash(comptime Hash: type) ?PssHash {
+        return switch (Hash) {
+            crypto.hash.sha2.Sha256 => .sha256,
+            crypto.hash.sha2.Sha384 => .sha384,
+            crypto.hash.sha2.Sha512 => .sha512,
+            else => null,
+        };
+    }
+};
+
+/// RSASSA-PSS-params from an AlgorithmIdentifier (RFC 4055 §3.1, §4.1).
+/// The parser retains every field so key and signature constraints cannot be
+/// discarded before verification.
+pub const PssParameters = struct {
+    hash: PssHash,
+    mgf1_hash: PssHash,
+    salt_length: u32,
+    trailer_field: u32,
+
+    /// TLS 1.3 RSA-PSS uses MGF1 with the scheme hash, salt length equal to
+    /// the digest length, and trailerField 1 (RFC 8446 §4.2.3).
+    pub fn matchesTls(self: PssParameters, comptime Hash: type) bool {
+        const hash = PssHash.fromHash(Hash) orelse return false;
+        return self.hash == hash and
+            self.mgf1_hash == hash and
+            self.salt_length == hash.digestLen() and
+            self.trailer_field == 1;
+    }
+
+    fn matchesSignature(self: PssParameters) bool {
+        return self.mgf1_hash == self.hash and
+            self.salt_length == self.hash.digestLen() and
+            self.trailer_field == 1;
     }
 };
 
@@ -2959,17 +3013,16 @@ fn parseSignatureAlgorithmIdentifier(bytes: []const u8, sig_algo: der.Element) P
     return error.CertificateHasUnrecognizedObjectId;
 }
 
-/// RFC 4055 §3.1, RFC 8446 §4.2.3 — parse RSASSA-PSS-params for TLS 1.3
-/// RSASSA-PSS certificate signatures (SHA-256/384/512, MGF1 with the same
-/// hash, saltLength equal to the digest length, and trailerField == 1).
-fn parseRsaPssSignatureAlgorithm(
+/// RFC 4055 §3.1 — parse RSASSA-PSS-params for a certificate signature or
+/// SubjectPublicKeyInfo. The caller applies the usage-specific constraints.
+fn parseRsaPssParameters(
     bytes: []const u8,
     params_start: u32,
-    sig_algo_end: u32,
-) ParseError!Algorithm {
-    if (params_start >= sig_algo_end) return error.CertificateHasUnrecognizedObjectId;
+    params_end: u32,
+) ParseError!PssParameters {
+    if (params_start >= params_end) return error.CertificateHasUnrecognizedObjectId;
     const params = try der.Element.parse(bytes, params_start);
-    if (params.slice.end != sig_algo_end) return error.CertificateFieldHasInvalidLength;
+    if (params.slice.end != params_end) return error.CertificateFieldHasInvalidLength;
     if (params.identifier.class != .universal or
         params.identifier.tag != .sequence or
         params.identifier.pc != .constructed)
@@ -3006,12 +3059,58 @@ fn parseRsaPssSignatureAlgorithm(
         }
     }
 
-    const h = hash_alg orelse return error.CertificateHasUnrecognizedObjectId;
-    const m = mgf_hash orelse return error.CertificateHasUnrecognizedObjectId;
-    if (m != h) return error.CertificateHasUnrecognizedObjectId;
-    if ((salt_len orelse 20) != h.digestLen()) return error.CertificateHasUnrecognizedObjectId;
-    if (trailer_field != 1) return error.CertificateHasUnrecognizedObjectId;
-    return h.algorithm();
+    return .{
+        .hash = hash_alg orelse return error.CertificateHasUnrecognizedObjectId,
+        .mgf1_hash = mgf_hash orelse return error.CertificateHasUnrecognizedObjectId,
+        .salt_length = salt_len orelse 20,
+        .trailer_field = trailer_field,
+    };
+}
+
+/// RFC 4055 §3.1, RFC 8446 §4.2.3 — certificate signatures use the TLS PSS
+/// constraints. SubjectPublicKeyInfo parsing below reuses the same field parser.
+fn parseRsaPssSignatureAlgorithm(
+    bytes: []const u8,
+    params_start: u32,
+    sig_algo_end: u32,
+) ParseError!Algorithm {
+    const params = try parseRsaPssParameters(bytes, params_start, sig_algo_end);
+    if (!params.matchesSignature()) return error.CertificateHasUnrecognizedObjectId;
+    return params.hash.algorithm();
+}
+
+/// RFC 4055 §2.1 — rsaEncryption parameters are exactly NULL.
+fn parseRsaEncryptionParameters(
+    bytes: []const u8,
+    params_start: u32,
+    params_end: u32,
+) ParseError!void {
+    if (params_start >= params_end) return error.CertificateFieldHasWrongDataType;
+    const params = try der.Element.parse(bytes, params_start);
+    if (params.slice.end != params_end) return error.CertificateFieldHasInvalidLength;
+    if (params.identifier.class != .universal or
+        params.identifier.tag != .null or
+        params.identifier.pc != .primitive or
+        params.slice.start != params.slice.end)
+        return error.CertificateFieldHasWrongDataType;
+}
+
+// RFC 4055 §2.1 — rsaEncryption AlgorithmIdentifier parameters are exactly
+// NULL, not absent, a different type, or a valid NULL followed by more data.
+test "rsaEncryption SubjectPublicKeyInfo parameters require exactly NULL" {
+    try parseRsaEncryptionParameters("\x05\x00", 0, 2);
+    try testing.expectError(
+        error.CertificateFieldHasWrongDataType,
+        parseRsaEncryptionParameters("", 0, 0),
+    );
+    try testing.expectError(
+        error.CertificateFieldHasWrongDataType,
+        parseRsaEncryptionParameters("\x30\x00", 0, 2),
+    );
+    try testing.expectError(
+        error.CertificateFieldHasInvalidLength,
+        parseRsaEncryptionParameters("\x05\x00\x00", 0, 3),
+    );
 }
 
 fn parsePssHashAlgorithm(bytes: []const u8, start: u32, end: u32) ParseError!PssHash {
@@ -3066,6 +3165,10 @@ fn parseSmallNonNegativeInt(bytes: []const u8, start: u32, end: u32) ParseError!
         return error.CertificateFieldHasWrongDataType;
     const raw = bytes[elem.slice.start..elem.slice.end];
     if (raw.len == 0 or raw[0] & 0x80 != 0 or raw.len > 4)
+        return error.CertificateFieldHasInvalidLength;
+    // X.690 §8.3.2 — a positive INTEGER needs a sign octet only when
+    // the next octet has its high bit set. Any other leading zero is not DER.
+    if (raw.len > 1 and raw[0] == 0 and raw[1] & 0x80 == 0)
         return error.CertificateFieldHasInvalidLength;
     var value: u32 = 0;
     for (raw) |b| value = (value << 8) | b;
@@ -3127,21 +3230,7 @@ fn verifyRsa(
     pub_key: []const u8,
 ) !void {
     if (pub_key_algo != .rsaEncryption) return error.CertificateSignatureAlgorithmMismatch;
-    const pk_components = try rsa.PublicKey.parseDer(pub_key);
-    const exponent = pk_components.exponent;
-    const modulus = pk_components.modulus;
-    if (exponent.len > modulus.len) return error.CertificatePublicKeyInvalid;
-    if (sig.len != modulus.len) return error.CertificateSignatureInvalidLength;
-
-    switch (modulus.len) {
-        inline 128, 256, 384, 512 => |modulus_len| {
-            const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
-                return error.CertificateSignatureInvalid;
-            rsa.PKCS1v1_5Signature.verify(modulus_len, sig[0..modulus_len].*, msg, public_key, Hash) catch
-                return error.CertificateSignatureInvalid;
-        },
-        else => return error.CertificateSignatureUnsupportedBitCount,
-    }
+    return rsa.PKCS1v1_5Signature.verifyDer(Hash, msg, sig, pub_key);
 }
 
 fn verifyRsaPss(
@@ -3151,8 +3240,15 @@ fn verifyRsaPss(
     pub_key_algo: Parsed.PubKeyAlgo,
     pub_key: []const u8,
 ) !void {
-    if (pub_key_algo != .rsaEncryption and pub_key_algo != .rsassa_pss)
-        return error.CertificateSignatureAlgorithmMismatch;
+    switch (pub_key_algo) {
+        .rsaEncryption => {},
+        .rsassa_pss => |maybe_params| {
+            if (maybe_params) |params| {
+                if (!params.matchesTls(Hash)) return error.CertificateSignatureAlgorithmMismatch;
+            }
+        },
+        else => return error.CertificateSignatureAlgorithmMismatch,
+    }
     const pk_components = try rsa.PublicKey.parseDer(pub_key);
     const exponent = pk_components.exponent;
     const modulus = pk_components.modulus;
@@ -3326,6 +3422,11 @@ test {
     _ = Bundle;
 }
 
+/// RSA verification primitives. Every input is public, so variable-time
+/// modular exponentiation and padding comparisons are acceptable here.
+/// No function accepts a private key or produces a signature. A future signing
+/// implementation needs a separate private-key type and constant-time,
+/// blinded private operations; it cannot inherit this verification path.
 pub const rsa = struct {
     const max_modulus_bits = 4096;
     const Uint = std.crypto.ff.Uint(max_modulus_bits);
@@ -3336,12 +3437,6 @@ pub const rsa = struct {
     /// (#183): chain verification below uses PKCS#1 v1.5, so no handshake here
     /// reached this path until CertificateVerify moved off EVP.
     pub const PSSSignature = struct {
-        pub fn fromBytes(comptime modulus_len: usize, msg: []const u8) [modulus_len]u8 {
-            var result: [modulus_len]u8 = @splat(0);
-            @memcpy(result[0..msg.len], msg);
-            return result;
-        }
-
         pub const VerifyError = EncryptError || error{InvalidSignature};
 
         pub fn verify(
@@ -3362,7 +3457,7 @@ pub const rsa = struct {
             comptime Hash: type,
         ) VerifyError!void {
             const mod_bits = public_key.n.bits();
-            const em_dec = try encrypt(modulus_len, sig, public_key);
+            const em_dec = try applyPublicExponentForVerification(modulus_len, sig, public_key);
 
             // RFC 8017 §8.1.2 step 2c — EM = I2OSP(m, emLen) with
             // emLen = ceil((modBits - 1) / 8). emLen equals modulus_len unless
@@ -3520,15 +3615,43 @@ pub const rsa = struct {
         }
     };
 
-    /// RFC 3447 8.2 RSASSA-PKCS1-v1_5
+    /// RFC 3447 8.2 RSASSA-PKCS1-v1_5, verification only.
     pub const PKCS1v1_5Signature = struct {
-        pub fn fromBytes(comptime modulus_len: usize, msg: []const u8) [modulus_len]u8 {
-            var result: [modulus_len]u8 = @splat(0);
-            @memcpy(result[0..msg.len], msg);
-            return result;
-        }
-
         pub const VerifyError = EncryptError || error{InvalidSignature};
+        pub const VerifyDerError = der.Element.ParseError || error{
+            CertificateFieldHasWrongDataType,
+            CertificatePublicKeyInvalid,
+            CertificateSignatureInvalidLength,
+            CertificateSignatureInvalid,
+            CertificateSignatureUnsupportedBitCount,
+        };
+
+        /// Verify a signature over `msg` against an RSAPublicKey DER slice.
+        /// The signature length must equal the modulus length before the
+        /// fixed-size public operation. A short or long input never gets
+        /// zero-padded into a plausible signature.
+        pub fn verifyDer(
+            comptime Hash: type,
+            msg: []const u8,
+            sig: []const u8,
+            pub_key: []const u8,
+        ) VerifyDerError!void {
+            const components = try PublicKey.parseDer(pub_key);
+            const exponent = components.exponent;
+            const modulus = components.modulus;
+            if (exponent.len > modulus.len) return error.CertificatePublicKeyInvalid;
+            if (sig.len != modulus.len) return error.CertificateSignatureInvalidLength;
+
+            switch (modulus.len) {
+                inline 128, 256, 384, 512 => |modulus_len| {
+                    const public_key = PublicKey.fromBytes(exponent, modulus) catch
+                        return error.CertificateSignatureInvalid;
+                    verify(modulus_len, sig[0..modulus_len].*, msg, public_key, Hash) catch
+                        return error.CertificateSignatureInvalid;
+                },
+                else => return error.CertificateSignatureUnsupportedBitCount,
+            }
+        }
 
         pub fn verify(
             comptime modulus_len: usize,
@@ -3547,8 +3670,10 @@ pub const rsa = struct {
             public_key: PublicKey,
             comptime Hash: type,
         ) VerifyError!void {
-            const em_dec = try encrypt(modulus_len, sig, public_key);
+            const em_dec = try applyPublicExponentForVerification(modulus_len, sig, public_key);
             const em = try EMSA_PKCS1_V1_5_ENCODE(msg, modulus_len, Hash);
+            // Both values are public after the RSA operation. Variable-time
+            // comparison is safe for verification and must not move to signing.
             if (!std.mem.eql(u8, &em_dec, &em)) return error.InvalidSignature;
         }
 
@@ -3677,26 +3802,58 @@ pub const rsa = struct {
 
         pub fn parseDer(pub_key: []const u8) ParseDerError!struct { modulus: []const u8, exponent: []const u8 } {
             const pub_key_seq = try der.Element.parse(pub_key, 0);
-            if (pub_key_seq.identifier.tag != .sequence) return error.CertificateFieldHasWrongDataType;
+            if (pub_key_seq.identifier.class != .universal or
+                pub_key_seq.identifier.tag != .sequence or
+                pub_key_seq.identifier.pc != .constructed)
+                return error.CertificateFieldHasWrongDataType;
             const modulus_elem = try der.Element.parse(pub_key, pub_key_seq.slice.start);
-            if (modulus_elem.identifier.tag != .integer) return error.CertificateFieldHasWrongDataType;
             const exponent_elem = try der.Element.parse(pub_key, modulus_elem.slice.end);
-            if (exponent_elem.identifier.tag != .integer) return error.CertificateFieldHasWrongDataType;
             // The RSAPublicKey must be the whole input: RFC 8017 §A.1.1 defines
             // it as exactly one SEQUENCE of two INTEGERs, and a caller that
             // hands us more (or a shorter sequence than its wrapper claimed)
             // is not describing one key.
             if (exponent_elem.slice.end != pub_key.len or pub_key_seq.slice.end != pub_key.len)
                 return error.CertificateFieldHasWrongDataType;
-            // Skip over meaningless zeroes in the modulus.
-            const modulus_raw = pub_key[modulus_elem.slice.start..modulus_elem.slice.end];
-            const modulus_offset = for (modulus_raw, 0..) |byte, i| {
-                if (byte != 0) break i;
-            } else modulus_raw.len;
             return .{
-                .modulus = modulus_raw[modulus_offset..],
-                .exponent = pub_key[exponent_elem.slice.start..exponent_elem.slice.end],
+                .modulus = try positiveInteger(pub_key, modulus_elem),
+                .exponent = try positiveInteger(pub_key, exponent_elem),
             };
+        }
+
+        /// X.690 §8.3.2 — return the unsigned magnitude of one positive,
+        /// minimally encoded INTEGER. DER is signed, so accepting a high bit
+        /// without its sign octet would reinterpret a negative value.
+        fn positiveInteger(bytes: []const u8, elem: der.Element) ParseDerError![]const u8 {
+            if (elem.identifier.class != .universal or
+                elem.identifier.tag != .integer or
+                elem.identifier.pc != .primitive)
+                return error.CertificateFieldHasWrongDataType;
+            const raw = bytes[elem.slice.start..elem.slice.end];
+            if (raw.len == 0 or raw[0] & 0x80 != 0)
+                return error.CertificateFieldHasWrongDataType;
+            if (raw.len > 1 and raw[0] == 0) {
+                if (raw[1] & 0x80 == 0) return error.CertificateFieldHasWrongDataType;
+                return raw[1..];
+            }
+            return raw;
+        }
+
+        // RFC 8017 §A.1.1, X.690 §8.3.2 — both RSA integers are positive
+        // and minimal. A required sign octet is not a redundant leading zero.
+        test "rsa.PublicKey.parseDer: positive minimal INTEGERs only" {
+            const valid = "\x30\x07\x02\x02\x00\x80\x02\x01\x03";
+            const parsed = try PublicKey.parseDer(valid);
+            try testing.expectEqualSlices(u8, "\x80", parsed.modulus);
+            try testing.expectEqualSlices(u8, "\x03", parsed.exponent);
+
+            try testing.expectError(
+                error.CertificateFieldHasWrongDataType,
+                PublicKey.parseDer("\x30\x06\x02\x01\x80\x02\x01\x03"),
+            );
+            try testing.expectError(
+                error.CertificateFieldHasWrongDataType,
+                PublicKey.parseDer("\x30\x07\x02\x02\x00\x01\x02\x01\x03"),
+            );
         }
     };
 
@@ -3763,7 +3920,14 @@ pub const rsa = struct {
 
     const EncryptError = error{MessageTooLong};
 
-    fn encrypt(comptime modulus_len: usize, msg: [modulus_len]u8, public_key: PublicKey) EncryptError![modulus_len]u8 {
+    /// The public RSA operation, private to this verification-only module.
+    /// Keeping it out of the public API prevents a signing path from
+    /// accidentally treating it as a private-key operation.
+    fn applyPublicExponentForVerification(
+        comptime modulus_len: usize,
+        msg: [modulus_len]u8,
+        public_key: PublicKey,
+    ) EncryptError![modulus_len]u8 {
         const m = Fe.fromBytes(public_key.n, &msg, .big) catch return error.MessageTooLong;
         const e = public_key.n.powPublic(m, public_key.e) catch unreachable;
         var res: [modulus_len]u8 = undefined;
