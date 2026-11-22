@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const CryptoBackend = enum { auto, native, openssl, @"aws-lc", boringssl };
+
 /// `b.args` (removed in Zig 0.17) and `Run.addPassthruArgs` are the same
 /// feature on either side of the split. Probe the build API, not the version.
 fn passthruArgs(b: *std.Build, run: *std.Build.Step.Run) void {
@@ -14,15 +16,21 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const crypto_backend = b.option(
+        CryptoBackend,
+        "crypto",
+        "Crypto backend: auto (default), native, openssl, aws-lc, or boringssl",
+    ) orelse .auto;
     const crypto_approved_only = b.option(
         bool,
         "crypto-approved-only",
-        "Narrow the inferred libcrypto backend to its FIPS capability identity",
+        "Narrow an explicit or auto-detected libcrypto backend to its approved-algorithm policy",
     ) orelse false;
 
     const tls_dep = b.dependency("tls", .{
         .target = target,
         .optimize = optimize,
+        .crypto = crypto_backend,
         .@"crypto-approved-only" = crypto_approved_only,
     });
     const tls_mod = tls_dep.module("tls");

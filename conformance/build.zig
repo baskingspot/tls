@@ -8,12 +8,12 @@ pub fn build(b: *std.Build) void {
     const crypto_backend = b.option(
         CryptoBackend,
         "crypto",
-        "Crypto backend: native, openssl, aws-lc, boringssl, or auto",
+        "Crypto backend: auto (default), native, openssl, aws-lc, or boringssl",
     ) orelse .auto;
     const crypto_approved_only = b.option(
         bool,
         "crypto-approved-only",
-        "Narrow the inferred libcrypto backend to its FIPS capability identity",
+        "Narrow an explicit or auto-detected libcrypto backend to its approved-algorithm policy",
     ) orelse false;
 
     const tls_dep = b.dependency("tls", .{

@@ -57,7 +57,15 @@ build:
 build-native:
     zig build -Dcrypto=native
 
-[doc("Run tlsfuzzer TLS 1.3 conformance smoke tests")]
+[private]
+build-openssl:
+    zig build -Dcrypto=openssl
+
+[private]
+build-anvil:
+    zig build -Dcrypto=auto
+
+[doc("Run tlsfuzzer TLS 1.3 conformance smoke tests with the auto-detected backend")]
 [group("conformance")]
 tlsfuzzer *ARGS: build
     uv run pytest {{ ARGS }}
@@ -67,10 +75,15 @@ tlsfuzzer *ARGS: build
 tlsfuzzer-native *ARGS: build-native
     uv run pytest {{ ARGS }}
 
+[doc("Run the conformance suite with OpenSSL libcrypto")]
+[group("conformance")]
+tlsfuzzer-openssl *ARGS: build-openssl
+    uv run pytest {{ ARGS }}
+
 [doc("Run all CI gates")]
 [group("conformance")]
 ci:
-    zig build test
+    zig build test -Dcrypto=auto
     just tlsfuzzer -v
     just anvil-report-test
     just anvil-adapter-test
@@ -91,12 +104,12 @@ ci-native:
 
 [doc("Run TLS-Anvil server tests against the tls server harness")]
 [group("conformance")]
-anvil-server *ARGS: build
+anvil-server *ARGS: build-anvil
     uv run python scripts/anvil_server.py {{ ARGS }}
 
 [doc("Run TLS-Anvil server with CI-safe sequential defaults")]
 [group("conformance")]
-anvil-ci-server RUN_DIR TIMEOUT_SECS="5400": build
+anvil-ci-server RUN_DIR TIMEOUT_SECS="5400": build-anvil
     uv run python scripts/anvil_server.py --output-folder {{ RUN_DIR }} --timeout {{ TIMEOUT_SECS }} --strength 1 --parallel-tests 1 --parallel-handshakes 1
 
 [doc("Adapt a TLS-Anvil output directory to report.normalized.json")]
@@ -158,12 +171,12 @@ anvil-report-skip-list:
 
 [doc("Run TLS-Anvil client tests against the tls client harness")]
 [group("conformance")]
-anvil-client *ARGS: build
+anvil-client *ARGS: build-anvil
     uv run python scripts/anvil_client.py {{ ARGS }}
 
 [doc("Run TLS-Anvil client with CI-safe sequential defaults")]
 [group("conformance")]
-anvil-ci-client RUN_DIR TIMEOUT_SECS="5400": build
+anvil-ci-client RUN_DIR TIMEOUT_SECS="5400": build-anvil
     uv run python scripts/anvil_client.py --output-folder {{ RUN_DIR }} --timeout {{ TIMEOUT_SECS }} --strength 1 --parallel-tests 1 --parallel-handshakes 1
 
 [doc("Run TLS-Anvil client wrapper helper tests")]

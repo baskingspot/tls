@@ -1,7 +1,7 @@
 [doc("Run tls benchmarks")]
 [group("bench")]
 bench *ARGS:
-    zig build bench -- {{ ARGS }}
+    zig build bench -Dcrypto=auto -- {{ ARGS }}
 
 [doc("Capture tls/EVP/libssl/rustls benchmark comparison outputs")]
 [group("bench")]
@@ -46,7 +46,7 @@ bench-analyze CAPTURE="":
 
 [private]
 bench-bin:
-    zig build bench-bin
+    zig build bench-bin -Dcrypto=auto
 
 [doc("Disassemble the tls benchmark binary")]
 [group("bench")]

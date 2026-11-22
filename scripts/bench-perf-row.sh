@@ -135,11 +135,11 @@ build_tls() {
   esac
   PKG_CONFIG_PATH="${backend_pkg_config_path}" \
     scripts/assert-libcrypto-family.sh "${crypto_backend}"
-  PKG_CONFIG_PATH="${backend_pkg_config_path}" zig build bench-bin >/dev/null
+  PKG_CONFIG_PATH="${backend_pkg_config_path}" zig build bench-bin -Dcrypto="${crypto_backend}" >/dev/null
 }
 
 build_openssl() {
-  PKG_CONFIG_PATH="${openssl_pkg_config_path}" zig build bench-openssl-bin >/dev/null
+  PKG_CONFIG_PATH="${openssl_pkg_config_path}" zig build bench-openssl-bin -Dcrypto=openssl >/dev/null
 }
 
 build_rustls() {

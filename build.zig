@@ -30,7 +30,8 @@ pub fn build(b: *Build) void {
     const crypto_backend = b.option(
         CryptoBackend,
         "crypto",
-        "Crypto backend: native, openssl, aws-lc, or boringssl; auto detects the libcrypto headers",
+        "Crypto backend: auto (default), native, openssl, aws-lc, or boringssl; " ++
+            "auto detects the libcrypto headers",
     ) orelse .auto;
     const native_crypto = crypto_backend == .native;
     const crypto_approved_only = b.option(

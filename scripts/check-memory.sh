@@ -42,7 +42,7 @@ sha256sum "$provider/lib/libcrypto.so.3" > "$output/provider.sha256"
 # Compile against the production headers. Only diagnostic runs select the
 # equivalent provider with compiler vectorization disabled (#121).
 PKG_CONFIG_PATH="$TLS_OPENSSL_PKG_CONFIG_PATH" zig build "${build_steps[@]}" \
-    -Doptimize=ReleaseFast -Dcpu=baseline \
+    -Dcrypto=openssl -Doptimize=ReleaseFast -Dcpu=baseline \
     --prefix "$output/bin" > "$output/build.log" 2>&1
 LD_LIBRARY_PATH="$provider/lib" LD_DEBUG=libs ZTEST_FILTER=test_0 \
     "$output/bin/bin/test" > "$output/provider-binding.log" 2>&1

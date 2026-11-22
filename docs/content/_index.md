@@ -49,10 +49,26 @@ choose:
 | `tls_nonblocking` | Zig 0.17, caller-driven server transport          |
 | `tls_ktls` | Zig 0.17 on Linux                                |
 
-All modules use the same libcrypto headers and library, selected through
-`PKG_CONFIG_PATH`. The compiler infers OpenSSL, AWS-LC, or BoringSSL from the
-headers. Add `.@"crypto-approved-only" = true` to negotiate only approved
-algorithms; it is an algorithm policy, not a FIPS validation claim.
+The default `auto` backend detects OpenSSL, AWS-LC, or BoringSSL from the
+selected headers. Libcrypto builds use `PKG_CONFIG_PATH` to find the headers and
+library. Production builds use `auto` or an explicit libcrypto backend until
+native is measured and reviewed.
+
+`-Dcrypto=native` opts into `std.crypto` and in-tree primitives without
+libcrypto. Native rejects any RSA signature in a certificate chain, so a client
+with default settings fails against much of the public web even when the server
+key is ECDSA. Native also cannot load PEM/DER private keys, so a server cannot
+load its key from a file. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for either
+capability. ML-KEM-1024 is unsupported on native too.
+
+Set `.crypto = .openssl`, `.crypto = .@"aws-lc"`, or `.crypto = .boringssl` in
+`b.dependency` to name a libcrypto family. Use `.crypto = .auto` for header
+detection. The corresponding root build flags are `-Dcrypto=openssl`,
+`-Dcrypto=aws-lc`, `-Dcrypto=boringssl`, and `-Dcrypto=auto`.
+
+Add `.@"crypto-approved-only" = true` to negotiate only approved algorithms on
+OpenSSL or AWS-LC. It is an algorithm policy, not a FIPS validation claim.
+Native rejects that combination with a compile error.
 
 The integration directories keep standalone manifests for in-tree development.
 External consumers depend only on the root package.
@@ -70,12 +86,16 @@ To start from running code, these examples are built and run in CI:
 Run them from the devshell:
 
 ```sh
-nix develop .#openssl
+nix develop
 just examples-ci
 just integrations/tls-ktls/ci
 ```
 
-`nix develop .#aws-lc` selects AWS-LC headers and libraries. `nix develop .#boringssl` selects BoringSSL. The compiler infers the backend family from those headers. The default shell selects OpenSSL.
+These commands use the default auto-detected libcrypto backend. The default
+shell supplies OpenSSL. `nix develop .#aws-lc` supplies AWS-LC headers and
+libraries. `nix develop .#boringssl` supplies BoringSSL. In each shell, `auto`
+detects that backend without a flag. Pass `-Dcrypto=aws-lc` or
+`-Dcrypto=boringssl` only to name the backend explicitly.
 
 `just examples-ci` builds and runs the core paths. The integration gate runs the packaged examples and tests. When this page and the examples disagree, the examples are right.
 
@@ -107,8 +127,7 @@ engine never calls an allocator.
 - You care where memory comes from. The engine holds no heap state. You give it
   buffers and it uses those, so memory behavior is something to reason about
   rather than profile after the fact.
-- You are on Zig and do not want a C library's I/O assumptions in your build,
-  even though the primitive crypto underneath is still libcrypto.
+- You are on Zig and want TLS without a C crypto library through `-Dcrypto=native`.
 - You want TLS 1.3 and nothing else. No 1.2 downgrade path, no DTLS, no Windows
   portability layer.
 
@@ -129,17 +148,16 @@ Third-party audit status is stated in
 ## Where the work happens
 
 The engine never calls an allocator. You hand it buffers, it uses those buffers,
-and that is all the memory it touches. One caveat: the primitive crypto is
-delegated to a libcrypto backend (OpenSSL, AWS-LC, or BoringSSL, all three live
-and CI-gated), and those backends allocate during setup and inside their own
-routines. The engine's own code, the parsing, framing, transcript, and record
-sequencing, allocates nothing.
+and that is all the memory it touches. The opt-in native backend keeps the
+primitive buffers caller-owned. Explicit libcrypto backends allocate during
+setup and inside their own routines. The engine's own code, the parsing,
+framing, transcript, and record sequencing, allocates nothing on every backend.
 
-The protocol path is Zig. AEAD, X25519 and P-256 ECDHE, and CertificateVerify
-sign and verify come from the libcrypto backend, as does the SHA-2 under the key
-schedule and transcript hash. Ed25519 certificate-chain signature verification
-stays on `std.crypto`. The only C is at the edge: the partial C ABI and its
-example.
+The protocol path is Zig. AEAD, ECDHE, CertificateVerify, and the SHA-2 under
+the key schedule come from the selected backend. ECDSA signing and certificate
+signature verification run in-tree on every backend. Ed25519 certificate-chain
+verification uses `std.crypto`. The only library C source is at the edge: the
+partial C ABI and its example.
 
 # Supported surface
 
@@ -170,21 +188,34 @@ is not coming.
 | kTLS offload                             | Supported    | Linux only; key export and kernel data plane                                                                        |
 | Windows                                  | Out of scope | Linux and macOS only                                                                                                |
 
-Crypto primitives come from a libcrypto backend, selected at build time:
+Select crypto primitives at build time:
 
-| Backend   | Status                                                |
-| --------- | ----------------------------------------------------- |
-| OpenSSL   | Supported; selected by its `libcrypto.pc` and headers |
-| AWS-LC    | Supported; selected by its `libcrypto.pc` and headers |
-| BoringSSL | Supported; selected by its `libcrypto.pc` and headers |
+| Backend   | Selection and support                                      |
+| --------- | ---------------------------------------------------------- |
+| Native    | `-Dcrypto=native`. Opt into `std.crypto` and in-tree code, with no libcrypto |
+| OpenSSL   | `-Dcrypto=openssl`. Explicit production libcrypto          |
+| AWS-LC    | `-Dcrypto=aws-lc`. Explicit production libcrypto           |
+| BoringSSL | `-Dcrypto=boringssl`. Explicit libcrypto                   |
+| Auto      | Default. Detect the family from the selected headers       |
+
+Native supports X25519, P-256/P-384, ECDSA, Ed25519 chain signatures, and both
+ML-KEM-768 hybrid groups. Native rejects any RSA signature in a certificate
+chain, so a client with default settings fails against much of the public web
+even when the server key is ECDSA. Native also cannot load PEM/DER private keys,
+so a server cannot load its key from a file. Use `-Dcrypto=openssl` or
+`-Dcrypto=aws-lc` for either capability. ML-KEM-1024 is unsupported on native
+too. Production builds use `auto` or an explicit libcrypto backend until native
+is measured and reviewed.
 
 All three RFC 10024 groups use provider-backed pure ML-KEM with engine-owned
 hybrid composition on OpenSSL, AWS-LC, and BoringSSL. Approved-only builds do
 not advertise them: FIPS 203 approves ML-KEM, but the RFC 10024 composition is
 this library's own construction. `-Dcrypto-approved-only=true` narrows
-negotiation to approved algorithms for OpenSSL or AWS-LC. It is not a
-validation: several operations run outside the linked module, and
-`PRODUCTION_READINESS.md` lists them. A BoGo conformance runner is deferred.
+negotiation to approved algorithms for OpenSSL or AWS-LC builds, selected
+explicitly or through `auto`.
+Native rejects that combination. The flag is not a validation: several
+operations run outside the linked module, and `PRODUCTION_READINESS.md` lists
+them. A BoGo conformance runner is deferred.
 
 # The buffer model
 
@@ -501,7 +532,7 @@ if (try server.sendServerFlightBuffered(&flight)) |flight_bytes| {
 }
 ```
 
-`sendAuthenticatedFlight` remains available as a lower-level escape hatch, but new callers should prefer up-front `setCredentials` plus `sendServerFlightBuffered`. On PSK resumption these methods automatically omit Certificate and CertificateVerify. `PrivateKey.deinit()` zeroes key material via libcrypto.
+`sendAuthenticatedFlight` remains available as a lower-level escape hatch. Use up-front `setCredentials` plus `sendServerFlightBuffered` for new callers. On PSK resumption these methods automatically omit Certificate and CertificateVerify. `PrivateKey.deinit()` zeroes key material through the selected backend.
 
 ## Certificate policy
 
@@ -620,9 +651,9 @@ After the handshake, `selectedAlpnProtocol()` returns the negotiated protocol (o
 
 ## RFC 10024 hybrid key exchange
 
-Hybrid groups are opt-in. The default OpenSSL, AWS-LC, and BoringSSL backends support all three RFC 10024 groups. The provider supplies pure ML-KEM operations. The engine owns group negotiation and classical-secret composition. Approved-only builds advertise no hybrid groups and no X25519, so a client sends a P-256 first flight.
+Hybrid groups are opt-in. OpenSSL, AWS-LC, and BoringSSL support all three RFC 10024 groups. Native supports `x25519_mlkem768` and `secp256r1_mlkem768`, but not `secp384r1_mlkem1024`. A libcrypto provider supplies pure ML-KEM operations on libcrypto builds. The engine owns group negotiation and classical-secret composition. Approved-only builds advertise no hybrid groups and no X25519, so a client sends a P-256 first flight.
 
-`tls.capabilities.active_backend` identifies the inferred backend and the build's algorithm policy. `tls.capabilities.approved_only` reports compile-time narrowing. It does not prove the provider runtime mode. `supportsGroup(role, group)`, `supportsHybridGroup(role, group)`, and `supportsCipherSuite(suite)` report what the build advertises. Provider operations can still fail at runtime.
+`tls.capabilities.active_backend` identifies the selected backend and the build's algorithm policy. `tls.capabilities.approved_only` reports compile-time narrowing. It does not prove the provider runtime mode. `supportsGroup(role, group)`, `supportsHybridGroup(role, group)`, and `supportsCipherSuite(suite)` report what the build advertises. Provider operations can still fail at runtime.
 
 Start with one group:
 
@@ -722,8 +753,9 @@ The raw exports remain available for specialized integrations. They are immediat
 # C ABI
 
 The C surface is partial and client only: `include/baskingspot_tls.h`,
-`libbaskingspot_tls.a` from `zig build -Dcapi`, and `examples/c_client.c`. It is
-wired into `just ci` as `capi-ci`.
+`libbaskingspot_tls.a` from `zig build -Dcapi -Dcrypto=openssl`, and
+`examples/c_client.c`. The C ABI requires a libcrypto backend and rejects
+`-Dcapi -Dcrypto=native`. It is wired into `just ci` as `capi-ci`.
 
 The C names are not the package name. A C symbol namespace has to survive being
 linked into programs that already carry LibreSSL, mbedTLS, or wolfSSL, so it

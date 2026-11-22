@@ -303,7 +303,7 @@ algorithm agility divergence.
 The default handshake key schedule uses libcrypto SHA-2 (#138). Stdlib SHA-2
 selects its code at compile time from the target CPU, so a portable build loses
 the SHA extensions. `src/crypto/sha2.zig` runs SHA-256/SHA-384 on libcrypto's
-runtime-dispatched code instead. Native uses stdlib SHA-2. HMAC
+runtime-dispatched code instead. Opt-in native uses stdlib SHA-2. HMAC
 (`src/hmac.zig`) and HKDF (`src/hkdf.zig`) are ztls code over the selected types,
 so one keying of a secret serves every label derived from it.
 

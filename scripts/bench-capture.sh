@@ -172,9 +172,9 @@ run_rustls() {
 }
 
 run_step "build tls benchmark binary (${crypto_backend})" \
-  zig_for_backend build bench-bin >/dev/null
+  zig_for_backend build bench-bin -Dcrypto="${crypto_backend}" >/dev/null
 run_step "build OpenSSL EVP/libssl benchmark binaries" \
-  zig_for_openssl_baseline build bench-evp-bin bench-openssl-bin >/dev/null
+  zig_for_openssl_baseline build bench-evp-bin bench-openssl-bin -Dcrypto=openssl >/dev/null
 
 linked_crypto="$(linked_library zig-out/bin/benchmark 'libcrypto' || true)"
 linked_evp_crypto="$(linked_library zig-out/bin/evp_bench 'libcrypto' || true)"

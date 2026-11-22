@@ -1948,7 +1948,8 @@ test "Config: buffer sizing is the whole story of the Stream footprint" {
     // The server includes bounded HRR identity metadata (#103) and declined
     // early-data state (#111). These ceilings are coarse backstops; the
     // exact-delta assertions below guard caller-configured buffer growth.
-    try testing.expect(@sizeOf(Client) <= 152_128);
+    // Zig 0.17 aarch64 native measures Client 152_176 and Server 83_840.
+    try testing.expect(@sizeOf(Client) <= 152_192);
     try testing.expect(@sizeOf(Server) <= 135_360);
 
     // #169 — a finished server connection carries the compact session, not the
@@ -1956,13 +1957,13 @@ test "Config: buffer sizing is the whole story of the Stream footprint" {
     // worker's `Scratch` now, so the slot pays for the session (856 bytes)
     // instead of the engine (19,528) and its reassembly (32,772).
     //
-    // 83,768 today. 135,184 before #169, then 116,536 when the engine moved,
-    // now 83,768: 51,416 bytes fewer per connection, ~514 MB across handoff's
-    // 10k.
-    try testing.expect(@sizeOf(Server) <= 83_800);
+    // OpenSSL is 83,768 and native is 83,840. Before #169 the slot was
+    // 135,184, so the compact session still saves about 514 MB across 10k.
+    try testing.expect(@sizeOf(Server) <= 83_840);
     // Slot plus scratch must not exceed what one slot used to cost, or the
-    // buffer did not move out so much as get duplicated.
-    try testing.expect(@sizeOf(Server) + @sizeOf(Server.Scratch) <= 136_200);
+    // buffer did not move out so much as get duplicated. Native measures
+    // 136,256 bytes on aarch64.
+    try testing.expect(@sizeOf(Server) + @sizeOf(Server.Scratch) <= 136_256);
     // One scratch per worker, and it is the engine plus the reassembly.
     try testing.expect(@sizeOf(Server.Scratch) >= @sizeOf(tls.ServerHandshake));
     try testing.expect(@sizeOf(ServerEngine) < @sizeOf(tls.ServerHandshake) / 8);
