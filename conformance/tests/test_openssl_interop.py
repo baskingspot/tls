@@ -68,6 +68,92 @@ def _generate_certificate(directory: Path, curve: str = "P-256", subject: str = 
     return cert, key
 
 
+def _generate_rsa_signed_ecdsa_certificate(directory: Path):
+    directory.mkdir(parents=True, exist_ok=True)
+    root_cert = directory / "root.pem"
+    root_key = directory / "root-key.pem"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-sha256",
+            "-nodes",
+            "-keyout",
+            str(root_key),
+            "-out",
+            str(root_cert),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=tls-test-rsa-root",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+        ],
+        capture_output=True,
+        check=True,
+    )
+
+    leaf_key = directory / "leaf-key.pem"
+    leaf_csr = directory / "leaf.csr"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-new",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:P-256",
+            "-nodes",
+            "-keyout",
+            str(leaf_key),
+            "-out",
+            str(leaf_csr),
+            "-subj",
+            "/CN=localhost",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    extensions = directory / "extensions.cnf"
+    extensions.write_text(
+        "subjectAltName=DNS:localhost\n"
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature\n"
+        "extendedKeyUsage=serverAuth\n"
+    )
+    leaf_cert = directory / "leaf.pem"
+    subprocess.run(
+        [
+            "openssl",
+            "x509",
+            "-req",
+            "-in",
+            str(leaf_csr),
+            "-CA",
+            str(root_cert),
+            "-CAkey",
+            str(root_key),
+            "-CAcreateserial",
+            "-days",
+            "1",
+            "-sha256",
+            "-extfile",
+            str(extensions),
+            "-out",
+            str(leaf_cert),
+        ],
+        capture_output=True,
+        check=True,
+    )
+    return leaf_cert, leaf_key, root_cert
+
+
 def _start_openssl_server(cert: Path, key: Path, group: str | None = None):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -292,6 +378,22 @@ def test_tls_client_uses_p384_key_exchange_with_openssl(tmp_path):
     cert, key = _generate_certificate(tmp_path)
     server, port = _start_openssl_server(cert, key, group="P-384")
     client = _start_tls_client(port, group="secp384r1")
+    try:
+        _assert_application_exchange(server, client)
+    finally:
+        _stop(client)
+        _stop(server)
+
+
+@pytest.mark.requires_capability(
+    "client_group.x25519",
+    "certificate_verify.ecdsa_secp256r1_sha256",
+    "certificate_signature.rsa_pkcs1_sha256",
+)
+def test_tls_client_verifies_rsa_signed_ecdsa_chain_from_openssl(tmp_path):
+    cert, key, root = _generate_rsa_signed_ecdsa_certificate(tmp_path)
+    server, port = _start_openssl_server(cert, key)
+    client = _start_tls_client(port, ca_file=root, host_name="localhost")
     try:
         _assert_application_exchange(server, client)
     finally:

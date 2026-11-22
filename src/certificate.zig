@@ -7,6 +7,7 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 const Sha384 = std.crypto.hash.sha2.Sha384;
 const Sha512 = std.crypto.hash.sha2.Sha512;
 const testing = std.testing;
+const print = std.debug.print;
 const mem = std.mem;
 const assert = std.debug.assert;
 const fixtures = @import("fixtures");
@@ -1364,6 +1365,74 @@ test "parse: validates leaf-intermediate-root chain" {
     try testing.expect(pub_key.len > 0);
 }
 
+const public_chain_globalsign_pem = "tests/fixtures/public_chains/globalsign-root-r1.pem";
+const public_chain_aaa_pem = "tests/fixtures/public_chains/aaa-certificate-services.pem";
+
+// RFC 5280 §6.1, RFC 8017 §8.2 — the captured chains verify through the RSA
+// key that signed each cross-signed root. Anchoring at the newer self-signed
+// root instead would skip that RSA link and prove only the ECDSA links.
+test "parse: captured public RSA chains verify through RSA issuer roots" {
+    const Case = struct {
+        name: []const u8,
+        host_name: []const u8,
+        anchor_pem: []const u8,
+        certs_der: []const []const u8,
+    };
+    const cases = [_]Case{
+        .{
+            .name = "google.com",
+            .host_name = "google.com",
+            .anchor_pem = public_chain_globalsign_pem,
+            .certs_der = &.{
+                &fixtures.public_google_leaf_der,
+                &fixtures.public_google_intermediate_der,
+                &fixtures.public_gts_cross_root_der,
+            },
+        },
+        .{
+            .name = "www.cloudflare.com",
+            .host_name = "www.cloudflare.com",
+            .anchor_pem = public_chain_globalsign_pem,
+            .certs_der = &.{
+                &fixtures.public_cloudflare_leaf_der,
+                &fixtures.public_cloudflare_intermediate_der,
+                &fixtures.public_gts_cross_root_der,
+            },
+        },
+        .{
+            .name = "example.com",
+            .host_name = "example.com",
+            .anchor_pem = public_chain_aaa_pem,
+            .certs_der = &.{
+                &fixtures.public_example_leaf_der,
+                &fixtures.public_example_intermediate_der,
+                &fixtures.public_example_transit_der,
+                &fixtures.public_example_cross_root_der,
+            },
+        },
+    };
+
+    for (cases) |case| {
+        var bundle: Certificate.Bundle = empty_bundle;
+        defer bundle.deinit(testing.allocator);
+        try addCertsFromFixturePath(&bundle, case.anchor_pem);
+
+        var buf: [8192]u8 = undefined;
+        const pub_key = parse(
+            buildCertChainMsg(&buf, case.certs_der),
+            testPolicy(.{
+                .bundle = &bundle,
+                .now_sec = fixtures.public_chain_now_sec,
+                .host_name = case.host_name,
+            }),
+        ) catch |err| {
+            print("captured chain {s} failed with {t}\n", .{ case.name, err });
+            return err;
+        };
+        try testing.expect(pub_key.len > 0);
+    }
+}
+
 // RFC 5280 §4.2.1.9 and §4.2.1.3, RFC 8446 §4.4.2 — a certificate used as
 // an issuer must assert cA and, when KeyUsage is present, keyCertSign.
 test "parse: rejects end-entity certificate used as issuer" {
@@ -2301,13 +2370,6 @@ test "certificate_policy.verifyServerAuth: legacy certificate signatures are rej
 // accepting it for X.509 signatures does not make it a CertificateVerify scheme.
 test "certificate_policy.verifyServerAuth: RSA PKCS1 SHA-256 certificate signature is accepted" {
     const leaf = policyLeaf("", .empty, .empty, .sha256WithRSAEncryption);
-    if (comptime backend.native_selected) {
-        try testing.expectError(
-            error.CertificateSignatureAlgorithmRejected,
-            certificate_policy.verifyServerAuth(leaf),
-        );
-        return;
-    }
     try certificate_policy.verifyServerAuth(leaf);
 }
 
@@ -2457,6 +2519,47 @@ test "chainMatchesSignatureSchemes: leaf, intermediate, and self-signed root" {
     try testing.expect(!ecdsa_only.containsAll(pss_required));
 }
 
+// RFC 4055 §3.1, §4.1 — an RSASSA-PSS SubjectPublicKeyInfo retains its hash,
+// MGF1 hash, salt length, and trailer field, then verifies a matching signature.
+test "certificate_parser: RSASSA-PSS SubjectPublicKeyInfo parameters verify" {
+    const parsed = try Certificate.parse(.{
+        .buffer = &fixtures.rsa_pss_spki_cert_der,
+        .index = 0,
+    });
+    switch (parsed.pub_key_algo) {
+        .rsassa_pss => |params| {
+            try testing.expectEqual(Certificate.PssHash.sha256, params.hash);
+            try testing.expectEqual(Certificate.PssHash.sha256, params.mgf1_hash);
+            try testing.expectEqual(@as(u32, 32), params.salt_length);
+            try testing.expectEqual(@as(u32, 1), params.trailer_field);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try parsed.verify(parsed, fixtures.public_chain_now_sec);
+}
+
+// RFC 4055 §3.1, RFC 8446 §4.2.3 — a PSS key constrained to salt 20 cannot
+// verify a TLS PSS signature with salt 32, even when every other field matches.
+test "certificate_parser: RSASSA-PSS SubjectPublicKeyInfo salt constraint is enforced" {
+    const parsed = try Certificate.parse(.{
+        .buffer = &fixtures.rsa_pss_spki_salt20_cert_der,
+        .index = 0,
+    });
+    switch (parsed.pub_key_algo) {
+        .rsassa_pss => |params| {
+            try testing.expectEqual(Certificate.PssHash.sha256, params.hash);
+            try testing.expectEqual(Certificate.PssHash.sha256, params.mgf1_hash);
+            try testing.expectEqual(@as(u32, 20), params.salt_length);
+            try testing.expectEqual(@as(u32, 1), params.trailer_field);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmMismatch,
+        parsed.verify(parsed, fixtures.public_chain_now_sec),
+    );
+}
+
 // RFC 8446 §4.4.2.2 — a leaf with no KeyUsage/EKU restrictions and a supported
 // signature algorithm satisfies the residual server-auth policy.
 test "certificate_policy.verifyServerAuth: unrestricted supported leaf is accepted" {
@@ -2485,16 +2588,13 @@ test "verifySignature: valid ECDSA P-256 signature" {
 // MGF1(SHA-256), and salt length equal to the digest length.
 test "verifySignature: valid RSA-PSS SHA-256 signature" {
     var cert_buf: [2048]u8 = undefined;
-    if (comptime backend.native_selected) {
-        try testing.expectError(error.CertificateSignatureAlgorithmRejected, parse(
-            buildCertMsg(&cert_buf, fixtureRsaPssCertDer()),
-            testPolicy(.{ .insecure_no_chain_anchor = true }),
-        ));
-        return;
-    }
     const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
     }));
+    if (comptime backend.native_selected) {
+        try testing.expect(!backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256));
+        return;
+    }
     var cv_buf: [512]u8 = undefined;
     const cv = try encodeCertificateVerify(
         &cv_buf,
@@ -2508,16 +2608,13 @@ test "verifySignature: valid RSA-PSS SHA-256 signature" {
 // length, not an arbitrary PSS salt length accepted by generic RSA-PSS.
 test "verifySignature: rejects RSA-PSS signature with wrong salt length" {
     var cert_buf: [2048]u8 = undefined;
-    if (comptime backend.native_selected) {
-        try testing.expectError(error.CertificateSignatureAlgorithmRejected, parse(
-            buildCertMsg(&cert_buf, fixtureRsaPssCertDer()),
-            testPolicy(.{ .insecure_no_chain_anchor = true }),
-        ));
-        return;
-    }
     const pub_key = try parse(buildCertMsg(&cert_buf, fixtureRsaPssCertDer()), testPolicy(.{
         .insecure_no_chain_anchor = true,
     }));
+    if (comptime backend.native_selected) {
+        try testing.expect(!backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256));
+        return;
+    }
     var cv_buf: [512]u8 = undefined;
     const cv = try encodeCertificateVerify(
         &cv_buf,
@@ -2701,11 +2798,14 @@ fn comptimeDerLenHex(comptime len: u16) []const u8 {
 }
 
 // RFC 8017 §A.1.1 — RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent
-// INTEGER }. Builds PKCS#1 DER hex around a caller-chosen modulus and exponent
-// TLV so a test can vary one parameter at a time. It always emits the 0x00 sign
-// byte, so a test that cares about minimal DER must not use this helper.
+// INTEGER }. Builds minimal PKCS#1 DER hex around a caller-chosen modulus and
+// exponent TLV so a test can vary one parameter at a time.
 fn rsaPubKeyDerHex(comptime n_hex: []const u8, comptime e_tlv_hex: []const u8) []const u8 {
-    const n_tlv = "02" ++ comptimeDerLenHex(n_hex.len / 2 + 1) ++ "00" ++ n_hex;
+    const first = std.ascii.toLower(n_hex[0]);
+    const needs_sign = (first >= '8' and first <= '9') or
+        (first >= 'a' and first <= 'f');
+    const sign = if (needs_sign) "00" else "";
+    const n_tlv = "02" ++ comptimeDerLenHex(n_hex.len / 2 + sign.len / 2) ++ sign ++ n_hex;
     return "30" ++ comptimeDerLenHex(n_tlv.len / 2 + e_tlv_hex.len / 2) ++ n_tlv ++ e_tlv_hex;
 }
 

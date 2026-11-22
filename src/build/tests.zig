@@ -1,11 +1,11 @@
 const std = @import("std");
 const Build = std.Build;
 
-/// Native primitive suite (#199). The root excludes the general test suite,
-/// whose RSA vectors do not apply to this backend. Examples and the
-/// conformance subproject exercise native handshakes separately. A second
-/// binary selects core regressions that native can execute. Its imports also
-/// carry libcrypto-only tests, so the filter is part of the test contract.
+/// Native primitive suite (#199). The root selects the modules whose vectors
+/// and contracts apply to this backend. Examples and the conformance
+/// subproject exercise native handshakes separately. A second binary selects
+/// core regressions that native can execute. Its imports also carry
+/// libcrypto-only tests, so the filter is part of the test contract.
 pub fn addNativeSteps(b: *Build, opts: struct {
     test_mod: *Build.Module,
     core_test_mod: *Build.Module,

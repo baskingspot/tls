@@ -43,6 +43,10 @@ pub const rsa_pss_cert_der = decodeSection("rsa_pss_cert_der");
 /// RSA-2048 certificate signed with RSASSA-PSS (SHA-256, MGF1-SHA-256, salt 32)
 /// paired with `rsa_pss_key_pem` (#209).
 pub const rsa_pss_signed_cert_der = decodeSection("rsa_pss_signed_cert_der");
+/// RSASSA-PSS SubjectPublicKeyInfo with SHA-256/MGF1-SHA-256/salt 32.
+pub const rsa_pss_spki_cert_der = decodeSection("rsa_pss_spki_cert_der");
+/// PSS signature salt 32 over an SPKI key constrained to the default salt 20.
+pub const rsa_pss_spki_salt20_cert_der = decodeSection("rsa_pss_spki_salt20_cert_der");
 // RSA-8192 retention-capacity fixtures (#124).
 pub const key_capacity_root_der = decodeSection("key_capacity_root_der");
 pub const key_capacity_leaf_der = decodeSection("key_capacity_leaf_der");
@@ -169,6 +173,31 @@ pub const pathlen_cross_leaf_der = decodeSection("pathlen_cross_leaf_der");
 pub const cv_sig = decodeSection("cv_sig");
 pub const rsa_pss_cv_sig = decodeSection("rsa_pss_cv_sig");
 pub const rsa_pss_cv_salt20_sig = decodeSection("rsa_pss_cv_salt20_sig");
+
+// --- Captured public RSA chains (#215) ---------------------------------------
+// Capture commands, issuer-root provenance, and fingerprints are documented in
+// public_chains/README.md. Every presented certificate and both RSA issuer
+// roots are DER sections; tests never fetch a chain at run time.
+pub const public_google_leaf_der = decodeSection("public_google_leaf_der");
+pub const public_google_intermediate_der = decodeSection("public_google_intermediate_der");
+pub const public_gts_cross_root_der = decodeSection("public_gts_cross_root_der");
+pub const public_cloudflare_leaf_der = decodeSection("public_cloudflare_leaf_der");
+pub const public_cloudflare_intermediate_der = decodeSection("public_cloudflare_intermediate_der");
+pub const public_example_leaf_der = decodeSection("public_example_leaf_der");
+pub const public_example_intermediate_der = decodeSection("public_example_intermediate_der");
+pub const public_example_transit_der = decodeSection("public_example_transit_der");
+pub const public_example_cross_root_der = decodeSection("public_example_cross_root_der");
+pub const public_globalsign_root_der = decodeSection("public_globalsign_root_der");
+pub const public_aaa_root_der = decodeSection("public_aaa_root_der");
+pub const public_chain_now_sec: i64 = 1_795_339_383;
+
+// Unmodified Wycheproof v1 JSON, pinned in wycheproof/README.md.
+pub const wycheproof_rsa_pkcs1_2048_sha256: []const u8 =
+    @embedFile("wycheproof/rsa_signature_2048_sha256_test.json");
+pub const wycheproof_rsa_pkcs1_3072_sha384: []const u8 =
+    @embedFile("wycheproof/rsa_signature_3072_sha384_test.json");
+pub const wycheproof_rsa_pkcs1_4096_sha512: []const u8 =
+    @embedFile("wycheproof/rsa_signature_4096_sha512_test.json");
 
 // --- PEM key fixtures (raw, not base64-decoded) ------------------------------
 

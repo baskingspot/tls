@@ -12,5 +12,6 @@ test {
     _ = @import("mlkem.zig");
     _ = @import("p256.zig");
     _ = @import("p384.zig");
+    _ = @import("rsa_wycheproof.zig");
     _ = @import("x25519.zig");
 }

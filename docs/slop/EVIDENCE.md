@@ -83,6 +83,81 @@ Root `just ci` exited zero. This covered every required gate. The new
 server-from-PEM handshake is native-to-native in memory. Existing OpenSSL
 interop passed separately. No new OpenSSL-peer case combines that peer with PEM
 startup.
+## 2026-11-22 native RSA certificate chains (#215, chain half)
+
+Scope: RSA public-key parsing and PKCS#1 v1.5 certificate verification on the
+opt-in native backend. RSA CertificateVerify remains disabled. The base
+revision is `aec98ec`. The host is Linux arm64 with Zig 0.17.0 and OpenSSL
+3.6.5.
+
+The red control ran before the capability change. The captured `google.com`
+chain failed in `verifyChainCertificateSignatureAlgorithms` with
+`error.CertificateSignatureAlgorithmRejected`. The failure came from the
+RSA-signed cross root, not from an ECDSA leaf or intermediate.
+
+The implementation retains the existing in-tree RSA verifier. A new
+`verifyDer` entry point enforces signature length equality before the
+fixed-size public operation. SPKI parsing now requires NULL parameters for
+`rsaEncryption`. RSASSA-PSS SPKI parsing retains the hash, MGF1 hash, salt
+length, and trailer field. Chain verification checks those parameters against
+the TLS scheme. RSAPublicKey INTEGERs must be positive and minimally encoded.
+The RSA module exposes verification only. Its public operation is private, and
+comments explain why public-data variable-time code must not move to a signing
+path.
+
+The committed Wycheproof v1 revision is
+`65ca494727a52944c204441c860b039e6786b99b`. Each SHA-256, SHA-384, and
+SHA-512 file ran all 259 cases. The suite accepted every `valid` case and
+rejected every `invalid` case. It also rejected each `acceptable` missing-NULL
+case through strict DigestInfo DER comparison. The total is 777 cases.
+Additional checks rejected a one-octet truncation, an empty signature, and a
+one-octet extension with `CertificateSignatureInvalidLength`.
+
+The captured chains came from `google.com`, `www.cloudflare.com`, and
+`example.com` on 2026-11-22. Each test uses committed DER and a fixed validation
+time. Each chain anchors at the RSA issuer of its cross-signed root. This proves
+the RSA modular exponentiation path rather than only the capability gate.
+GlobalSign R1 and AAA Certificate Services are the two issuer anchors.
+OpenSSL verified the same complete chains during capture.
+
+The libcrypto differential covers ten certificate links from those chains.
+Both implementations accepted every original signature. Both rejected the same
+final-octet signature tamper. The differential includes the RSA cross-root
+signatures and all ECDSA links.
+
+Two generated certificates cover RSASSA-PSS SubjectPublicKeyInfo. The matching
+SHA-256/MGF1-SHA-256/salt-32 key verifies. A key constrained to salt 20 fails
+with `CertificateSignatureAlgorithmMismatch` under a salt-32 TLS signature.
+
+Mutation checks produced these failures before restoration:
+
+- Changing the SHA-256 DigestInfo OID made Wycheproof tcId 1 fail with
+  `CertificateSignatureInvalid`.
+- Accepting an oversized signature made the exact-length test return void
+  instead of `CertificateSignatureInvalidLength`.
+- Ignoring the SPKI salt constraint made the salt-20 test return void instead
+  of `CertificateSignatureAlgorithmMismatch`.
+- Accepting a negative RSAPublicKey modulus made the DER test return the
+  unsigned magnitude instead of `CertificateFieldHasWrongDataType`.
+
+Each focused test passed again after restoration.
+
+Root `just ci` exited zero. The native suite ran 345 tests with 332 passed and
+13 skipped. The OpenSSL suite ran 1,058 tests with 1,052 passed and six
+skipped. Native conformance ran 129 cases with four named exclusions. Three
+exclusions require RSA-PSS CertificateVerify. One requires ML-KEM-1024. The
+new RSA-signed ECDSA chain case passed without an exclusion. Libcrypto
+conformance ran 131 cases with two skips.
+
+A native `tls-std` client used the system trust store for three public HTTPS
+exchanges. The command built `integrations/tls-std/examples/tls_client.zig`
+with `-Dcrypto=native`, then sent an HTTP/1.0 GET to each host. Google returned
+`HTTP/1.0 301 Moved Permanently`. Cloudflare and example.com returned
+`HTTP/1.1 200 OK`. Every run printed `handshake complete`, the peer certificate
+count, and `verification: system bundle`.
+
+Not run: full TLS-Anvil, the external consumer gate, and `just distribution-ci`.
+The default backend remains `auto`.
 
 ## 2026-11-04 caller-driven readiness server (#167)
 

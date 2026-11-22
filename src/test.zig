@@ -41,6 +41,7 @@ fn refAllDeclsRecursive(comptime T: type) void {
 test {
     refAllDeclsRecursive(tls);
     _ = @import("wycheproof.zig");
+    _ = @import("rsa_wycheproof.zig");
     _ = @import("interop.zig");
     _ = @import("fuzz_compat.zig");
     _ = @import("crypto/backend_primitive_tests.zig");
