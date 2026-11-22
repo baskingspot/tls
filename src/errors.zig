@@ -187,12 +187,15 @@ pub fn classify(err: HandshakeError) Class {
         error.UnsupportedPrimitive,
         error.IdentityTooLong,
         error.InvalidBinderLength,
+        error.EmptyCertificateChain,
+        error.InvalidCertificate,
         error.InvalidHybridPolicy,
         error.InvalidServerName,
         error.MissingP384KeyPair,
         error.ServerNameTooLong,
         error.TooManyAlpnBytes,
         error.TooManyAlpnProtocols,
+        error.UnsupportedCertificateSignatureAlgorithm,
         => .options,
 
         // ── Our side ──

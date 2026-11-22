@@ -456,26 +456,43 @@ pub fn parse(msg: []const u8, policy: Policy) ParseError![]const u8 {
     return leaf_pub_key orelse error.EmptyCertificateList;
 }
 
+pub const ChainSignatureSchemesError = error{
+    EmptyCertificateChain,
+    InvalidCertificate,
+    UnsupportedCertificateSignatureAlgorithm,
+};
+
+/// RFC 8446 §4.2.3, §4.4.2.2 — parse a configured certificate chain and return
+/// the set of signature schemes the peer must accept to verify it. The leaf
+/// (index 0) is always included, matching `parse`; subsequent self-signed
+/// certificates (presented trust anchors) are exempt. Malformed DER or
+/// unsupported signature algorithms fail loudly so callers surface bad
+/// credentials at configuration time rather than failing every handshake.
+pub fn chainRequiredSignatureSchemes(
+    certs_der: []const []const u8,
+) ChainSignatureSchemesError!OfferedCertificateSchemes {
+    if (certs_der.len == 0) return error.EmptyCertificateChain;
+    var required: OfferedCertificateSchemes = .empty;
+    for (certs_der, 0..) |cert_der, index| {
+        const cert: Certificate = .{ .buffer = cert_der, .index = 0 };
+        const parsed = cert.parse() catch return error.InvalidCertificate;
+        if (index > 0 and mem.eql(u8, parsed.subject(), parsed.issuer())) continue;
+        const scheme = certificate_policy.certificateSignatureScheme(
+            parsed.signature_algorithm,
+        ) orelse return error.UnsupportedCertificateSignatureAlgorithm;
+        required.insert(scheme);
+    }
+    return required;
+}
+
 /// RFC 8446 §4.2.3, §4.4.2.2 — return true when every validated certificate in
-/// `certs_der` uses a signature algorithm offered in `offered`. The leaf
-/// (index 0) is always checked, matching `parse`; subsequent self-signed
-/// certificates (presented trust anchors) are exempt. Empty or unparseable
-/// chains return false.
+/// `certs_der` uses a signature algorithm offered in `offered`.
 pub fn chainMatchesSignatureSchemes(
     certs_der: []const []const u8,
     offered: OfferedCertificateSchemes,
 ) bool {
-    if (certs_der.len == 0) return false;
-    for (certs_der, 0..) |cert_der, index| {
-        const cert: Certificate = .{ .buffer = cert_der, .index = 0 };
-        const parsed = cert.parse() catch return false;
-        if (index > 0 and mem.eql(u8, parsed.subject(), parsed.issuer())) continue;
-        const scheme = certificate_policy.certificateSignatureScheme(
-            parsed.signature_algorithm,
-        ) orelse return false;
-        if (!offered.contains(scheme)) return false;
-    }
-    return true;
+    const required = chainRequiredSignatureSchemes(certs_der) catch return false;
+    return offered.containsAll(required);
 }
 
 fn verifyChainCertificateSignatureAlgorithms(
@@ -2416,9 +2433,28 @@ test "chainMatchesSignatureSchemes: leaf, intermediate, and self-signed root" {
         &.{ &fixtures.chain_leaf_der, &fixtures.rsa_pss_cert_der },
         ecdsa_only,
     ));
-    // Empty and malformed DER chains are never selectable.
+    // Empty and malformed DER chains surface distinct configuration errors.
+    try testing.expectError(error.EmptyCertificateChain, chainRequiredSignatureSchemes(&.{}));
+    try testing.expectError(error.InvalidCertificate, chainRequiredSignatureSchemes(&.{"not-der"}));
     try testing.expect(!chainMatchesSignatureSchemes(&.{}, ecdsa_only));
     try testing.expect(!chainMatchesSignatureSchemes(&.{"not-der"}, ecdsa_only));
+
+    // RFC 8446 §4.2.3 — an RSASSA-PSS-signed certificate maps to rsa_pss_rsae_sha256
+    // and verifies its own signature through Certificate.Parsed.verify.
+    var pss_only: OfferedCertificateSchemes = .empty;
+    pss_only.captureSchemes(&.{.rsa_pss_rsae_sha256});
+    const parsed_pss = try (Certificate{
+        .buffer = &fixtures.rsa_pss_signed_cert_der,
+        .index = 0,
+    }).parse();
+    try testing.expectEqual(
+        Certificate.Algorithm.rsassaPss_with_SHA256,
+        parsed_pss.signature_algorithm,
+    );
+    try parsed_pss.verify(parsed_pss, 1_800_000_000);
+    const pss_required = try chainRequiredSignatureSchemes(&.{&fixtures.rsa_pss_signed_cert_der});
+    try testing.expect(pss_only.containsAll(pss_required));
+    try testing.expect(!ecdsa_only.containsAll(pss_required));
 }
 
 // RFC 8446 §4.4.2.2 — a leaf with no KeyUsage/EKU restrictions and a supported

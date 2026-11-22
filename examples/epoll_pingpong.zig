@@ -452,7 +452,7 @@ fn serverRun(
         },
     );
     defer hs.deinit();
-    hs.setCredentials(certs, private_key.signer());
+    try hs.setCredentials(certs, private_key.signer());
 
     var storage: tls.RecordBuffer.Storage = .empty;
     var rb: tls.RecordBuffer = .init(&storage.buffer);

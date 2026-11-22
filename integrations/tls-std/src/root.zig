@@ -632,8 +632,8 @@ pub const ServerEngine = union(enum) {
         self: *ServerEngine,
         certs_der: []const []const u8,
         signer: tls.signature.Signer,
-    ) void {
-        self.handshakeEngine().setCredentials(certs_der, signer);
+    ) tls.ServerHandshake.CredentialError!void {
+        try self.handshakeEngine().setCredentials(certs_der, signer);
     }
 
     /// The client-auth policy is written once, before the handshake starts.
@@ -1743,7 +1743,8 @@ fn StreamImpl(comptime Hs: type, comptime role: Role, comptime config: Config) t
                     s.finishInit();
                     errdefer s.deinit();
 
-                    s.hs.setCredentials(options.cert_chain, options.signer);
+                    s.hs.setCredentials(options.cert_chain, options.signer) catch
+                        return error.InvalidOptions;
 
                     // Client trust is borrowed only while accept drives the
                     // handshake; `extractEstablished` drops the borrow, and the

@@ -2868,6 +2868,11 @@ fn rfc8448Fixture(comptime name: []const u8, out: []u8) []u8 {
     return out[0..bytes.len];
 }
 
+fn serverEcdsaCertDerForTest() []const u8 {
+    // ziglint-ignore: Z028, Z007
+    return &@import("fixtures").server_ecdsa_cert_der;
+}
+
 fn flightReadyClient() !ClientHandshake {
     var hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
     errdefer hs.deinit();
@@ -3314,16 +3319,18 @@ test "processFlight: rejects Finished before CertificateVerify" {
 
 // RFC 8446 §4.2.3, §4.4.2.2 — client chain verification enforces the effective
 // certificate-signature offer from ClientHello (signature_algorithms_cert when
-// present, else signature_algorithms).
+// present, else signature_algorithms). Uses an ECDSA P-256 certificate so the
+// rejection comes from the client's offer rather than backend capabilities on
+// every backend, including native.
 test "processFlight: rejects server certificate excluded by signature_algorithms_cert" {
     var hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
     defer hs.deinit();
     hs.policy.insecure_no_chain_anchor = true;
 
-    // Append signature_algorithms_cert=[ecdsa_secp256r1_sha256] to the RFC 8448
-    // ClientHello so RSA-PKCS1-SHA256 is excluded for certificates while
-    // CertificateVerify schemes stay untouched.
-    const cert_ext = [_]u8{ 0x00, 0x32, 0x00, 0x04, 0x00, 0x02, 0x04, 0x03 };
+    // Append signature_algorithms_cert=[ecdsa_secp384r1_sha384] to the RFC 8448
+    // ClientHello so ecdsa_secp256r1_sha256 is excluded for certificates while
+    // remaining in every backend's capability table.
+    const cert_ext = [_]u8{ 0x00, 0x32, 0x00, 0x04, 0x00, 0x02, 0x05, 0x03 };
     var ch_buf: [rfc8448_client_hello.len + cert_ext.len]u8 = undefined;
     @memcpy(ch_buf[0..rfc8448_client_hello.len], &rfc8448_client_hello);
     @memcpy(ch_buf[rfc8448_client_hello.len..], &cert_ext);
@@ -3346,15 +3353,33 @@ test "processFlight: rejects server certificate excluded by signature_algorithms
     var hr: HandshakeReader = .init(rfc8448Fixture("server_flight.b64", &flight_buf));
     const ee = (try hr.next()).?;
     try hs.processFlight(ee.raw, hs.policy);
-    const cert = (try hr.next()).?;
+
+    var ecdsa_cert_buf: [1024]u8 = undefined;
+    const ecdsa_cert_msg = try certificate.encode(
+        &ecdsa_cert_buf,
+        &.{serverEcdsaCertDerForTest()},
+    );
     try testing.expectError(
         error.CertificateSignatureAlgorithmRejected,
-        hs.processFlight(cert.raw, hs.policy),
+        hs.processFlight(ecdsa_cert_msg, hs.policy),
     );
     try testing.expectEqual(
         alert.Description.unsupported_certificate,
         alert.alertForError(error.CertificateSignatureAlgorithmRejected).?,
     );
+
+    // Control: permitting ecdsa_secp256r1_sha256 in signature_algorithms_cert
+    // accepts the same ECDSA P-256 certificate.
+    var allowed_ch = ch_buf;
+    allowed_ch[allowed_ch.len - 2] = 0x04;
+    allowed_ch[allowed_ch.len - 1] = 0x03;
+    var ok_hs: ClientHandshake = .init(try testConfig(rfc8448_client_keypair));
+    defer ok_hs.deinit();
+    ok_hs.policy.insecure_no_chain_anchor = true;
+    ok_hs.injectClientHello(&allowed_ch);
+    try ok_hs.processServerHello(&rfc8448_server_hello);
+    try ok_hs.processFlight(ee.raw, ok_hs.policy);
+    try ok_hs.processFlight(ecdsa_cert_msg, ok_hs.policy);
 }
 
 // RFC 8446 §4.2.3, §4.4.2.2 — when ClientHello omits signature_algorithms_cert,
@@ -3365,8 +3390,8 @@ test "processFlight: omitted signature_algorithms_cert falls back to signature_a
     hs.policy.insecure_no_chain_anchor = true;
 
     // RFC 8448 ClientHello omits signature_algorithms_cert. Overwrite its
-    // signature_algorithms entries with ecdsa_secp256r1_sha256 only, excluding
-    // the RFC 8448 server certificate's rsa_pkcs1_sha256 signature.
+    // signature_algorithms entries with ecdsa_secp384r1_sha384 only, excluding
+    // the ECDSA P-256 certificate's ecdsa_secp256r1_sha256 signature.
     var ch_buf = rfc8448_client_hello;
     const sig_algs = @constCast(client_hello.extension(
         &ch_buf,
@@ -3377,7 +3402,7 @@ test "processFlight: omitted signature_algorithms_cert falls back to signature_a
         memx.writeInt(
             u16,
             sig_algs[i..][0..2],
-            compat.enumToInt(SignatureScheme.ecdsa_secp256r1_sha256),
+            compat.enumToInt(SignatureScheme.ecdsa_secp384r1_sha384),
         );
     }
 
@@ -3388,10 +3413,15 @@ test "processFlight: omitted signature_algorithms_cert falls back to signature_a
     var hr: HandshakeReader = .init(rfc8448Fixture("server_flight.b64", &flight_buf));
     const ee = (try hr.next()).?;
     try hs.processFlight(ee.raw, hs.policy);
-    const cert = (try hr.next()).?;
+
+    var ecdsa_cert_buf: [1024]u8 = undefined;
+    const ecdsa_cert_msg = try certificate.encode(
+        &ecdsa_cert_buf,
+        &.{serverEcdsaCertDerForTest()},
+    );
     try testing.expectError(
         error.CertificateSignatureAlgorithmRejected,
-        hs.processFlight(cert.raw, hs.policy),
+        hs.processFlight(ecdsa_cert_msg, hs.policy),
     );
 }
 

@@ -73,7 +73,7 @@ fn serverRun(ctx: *ServerCtx) !void {
 
     var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
-    hs.setCredentials(&.{cert_der}, signer.signer());
+    try hs.setCredentials(&.{cert_der}, signer.signer());
 
     var storage: tls.RecordBuffer.Storage = .empty;
     var rb: tls.RecordBuffer = .init(&storage.buffer);

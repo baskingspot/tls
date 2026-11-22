@@ -388,7 +388,7 @@ test "tls-to-tls TCP KeyUpdate round trip with ChaCha20-Poly1305" {
             hs.supportSuites(&suites);
             var signer = try tls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
             defer signer.deinit();
-            hs.setCredentials(&.{server_cert_der}, signer.signer());
+            try hs.setCredentials(&.{server_cert_der}, signer.signer());
 
             var storage: tls.RecordBuffer.Storage = .empty;
             var rb: tls.RecordBuffer = .init(&storage.buffer);
@@ -1366,7 +1366,7 @@ fn serve(
 
     var signer = try tls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
     defer signer.deinit();
-    hs.setCredentials(&.{server_cert_der}, signer.signer());
+    try hs.setCredentials(&.{server_cert_der}, signer.signer());
 
     var storage: tls.RecordBuffer.Storage = .empty;
     var rb: tls.RecordBuffer = .init(&storage.buffer);
@@ -1550,7 +1550,7 @@ fn serveClientAuth(stream: Stream) !void {
 
     var signer = try tls.signature.PrivateKey.fromP256Scalar(server_scalar[0..32]);
     defer signer.deinit();
-    hs.setCredentials(&.{server_cert_der}, signer.signer());
+    try hs.setCredentials(&.{server_cert_der}, signer.signer());
 
     var storage: tls.RecordBuffer.Storage = .empty;
     var rb: tls.RecordBuffer = .init(&storage.buffer);

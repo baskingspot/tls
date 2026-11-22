@@ -84,6 +84,17 @@ pub const CertificateChain = union(enum) {
         return .init(chain_storage[0..certificate_count]);
     }
 
+    /// RFC 8446 §4.2.3, §4.4.2.2 — parse this chain and return the set of
+    /// signature schemes a peer must accept to verify it.
+    pub fn requiredSignatureSchemes(
+        self: CertificateChain,
+    ) certificate.ChainSignatureSchemesError!OfferedCertificateSchemes {
+        return switch (self) {
+            .slice => |certs_der| certificate.chainRequiredSignatureSchemes(certs_der),
+            .single => |cert_der| certificate.chainRequiredSignatureSchemes(&.{cert_der}),
+        };
+    }
+
     /// RFC 8446 §4.2.3, §4.4.2.2 — return true when every validated
     /// certificate in this chain carries a signature algorithm present in
     /// `offered`.
@@ -91,10 +102,8 @@ pub const CertificateChain = union(enum) {
         self: CertificateChain,
         offered: OfferedCertificateSchemes,
     ) bool {
-        return switch (self) {
-            .slice => |certs_der| certificate.chainMatchesSignatureSchemes(certs_der, offered),
-            .single => |cert_der| certificate.chainMatchesSignatureSchemes(&.{cert_der}, offered),
-        };
+        const required = self.requiredSignatureSchemes() catch return false;
+        return offered.containsAll(required);
     }
 
     pub fn encodedLen(self: CertificateChain) usize {

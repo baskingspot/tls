@@ -171,7 +171,7 @@ pub const Error = error{
     signature.SignError || aead.Error ||
     server_hello.HrrParseError || client_hello.RetryEncodeError ||
     alert.ParseError || NewSessionTicket.ParseError ||
-    NewSessionTicket.EncodeError ||
+    NewSessionTicket.EncodeError || certificate.ChainSignatureSchemesError ||
     error{
         AlpnProtocolTooLong,
         InvalidServerName,
@@ -1930,15 +1930,18 @@ pub const Server = struct {
 
     /// RFC 8446 §4.2.3, §4.4.2.2, §4.4.3 — pick the first candidate whose
     /// signer scheme is in `signature_algorithms` and whose certificate chain
-    /// matches the client's effective `signature_algorithms_cert` list.
+    /// matches the client's effective `signature_algorithms_cert` list. An
+    /// unreadable or empty candidate chain surfaces immediately as a
+    /// configuration error rather than masquerading as a peer mismatch.
     pub fn selectCredentials(
         self: *const Server,
         candidates: []const Credentials,
-    ) error{NoCommonSignatureScheme}!Credentials {
+    ) (certificate.ChainSignatureSchemesError || error{NoCommonSignatureScheme})!Credentials {
+        if (candidates.len == 0) return error.EmptyCertificateChain;
         for (candidates) |candidate| {
+            const required = try candidate.chain.requiredSignatureSchemes();
             if (!self.offered_signature_schemes.contains(candidate.signer.scheme)) continue;
-            if (!candidate.chain.matchesSignatureSchemes(self.offered_cert_signature_schemes))
-                continue;
+            if (!self.offered_cert_signature_schemes.containsAll(required)) continue;
             return candidate;
         }
         return error.NoCommonSignatureScheme;
@@ -1962,9 +1965,10 @@ pub const Server = struct {
         // RFC 8446 §4.4.3, §4.4.2.2 — both the CertificateVerify scheme and the
         // certificate chain's signature algorithms must intersect the client's
         // offers.
+        const required = try creds.chain.requiredSignatureSchemes();
         if (!self.offered_signature_schemes.contains(creds.signer.scheme))
             return error.NoCommonSignatureScheme;
-        if (!creds.chain.matchesSignatureSchemes(self.offered_cert_signature_schemes))
+        if (!self.offered_cert_signature_schemes.containsAll(required))
             return error.NoCommonSignatureScheme;
         const cv_scheme = creds.signer.scheme;
 
@@ -3289,20 +3293,52 @@ test "core server: signature_algorithms_cert excludes chain and selects matching
     try testing.expect(fb_server.next() == null);
     const fb_picked = try fb_server.selectCredentials(&.{ ed25519_cert_cred, ecdsa_cred });
     try testing.expectEqualSlices(u8, &fixtures.server_ecdsa_cert_der, fb_picked.chain.single);
+
+    // An unreadable chain surfaces InvalidCertificate rather than a peer
+    // NoCommonSignatureScheme mismatch.
+    const bad_cred: Credentials = .{
+        .chain = .{ .single = "not-der" },
+        .signer = key.signer(),
+    };
+    try testing.expectError(
+        error.InvalidCertificate,
+        fb_server.sendFlight(bad_cred, null, &flight_buf),
+    );
+    try testing.expectError(
+        error.InvalidCertificate,
+        fb_server.selectCredentials(&.{bad_cred}),
+    );
 }
 
 // RFC 8446 §4.2.3, §4.4.2.2 — core client rejects a server certificate whose
 // signature algorithm was excluded by its own signature_algorithms_cert or
-// fallback signature_algorithms offer.
+// fallback signature_algorithms offer. Uses an ECDSA P-256 certificate so the
+// rejection comes from the client's offer on every backend, including native
+// (whose capability table includes ecdsa_secp256r1_sha256).
 test "core client: signature_algorithms_cert and fallback reject excluded server certificate" {
     var policy: certificate.Policy = .init;
     policy.now_sec = 0;
     policy.insecure_no_chain_anchor = true;
 
-    const cert_ext = [_]u8{ 0x00, 0x32, 0x00, 0x04, 0x00, 0x02, 0x04, 0x03 };
-    var ch_buf: [rfc8448_client_hello.len + cert_ext.len]u8 = undefined;
+    // Encode a Certificate message carrying the ECDSA P-256 leaf (ecdsa-with-SHA256).
+    var ecdsa_cert_buf: [1024]u8 = undefined;
+    const ecdsa_cert_msg = try certificate.encode(
+        &ecdsa_cert_buf,
+        &.{&fixtures.server_ecdsa_cert_der},
+    );
+
+    var flight_buf: [4096]u8 = undefined;
+    const flight = fixtures.rfc8448.b64("server_flight.b64");
+    @memcpy(flight_buf[0..flight.len], flight);
+    var reader: handshake.Reader = .init(flight_buf[0..flight.len]);
+    const ee = (try reader.next()).?;
+
+    // Explicit signature_algorithms_cert=[ecdsa_secp384r1_sha384] excludes the
+    // backend-supported ecdsa_secp256r1_sha256 certificate.
+    const cert_ext_p384 = [_]u8{ 0x00, 0x32, 0x00, 0x04, 0x00, 0x02, 0x05, 0x03 };
+    var ch_buf: [rfc8448_client_hello.len + cert_ext_p384.len]u8 = undefined;
     @memcpy(ch_buf[0..rfc8448_client_hello.len], &rfc8448_client_hello);
-    @memcpy(ch_buf[rfc8448_client_hello.len..], &cert_ext);
+    @memcpy(ch_buf[rfc8448_client_hello.len..], &cert_ext_p384);
     const body_len: u24 = @intCast(ch_buf.len - 4);
     ch_buf[1] = @truncate(body_len >> 16);
     ch_buf[2] = @truncate(body_len >> 8);
@@ -3312,17 +3348,9 @@ test "core client: signature_algorithms_cert and fallback reject excluded server
     memx.writeInt(
         u16,
         ch_buf[exts_len_off..][0..2],
-        old_exts_len + @as(u16, @intCast(cert_ext.len)),
+        old_exts_len + @as(u16, @intCast(cert_ext_p384.len)),
     );
 
-    var flight_buf: [4096]u8 = undefined;
-    const flight = fixtures.rfc8448.b64("server_flight.b64");
-    @memcpy(flight_buf[0..flight.len], flight);
-    var reader: handshake.Reader = .init(flight_buf[0..flight.len]);
-    const ee = (try reader.next()).?;
-    const cert = (try reader.next()).?;
-
-    // Explicit signature_algorithms_cert=[ecdsa_secp256r1_sha256] rejects RSA cert.
     var slots_a: [16]level.Output = undefined;
     var client_a: Client = .init(&slots_a, policy);
     defer client_a.deinit();
@@ -3335,11 +3363,11 @@ test "core client: signature_algorithms_cert and fallback reject excluded server
     try client_a.provideHandshake(.handshake, ee.raw);
     try testing.expectError(
         error.CertificateSignatureAlgorithmRejected,
-        client_a.provideHandshake(.handshake, cert.raw),
+        client_a.provideHandshake(.handshake, ecdsa_cert_msg),
     );
 
-    // Omitted signature_algorithms_cert with signature_algorithms=[ecdsa_secp256r1_sha256]
-    // falls back and rejects the same RSA cert.
+    // Omitted signature_algorithms_cert with signature_algorithms=[ecdsa_secp384r1_sha384]
+    // falls back and rejects the same ECDSA P-256 certificate.
     var fallback_ch = rfc8448_client_hello;
     const sig_algs = @constCast(client_hello.extension(
         &fallback_ch,
@@ -3350,7 +3378,7 @@ test "core client: signature_algorithms_cert and fallback reject excluded server
         memx.writeInt(
             u16,
             sig_algs[i..][0..2],
-            compat.enumToInt(SignatureScheme.ecdsa_secp256r1_sha256),
+            compat.enumToInt(SignatureScheme.ecdsa_secp384r1_sha384),
         );
     }
     var slots_b: [16]level.Output = undefined;
@@ -3365,8 +3393,24 @@ test "core client: signature_algorithms_cert and fallback reject excluded server
     try client_b.provideHandshake(.handshake, ee.raw);
     try testing.expectError(
         error.CertificateSignatureAlgorithmRejected,
-        client_b.provideHandshake(.handshake, cert.raw),
+        client_b.provideHandshake(.handshake, ecdsa_cert_msg),
     );
+
+    // Control: signature_algorithms_cert=[ecdsa_secp256r1_sha256] accepts it.
+    var ch_allow = ch_buf;
+    ch_allow[ch_allow.len - 2] = 0x04;
+    ch_allow[ch_allow.len - 1] = 0x03;
+    var slots_c: [16]level.Output = undefined;
+    var client_c: Client = .init(&slots_c, policy);
+    defer client_c.deinit();
+    client_c.offered.insert(.server_name);
+    client_c.offered.insert(.record_size_limit);
+    try client_c.start(&ch_allow);
+    while (client_c.next()) |_| {}
+    try client_c.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    while (client_c.next()) |_| {}
+    try client_c.provideHandshake(.handshake, ee.raw);
+    try client_c.provideHandshake(.handshake, ecdsa_cert_msg);
 }
 
 // RFC 8446 §4.4.3 — an ECDSA credential cannot answer an RSA-PSS-only offer.

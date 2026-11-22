@@ -24,8 +24,11 @@ All notable changes to tls are recorded here. The format follows
   runtime and comptime hash pair.
 - `ServerHandshake.setCredentialCandidates` and `handshake_core.Server.selectCredentials`
   select the first configured certificate chain and signer whose CertificateVerify
-  scheme and certificate-chain signature algorithms satisfy the client's offers
-  (#209).
+  scheme and certificate-chain signature algorithms satisfy the client's offers.
+  `ServerHandshake.setCredentials`, `setCertificateChain`, and
+  `setCredentialCandidates` now return `CredentialError!void` so empty,
+  malformed, or unsupported certificate chains fail at configuration time instead
+  of on every handshake (#209).
 
 ### Changed
 
@@ -74,7 +77,8 @@ All notable changes to tls are recorded here. The format follows
 
 - Both server engines (`ServerHandshake` and `handshake_core.Server`) enforce
   `signature_algorithms_cert`, falling back to `signature_algorithms` when
-  omitted, during certificate selection. An incompatible chain returns
+  omitted, during certificate selection, including RSASSA-PSS-signed
+  certificates (`rsa_pss_rsae_sha256/384/512`). An incompatible chain returns
   `error.NoCommonSignatureScheme` and maps to fatal `handshake_failure` before
   any Certificate message is sent. `ClientHandshake` and `handshake_core.Client`
   apply the same effective offer to server chain verification (#209).

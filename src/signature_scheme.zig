@@ -55,6 +55,9 @@ const recognized_certificate_signature_schemes = [_]SignatureScheme{
     .ecdsa_secp256r1_sha256,
     .ecdsa_secp384r1_sha384,
     .ecdsa_secp521r1_sha512,
+    .rsa_pss_rsae_sha256,
+    .rsa_pss_rsae_sha384,
+    .rsa_pss_rsae_sha512,
     .ed25519,
 };
 
@@ -97,9 +100,21 @@ pub const OfferedCertificateSchemes = struct {
         }
     }
 
+    pub fn insert(self: *OfferedCertificateSchemes, scheme: SignatureScheme) void {
+        const index = schemeIndex(scheme) orelse return;
+        self.set.set(index);
+    }
+
     pub fn contains(self: OfferedCertificateSchemes, scheme: SignatureScheme) bool {
         const index = schemeIndex(scheme) orelse return false;
         return self.set.isSet(index);
+    }
+
+    pub fn containsAll(
+        self: OfferedCertificateSchemes,
+        required: OfferedCertificateSchemes,
+    ) bool {
+        return required.set.subsetOf(self.set);
     }
 
     /// Write the intersection of `self` and `allowed` into caller storage.
@@ -126,15 +141,22 @@ pub const OfferedCertificateSchemes = struct {
     }
 };
 
-// RFC 8446 §4.2.3 — certificate-signature offers stay separate from
-// CertificateVerify schemes and intersect cleanly with verification policy.
+// RFC 8446 §4.2.3 — certificate-signature offers capture recognized schemes
+// including RSASSA-PSS, ignore legacy/unrecognized values, and intersect
+// cleanly with verification policy.
 test "OfferedCertificateSchemes: captures recognized certificate schemes and intersects" {
     var offered: OfferedCertificateSchemes = .empty;
-    offered.capture(&.{ 0x04, 0x01, 0x08, 0x07, 0x08, 0x04 });
+    offered.capture(&.{ 0x04, 0x01, 0x08, 0x07, 0x08, 0x04, 0x02, 0x01 });
     try testing.expect(offered.contains(.rsa_pkcs1_sha256));
     try testing.expect(offered.contains(.ed25519));
+    try testing.expect(offered.contains(.rsa_pss_rsae_sha256));
     try testing.expect(!offered.contains(.ecdsa_secp256r1_sha256));
-    try testing.expect(!offered.contains(.rsa_pss_rsae_sha256));
+
+    var required: OfferedCertificateSchemes = .empty;
+    required.insert(.rsa_pss_rsae_sha256);
+    try testing.expect(offered.containsAll(required));
+    required.insert(.ecdsa_secp256r1_sha256);
+    try testing.expect(!offered.containsAll(required));
 
     var buf: [max_certificate_signature_schemes]SignatureScheme = undefined;
     const allowed = [_]SignatureScheme{ .ecdsa_secp256r1_sha256, .rsa_pkcs1_sha256 };

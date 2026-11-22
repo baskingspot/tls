@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
         },
     );
     defer server.deinit();
-    server.setCredentials(&.{cert_der}, signer_api);
+    try server.setCredentials(&.{cert_der}, signer_api);
 
     // Caller-owned buffers. The engine never allocates; we provide all storage.
     var client_out: tls.ClientHandshake.OutBuffer = .empty;

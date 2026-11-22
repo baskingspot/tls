@@ -450,7 +450,7 @@ test "capi: full client handshake through the C ABI" {
         },
     );
     defer server.deinit();
-    server.setCredentials(&.{cert_der}, signer_api);
+    try server.setCredentials(&.{cert_der}, signer_api);
 
     var server_out: ServerHandshake.OutBuffer = .empty;
     var flight: ServerHandshake.FlightBuffer = .empty;
@@ -650,7 +650,7 @@ fn connectClientAndServerForTest(
             .random = .{ .data = @splat(0x37) },
         },
     );
-    server.setCredentials(&.{&fixtures.server_ecdsa_cert_der}, signer.signer());
+    try server.setCredentials(&.{&fixtures.server_ecdsa_cert_der}, signer.signer());
 
     var client_out: [frame.max_wire_record_len]u8 = undefined;
     var client_written: usize = 0;
@@ -878,7 +878,7 @@ fn expectCapiClientConnects(client_storage: anytype) !void {
         },
     );
     defer server.deinit();
-    server.setCredentials(&.{cert_der}, signer.signer());
+    try server.setCredentials(&.{cert_der}, signer.signer());
 
     var server_out: ServerHandshake.OutBuffer = .empty;
     var flight: ServerHandshake.FlightBuffer = .empty;

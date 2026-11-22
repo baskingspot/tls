@@ -26,7 +26,10 @@ pub const Buffers = struct {
     out: []u8,
 };
 
-pub const InitError = Handshake.ConfigError || error{ MissingCredentials, BufferTooSmall };
+pub const InitError =
+    Handshake.ConfigError ||
+    Handshake.CredentialError ||
+    error{ MissingCredentials, BufferTooSmall };
 pub const Error = tls.errors.HandshakeError || RecordBuffer.NextError ||
     Handshake.SendError || Handshake.AlertError || error{ Closed, HandshakeIncomplete, WouldBlock };
 
@@ -93,7 +96,8 @@ pub fn init(
         .failure = null,
         .fatal_alert = null,
     };
-    self.hs.setCredentials(options.cert_chain, options.signer);
+    errdefer self.hs.deinit();
+    try self.hs.setCredentials(options.cert_chain, options.signer);
 }
 
 /// Release backend state and inline secrets. Does not erase borrowed buffers.

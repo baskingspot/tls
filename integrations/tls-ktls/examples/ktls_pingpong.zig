@@ -212,7 +212,7 @@ fn runServer(context: *ServerContext) !void {
     defer handshake.deinit();
     var signer: tls.signature.PrivateKey = try .fromP256Scalar(scalar[0..32]);
     defer signer.deinit();
-    handshake.setCredentials(&.{cert_der}, signer.signer());
+    try handshake.setCredentials(&.{cert_der}, signer.signer());
 
     var storage: tls.RecordBuffer.Storage = .empty;
     var buffered: tls.RecordBuffer = .init(&storage.buffer);

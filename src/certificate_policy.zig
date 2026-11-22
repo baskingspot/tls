@@ -152,6 +152,9 @@ pub fn certificateSignatureScheme(algorithm: Certificate.Algorithm) ?SignatureSc
         .ecdsa_with_SHA256 => .ecdsa_secp256r1_sha256,
         .ecdsa_with_SHA384 => .ecdsa_secp384r1_sha384,
         .ecdsa_with_SHA512 => .ecdsa_secp521r1_sha512,
+        .rsassaPss_with_SHA256 => .rsa_pss_rsae_sha256,
+        .rsassaPss_with_SHA384 => .rsa_pss_rsae_sha384,
+        .rsassaPss_with_SHA512 => .rsa_pss_rsae_sha512,
         .curveEd25519 => .ed25519,
         else => null,
     };
