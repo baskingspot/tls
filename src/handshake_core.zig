@@ -212,6 +212,8 @@ pub const Client = struct {
     extension_sink: extension_type.ExtensionSink,
     /// Client credentials, used only when the server sent a CertificateRequest.
     credentials: ?Credentials,
+    /// CertificateVerify schemes offered by the current CertificateRequest.
+    offered_signature_schemes: signature.OfferedSchemes,
     /// True once the server asked for a client certificate; the flight then
     /// carries Certificate and CertificateVerify before Finished.
     received_certificate_request: bool,
@@ -307,6 +309,7 @@ pub const Client = struct {
             .queue = .init(slots),
             .policy = policy,
             .credentials = null,
+            .offered_signature_schemes = .empty,
             .received_certificate_request = false,
             .offered = .empty,
             .allowed_extensions = &.{},
@@ -541,6 +544,7 @@ pub const Client = struct {
                     if (!std.mem.eql(u8, cr.request_context, &.{})) {
                         return error.UnexpectedCertificateRequestContext;
                     }
+                    self.offered_signature_schemes.capture(cr.signature_schemes_raw);
                     self.received_certificate_request = true;
                     self.suite.update(msg);
                     return;
@@ -812,6 +816,12 @@ pub const Client = struct {
         // message is its own output at `.handshake`, in that order.
         if (self.received_certificate_request) {
             if (self.credentials) |creds| {
+                // RFC 8446 §4.4.3 — the credential's scheme must intersect the
+                // CertificateRequest offer. Fail before authentication output.
+                if (!self.offered_signature_schemes.contains(creds.signer.scheme))
+                    return error.NoCommonSignatureScheme;
+                const cv_scheme = creds.signer.scheme;
+
                 const cert = try creds.chain.encodeWithRequestContext(out[pos..], &.{});
                 try self.queue.push(.{ .message = .{
                     .level = .handshake,
@@ -833,7 +843,7 @@ pub const Client = struct {
                 );
                 const cv = try certificate.encodeCertificateVerify(
                     out[pos..],
-                    creds.signer.scheme,
+                    cv_scheme,
                     sig,
                 );
                 try self.queue.push(.{ .message = .{
@@ -1474,6 +1484,7 @@ pub const Server = struct {
             .received = &self.extension_sink,
         }) catch |err| switch (err) {
             error.ExtensionSinkFull => return error.ExtensionSinkFull,
+            error.NoCommonSignatureScheme => return error.NoCommonSignatureScheme,
             else => return error.UnexpectedMessage,
         };
         self.offered_signature_schemes.capture(parsed.signature_schemes);
@@ -2201,6 +2212,135 @@ fn clientAwaitingEncryptedExtensions(slots: []level.Output) !Client {
     _ = client.next().?;
     try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
     return client;
+}
+
+fn clientWithCertificateRequestForTest(
+    slots: []level.Output,
+    schemes: []const SignatureScheme,
+    credentials: Credentials,
+) !Client {
+    var policy: certificate.Policy = .init;
+    policy.now_sec = 0;
+    policy.insecure_no_chain_anchor = true;
+    var client: Client = .init(slots, policy);
+    errdefer client.deinit();
+    client.offered.insert(.server_name);
+    client.offered.insert(.record_size_limit);
+    client.credentials = credentials;
+
+    try client.start(&rfc8448_client_hello);
+    while (client.next()) |_| {}
+    try client.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    while (client.next()) |_| {}
+
+    var flight_buf: [4096]u8 = undefined;
+    const flight = fixtures.rfc8448.b64("server_flight.b64");
+    @memcpy(flight_buf[0..flight.len], flight);
+    var reader: handshake.Reader = .init(flight_buf[0..flight.len]);
+    const ee = (try reader.next()).?;
+    try client.provideHandshake(.handshake, ee.raw);
+
+    var cr_buf: [64]u8 = undefined;
+    const cr = try certificate_request.encode(&cr_buf, schemes);
+    try client.provideHandshake(.handshake, cr);
+    // The inserted CertificateRequest changes the transcript, so the recorded
+    // server CertificateVerify and Finished no longer verify. Absorb the rest
+    // of the flight without re-verifying it. These tests exercise the client's
+    // outbound scheme choice, not server-flight verification.
+    while (try reader.next()) |msg| client.suite.update(msg.raw);
+    client.state = .server_finished_verified;
+    return client;
+}
+
+fn clientCertificateVerifySchemeForTest(client: *Client) !SignatureScheme {
+    const H = hkdf.HkdfSha256;
+    const secrets = client.handshakeSecrets().?;
+    assert(secrets.len == H.prk_len);
+    const secret: H.TrafficSecret = .init(secrets.client[0..H.prk_len].*);
+    var tx = try H.makeRecordLayer(.aes_128_gcm_sha256, secret);
+    defer tx.deinit();
+    var rx = try tx.clone();
+    defer rx.deinit();
+
+    var plaintext: [4096]u8 = undefined;
+    var plaintext_len: usize = 0;
+    while (client.next()) |out| switch (out) {
+        .message => |m| {
+            if (m.level != .handshake) continue;
+            @memcpy(plaintext[plaintext_len..][0..m.bytes.len], m.bytes);
+            plaintext_len += m.bytes.len;
+        },
+        else => {},
+    };
+
+    var wire_buf: [4096]u8 = undefined;
+    const record = try tx.encrypt(.handshake, plaintext[0..plaintext_len], &wire_buf);
+    var dec_buf: [4096]u8 = undefined;
+    @memcpy(dec_buf[0..record.len], record);
+    const dec = try rx.decrypt(dec_buf[0..record.len]);
+    try testing.expectEqual(.handshake, dec.content_type);
+    var reader: handshake.Reader = .init(dec.content);
+    while (try reader.next()) |msg| {
+        if (msg.type != .certificate_verify) continue;
+        return compat.enumFromInt(SignatureScheme, memx.readInt(u16, msg.raw[4..6]));
+    }
+    return error.MissingCertificateVerify;
+}
+
+// RFC 8446 §4.4.3 — an ECDSA credential cannot answer an RSA-PSS-only
+// CertificateRequest with an ECDSA CertificateVerify.
+test "core client: unusable CertificateRequest offer gets handshake_failure" {
+    var key = try signature.PrivateKey.fromP256Scalar(fixtures.client_ecdsa_scalar[0..32]);
+    defer key.deinit();
+    var slots: [16]level.Output = undefined;
+    var client = try clientWithCertificateRequestForTest(
+        &slots,
+        &.{.rsa_pss_rsae_sha256},
+        .{
+            .chain = .{ .single = &fixtures.client_ecdsa_cert_der },
+            .signer = key.signer(),
+        },
+    );
+    defer client.deinit();
+
+    var out: [2048]u8 = undefined;
+    const failure: Error = if (client.sendClientFinished(&out)) |_| {
+        try testing.expectEqual(
+            SignatureScheme.ecdsa_secp256r1_sha256,
+            try clientCertificateVerifySchemeForTest(&client),
+        );
+        return error.UnofferedCertificateVerifyEmitted;
+    } else |err| err;
+    try testing.expectEqual(error.NoCommonSignatureScheme, failure);
+    try testing.expectEqual(
+        alert.Description.handshake_failure,
+        alert.alertForError(failure).?,
+    );
+    try testing.expect(client.next() == null);
+}
+
+// RFC 8446 §4.4.3 — the client selects its credential's scheme from a mixed
+// CertificateRequest offer. Decrypt the flight to inspect the wire scheme.
+test "core client: mixed CertificateRequest offer selects the credential scheme" {
+    var key = try signature.PrivateKey.fromP256Scalar(fixtures.client_ecdsa_scalar[0..32]);
+    defer key.deinit();
+    var slots: [16]level.Output = undefined;
+    var client = try clientWithCertificateRequestForTest(
+        &slots,
+        &.{ .rsa_pss_rsae_sha256, .ecdsa_secp256r1_sha256 },
+        .{
+            .chain = .{ .single = &fixtures.client_ecdsa_cert_der },
+            .signer = key.signer(),
+        },
+    );
+    defer client.deinit();
+
+    var out: [2048]u8 = undefined;
+    _ = try client.sendClientFinished(&out);
+    try testing.expectEqual(
+        SignatureScheme.ecdsa_secp256r1_sha256,
+        try clientCertificateVerifySchemeForTest(&client),
+    );
 }
 
 // RFC 9001 §8.2 — a QUIC server sends quic_transport_parameters (0x0039) in
@@ -2967,6 +3107,46 @@ test "server: selectedGroup follows group_preference, not the client's order" {
 // consumer can build one and call `useKeypairs` and `startEncoded`.
 test "core: KeyPairs is exported from the package root" {
     try testing.expect(root.KeyPairs == KeyPairs);
+}
+
+// RFC 8446 §4.2.3, §6.2 — no common ClientHello signature scheme is a
+// handshake_failure. Other parse failures keep their existing alert.
+test "core server: ClientHello parse failures preserve the no-common-scheme alert" {
+    var no_common_buf: [rfc8448_client_hello.len]u8 = undefined;
+    @memcpy(&no_common_buf, &rfc8448_client_hello);
+    const sig_algs = @constCast(client_hello.extension(
+        &no_common_buf,
+        compat.enumToInt(extension_type.ExtensionType.signature_algorithms),
+    ) orelse unreachable);
+    var i: usize = 2;
+    while (i < sig_algs.len) : (i += 2)
+        memx.writeInt(u16, sig_algs[i..][0..2], 0x0201);
+
+    var no_common_slots: [16]level.Output = undefined;
+    var no_common: Server = .init(&no_common_slots);
+    defer no_common.deinit();
+    try testing.expectError(
+        error.NoCommonSignatureScheme,
+        no_common.provideClientHello(.plaintext, &no_common_buf, .aes_128_gcm_sha256),
+    );
+    try testing.expectEqual(
+        alert.Description.handshake_failure,
+        alert.alertForError(error.NoCommonSignatureScheme).?,
+    );
+
+    var malformed_buf = rfc8448_client_hello;
+    malformed_buf[3] +%= 1;
+    var malformed_slots: [16]level.Output = undefined;
+    var malformed: Server = .init(&malformed_slots);
+    defer malformed.deinit();
+    try testing.expectError(
+        error.UnexpectedMessage,
+        malformed.provideClientHello(.plaintext, &malformed_buf, .aes_128_gcm_sha256),
+    );
+    try testing.expectEqual(
+        alert.Description.unexpected_message,
+        alert.alertForError(error.UnexpectedMessage).?,
+    );
 }
 
 // RFC 8446 §4.4.3 — an ECDSA credential cannot answer an RSA-PSS-only offer.

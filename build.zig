@@ -133,10 +133,18 @@ pub fn build(b: *Build) void {
         });
         native_test_mod.addOptions("build_options", build_options);
         native_test_mod.addImport("stdx", stdx_dep.module("stdx"));
+        const native_core_test_mod = b.createModule(.{
+            .root_source_file = b.path("src/test_native_core.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        native_core_test_mod.addOptions("build_options", build_options);
+        native_core_test_mod.addImport("stdx", stdx_dep.module("stdx"));
         var fixtures_mod: ?*Build.Module = null;
         if (testingx_dep) |dep| {
             const testingx_mod = dep.module("testingx");
             native_test_mod.addImport("testingx", testingx_mod);
+            native_core_test_mod.addImport("testingx", testingx_mod);
             const fixtures = b.createModule(.{
                 .root_source_file = b.path("tests/fixtures/fixtures.zig"),
                 .target = target,
@@ -144,10 +152,12 @@ pub fn build(b: *Build) void {
             });
             fixtures.addImport("testingx", testingx_mod);
             native_test_mod.addImport("fixtures", fixtures);
+            native_core_test_mod.addImport("fixtures", fixtures);
             fixtures_mod = fixtures;
         }
         tests.addNativeSteps(b, .{
             .test_mod = native_test_mod,
+            .core_test_mod = native_core_test_mod,
             .fuzz = fuzz_mode,
             .testingx = testingx_dep,
         });

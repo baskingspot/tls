@@ -3,9 +3,12 @@ const Build = std.Build;
 
 /// Native primitive suite (#199). The root excludes the general test suite,
 /// whose RSA vectors do not apply to this backend. Examples and the
-/// conformance subproject exercise native handshakes separately.
+/// conformance subproject exercise native handshakes separately. A second
+/// binary selects core regressions that native can execute. Its imports also
+/// carry libcrypto-only tests, so the filter is part of the test contract.
 pub fn addNativeSteps(b: *Build, opts: struct {
     test_mod: *Build.Module,
+    core_test_mod: *Build.Module,
     fuzz: bool,
     testingx: ?*Build.Dependency,
 }) void {
@@ -18,7 +21,22 @@ pub fn addNativeSteps(b: *Build, opts: struct {
     });
     const run_tests = b.addRunArtifact(mod_tests);
     run_tests.has_side_effects = true;
-    b.step("test", "Run tests with the pure-Zig native backend").dependOn(&run_tests.step);
+    const test_step = b.step("test", "Run tests with the pure-Zig native backend");
+    test_step.dependOn(&run_tests.step);
+
+    if (!opts.fuzz and opts.testingx != null) {
+        const core_tests = b.addTest(.{
+            .root_module = opts.core_test_mod,
+            .test_runner = .{
+                .path = opts.testingx.?.path("src/runner.zig"),
+                .mode = .simple,
+            },
+        });
+        const run_core_tests = b.addRunArtifact(core_tests);
+        run_core_tests.has_side_effects = true;
+        run_core_tests.addArg("--filter=CertificateRequest offer,ClientHello parse failures");
+        test_step.dependOn(&run_core_tests.step);
+    }
 
     const install_tests = b.addInstallArtifact(mod_tests, .{});
     b.step("test-bin", "Install the native test binary").dependOn(&install_tests.step);
