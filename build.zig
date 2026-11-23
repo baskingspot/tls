@@ -7,6 +7,7 @@ const panic = std.debug.panic;
 const CryptoBackend = enum { auto, native, openssl, @"aws-lc", boringssl };
 
 const bench_mod = @import("src/build/bench.zig");
+const crypto_libs = @import("src/build/crypto_libs.zig");
 const examples_mod = @import("src/build/examples.zig");
 const tests = @import("src/build/tests.zig");
 const translate_c = @import("src/build/translate_c.zig");
@@ -61,6 +62,14 @@ pub fn build(b: *Build) void {
     ) orelse false;
     if (native_crypto and capi) panic("-Dcapi requires a libcrypto -Dcrypto backend", .{});
 
+    // #223 — resolve the libcrypto family through pkg-config once: the aws-lc
+    // packaging may name the modules `libcrypto-awslc`/`libssl-awslc`. The
+    // native backend links no libcrypto, so it resolves nothing.
+    const c_libs: ?crypto_libs.Libraries = if (native_crypto)
+        null
+    else
+        crypto_libs.resolve(b);
+
     // Fixed-capacity containers and memory scans. A production dependency:
     // the library imports it, so it is resolved before the consumer early
     // return.
@@ -78,7 +87,7 @@ pub fn build(b: *Build) void {
     mod.addImport("stdx", stdx_dep.module("stdx"));
     if (!native_crypto) {
         mod.link_libc = true;
-        mod.linkSystemLibrary("crypto", .{});
+        mod.linkSystemLibrary(c_libs.?.crypto, .{});
     }
 
     // #145 — the deprecated @cImport blocks moved to translate-c wrapper
@@ -90,6 +99,7 @@ pub fn build(b: *Build) void {
         translate_c.addModules(b, .{
             .target = target,
             .optimize = optimize,
+            .libs = c_libs.?,
         });
     if (c_modules) |modules| mod.addImport("openssl_c", modules.openssl_c);
 
@@ -174,6 +184,7 @@ pub fn build(b: *Build) void {
     }
 
     const modules = c_modules.?;
+    const libs = c_libs.?;
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/test.zig"),
         .target = target,
@@ -181,7 +192,7 @@ pub fn build(b: *Build) void {
     });
     test_mod.addOptions("build_options", build_options);
     test_mod.link_libc = true;
-    test_mod.linkSystemLibrary("crypto", .{});
+    test_mod.linkSystemLibrary(libs.crypto, .{});
     test_mod.addImport("openssl_c", modules.openssl_c);
     test_mod.addImport("stdx", stdx_dep.module("stdx"));
 
@@ -211,7 +222,7 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
     c_mod.link_libc = true;
-    c_mod.linkSystemLibrary("crypto", .{});
+    c_mod.linkSystemLibrary(libs.crypto, .{});
     c_mod.addImport("openssl_c", modules.openssl_c);
 
     const c_ssl_mod = b.createModule(.{
@@ -220,8 +231,8 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
     c_ssl_mod.link_libc = true;
-    c_ssl_mod.linkSystemLibrary("ssl", .{});
-    c_ssl_mod.linkSystemLibrary("crypto", .{});
+    c_ssl_mod.linkSystemLibrary(libs.ssl, .{});
+    c_ssl_mod.linkSystemLibrary(libs.crypto, .{});
     c_ssl_mod.addImport("openssl_ssl", modules.openssl_ssl);
 
     tests.addSteps(b, .{
@@ -234,6 +245,7 @@ pub fn build(b: *Build) void {
         .pty_c = modules.pty_c,
         .target = target,
         .optimize = optimize,
+        .libs = libs,
     });
 
     bench_mod.addSteps(b, @This(), .{
@@ -245,6 +257,7 @@ pub fn build(b: *Build) void {
         .build_options = build_options,
         .fixtures_mod = fixtures_mod,
         .stdx_mod = stdx_dep.module("stdx"),
+        .libs = libs,
     });
 
     examples_mod.addSteps(b, .{
@@ -274,12 +287,12 @@ pub fn build(b: *Build) void {
         // Zig 0.17's system-library search is paths-first and stops at the
         // module's own library paths, so the C ABI build must name libcrypto's
         // directory. pkg-config is the source of truth in the shell.
-        const libdir_output = b.run(&.{ "pkg-config", "--variable=libdir", "libcrypto" });
+        const libdir_output = b.run(&.{ "pkg-config", "--variable=libdir", libs.crypto });
         const libdir = std.mem.trim(u8, libdir_output, " \t\r\n");
         if (libdir.len == 0) panic("libcrypto pkg-config libdir is empty", .{});
         capi_mod.addLibraryPath(.{ .cwd_relative = libdir });
 
-        const crypto_cflags = b.run(&.{ "pkg-config", "--cflags-only-I", "libcrypto" });
+        const crypto_cflags = b.run(&.{ "pkg-config", "--cflags-only-I", libs.crypto });
         var include_flags = std.mem.tokenizeAny(u8, crypto_cflags, " \t\r\n");
         var include_count: usize = 0;
         while (include_flags.next()) |flag| {
@@ -295,7 +308,7 @@ pub fn build(b: *Build) void {
         }
         if (include_count == 0) {
             const includedir_output = b.run(&.{
-                "pkg-config", "--variable=includedir", "libcrypto",
+                "pkg-config", "--variable=includedir", libs.crypto,
             });
             const include_dir = std.mem.trim(u8, includedir_output, " \t\r\n");
             if (include_dir.len == 0) panic("libcrypto pkg-config includedir is empty", .{});

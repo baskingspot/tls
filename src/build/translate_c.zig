@@ -5,20 +5,22 @@
 //! Header search: `linkSystemLibrary` on the step resolves include dirs via
 //! pkg-config at translate time — the same resolution the consuming modules
 //! already use at link time, so every backend lane (OpenSSL, AWS-LC,
-//! BoringSSL) translates against the headers PKG_CONFIG_PATH selects. A
-//! non-native target gets no such resolution from the compiler, so
-//! `linkCrypto` spells the includedir out and drops the library there.
+//! BoringSSL) translates against the headers PKG_CONFIG_PATH selects, whatever
+//! that packaging calls the module (#223). A non-native target gets no such
+//! resolution from the compiler, so `linkCrypto` spells the includedir out and
+//! drops the library there.
 //!
 //! The step's system libs exist only to feed that header search; the created
 //! modules carry no link objects. `createModule` would propagate `-lcrypto`
 //! onto every consumer, and a consumer that builds a static archive (the C
 //! ABI's libtls.a) would then bundle the resolved shared object into it —
 //! capi-ci rejects exactly that. Each consumer already declares its own
-//! `linkSystemLibrary("crypto")`/`"ssl"` the way it did before #145, and
+//! `linkSystemLibrary(libs.crypto)`/`libs.ssl` the way it did before #145, and
 //! imported-module system libs still propagate through those declarations.
 
 const std = @import("std");
 const Build = std.Build;
+const crypto_libs = @import("crypto_libs.zig");
 const mem = std.mem;
 
 pub const Modules = struct {
@@ -34,6 +36,9 @@ pub const Modules = struct {
 pub fn addModules(b: *Build, opts: struct {
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    /// libcrypto-family pkg-config modules, resolved once by the caller so
+    /// every header search agrees with the link lines (#223).
+    libs: crypto_libs.Libraries,
 }) Modules {
     const openssl_c = b.addTranslateC(.{
         .root_source_file = b.path("src/crypto/openssl_c.h"),
@@ -41,7 +46,7 @@ pub fn addModules(b: *Build, opts: struct {
         .optimize = opts.optimize,
     });
     openssl_c.defineCMacro("_FORTIFY_SOURCE", "0");
-    linkCrypto(b, openssl_c, "crypto");
+    linkCrypto(b, openssl_c, opts.libs.crypto);
 
     const openssl_ssl = b.addTranslateC(.{
         .root_source_file = b.path("bench/c_ssl.h"),
@@ -49,7 +54,7 @@ pub fn addModules(b: *Build, opts: struct {
         .optimize = opts.optimize,
     });
     openssl_ssl.defineCMacro("_FORTIFY_SOURCE", "0");
-    linkCrypto(b, openssl_ssl, "ssl");
+    linkCrypto(b, openssl_ssl, opts.libs.ssl);
 
     const pty_c = b.addTranslateC(.{
         .root_source_file = b.path("src/test/pty_c.h"),
@@ -74,14 +79,14 @@ pub fn addModules(b: *Build, opts: struct {
 /// variants) gets no pkg-config resolution from the compiler: the -l would
 /// fail with empty search paths, so spell the includedir out and skip the
 /// library — translation reads headers only.
-fn linkCrypto(b: *Build, tc: *Build.Step.TranslateC, name: []const u8) void {
+fn linkCrypto(b: *Build, tc: *Build.Step.TranslateC, module: []const u8) void {
     if (tc.target.query.isNative()) {
-        tc.linkSystemLibrary(name, .{});
+        tc.linkSystemLibrary(module, .{});
         return;
     }
     const includedir = mem.trim(
         u8,
-        b.run(&.{ "pkg-config", "--variable=includedir", b.fmt("lib{s}", .{name}) }),
+        b.run(&.{ "pkg-config", "--variable=includedir", module }),
         "\n\r ",
     );
     tc.addIncludePath(.{ .cwd_relative = includedir });

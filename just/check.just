@@ -69,8 +69,8 @@ check-backend-aws-lc:
         aws_lc_dev=$(nix build --no-link --print-out-paths nixpkgs#aws-lc.dev)
         aws_lc_pkg_config_path="$aws_lc_dev/lib/pkgconfig"
     fi
-    aws_lc_include_dir=$(PKG_CONFIG_PATH="$aws_lc_pkg_config_path" pkg-config --variable=includedir libcrypto)
-    aws_lc_lib_dir=$(PKG_CONFIG_PATH="$aws_lc_pkg_config_path" pkg-config --variable=libdir libcrypto)
+    aws_lc_include_dir=$(PKG_CONFIG_PATH="$aws_lc_pkg_config_path" pkg-config --variable=includedir aws-lc)
+    aws_lc_lib_dir=$(PKG_CONFIG_PATH="$aws_lc_pkg_config_path" pkg-config --variable=libdir aws-lc)
     cache_dir=$(mktemp -d)
     log=$(mktemp)
     trap 'rm -rf "$cache_dir" "$log"' EXIT

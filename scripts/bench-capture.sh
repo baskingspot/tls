@@ -98,8 +98,14 @@ case "${crypto_backend}" in
 esac
 PKG_CONFIG_PATH="${backend_pkg_config_path}" \
   scripts/assert-libcrypto-family.sh "${crypto_backend}" >&2
+# The aws-lc package may ship only suffixed modules (#223); its product module
+# is `aws-lc` under every spelling.
+case "${crypto_backend}" in
+  aws-lc) pkg_config_module=aws-lc ;;
+  *) pkg_config_module=libcrypto ;;
+esac
 backend_lib_dir="$(PKG_CONFIG_PATH="${backend_pkg_config_path}" \
-  pkg-config --variable=libdir libcrypto)"
+  pkg-config --variable=libdir "${pkg_config_module}")"
 
 zig_for_backend() {
   PKG_CONFIG_PATH="${backend_pkg_config_path}" zig "$@"

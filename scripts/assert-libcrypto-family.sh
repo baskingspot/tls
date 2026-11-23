@@ -10,7 +10,15 @@ case "${expected}" in
     ;;
 esac
 
-include_dir="$(pkg-config --variable=includedir libcrypto)"
+# The aws-lc package may ship only suffixed modules and libraries (#223):
+# libcrypto-awslc.pc, libssl-awslc.pc, headers under include/aws-lc. Its
+# product module is `aws-lc` under every spelling, so ask for that one.
+case "${expected}" in
+  aws-lc) pkg_config_module=aws-lc ;;
+  *) pkg_config_module=libcrypto ;;
+esac
+
+include_dir="$(pkg-config --variable=includedir "${pkg_config_module}")"
 macros="$(printf '#include <openssl/opensslv.h>\n' | zig cc -I"${include_dir}" -dM -E -x c -)"
 has_aws_lc=false
 has_boringssl=false

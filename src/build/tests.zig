@@ -1,5 +1,6 @@
 const std = @import("std");
 const Build = std.Build;
+const crypto_libs = @import("crypto_libs.zig");
 
 /// Native primitive suite (#199). The root selects the modules whose vectors
 /// and contracts apply to this backend. Examples and the conformance
@@ -72,6 +73,9 @@ pub fn addSteps(b: *Build, opts: struct {
     /// Optimization mode for standalone check executables. Required: the
     /// only caller (build.zig) always passes it.
     optimize: std.builtin.OptimizeMode,
+    /// libcrypto-family pkg-config modules (#223) for the standalone checks
+    /// that link the C API instead of relying on the tls module's link.
+    libs: crypto_libs.Libraries,
 }) void {
     const mod_tests = b.addTest(.{
         .root_module = opts.test_mod,
@@ -109,7 +113,7 @@ pub fn addSteps(b: *Build, opts: struct {
     errq_mod.addImport("fixtures", opts.fixtures_mod);
     errq_mod.addImport("openssl_c", opts.openssl_c);
     errq_mod.link_libc = true;
-    errq_mod.linkSystemLibrary("crypto", .{});
+    errq_mod.linkSystemLibrary(opts.libs.crypto, .{});
 
     const errq_exe = b.addExecutable(.{
         .name = "errq-alloc-check",
@@ -137,7 +141,7 @@ pub fn addSteps(b: *Build, opts: struct {
     pem_mod.addImport("fixtures", opts.fixtures_mod);
     pem_mod.addImport("pty_c", opts.pty_c);
     pem_mod.link_libc = true;
-    pem_mod.linkSystemLibrary("crypto", .{});
+    pem_mod.linkSystemLibrary(opts.libs.crypto, .{});
 
     const pem_exe = b.addExecutable(.{
         .name = "encrypted-pem-check",

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Build = std.Build;
+const crypto_libs = @import("crypto_libs.zig");
 const passthru = @import("args.zig");
 
 pub const Options = struct {
@@ -14,6 +15,8 @@ pub const Options = struct {
     build_options: *Build.Step.Options,
     fixtures_mod: *Build.Module,
     stdx_mod: *Build.Module,
+    /// libcrypto-family pkg-config modules (#223).
+    libs: crypto_libs.Libraries,
 };
 
 /// `root` is the build.zig struct of this package. `b.lazyImport` needs it to
@@ -68,7 +71,7 @@ fn addTlsBenchmarks(
         },
     });
     exe.root_module.link_libc = true;
-    exe.root_module.linkSystemLibrary("crypto", .{});
+    exe.root_module.linkSystemLibrary(opts.libs.crypto, .{});
 
     addRunStep(
         b,
@@ -145,8 +148,8 @@ fn addLibsslBenchmarks(
         },
     });
     exe.root_module.link_libc = true;
-    exe.root_module.linkSystemLibrary("ssl", .{});
-    exe.root_module.linkSystemLibrary("crypto", .{});
+    exe.root_module.linkSystemLibrary(opts.libs.ssl, .{});
+    exe.root_module.linkSystemLibrary(opts.libs.crypto, .{});
 
     addRunStep(
         b,

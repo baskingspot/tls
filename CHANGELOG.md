@@ -99,6 +99,13 @@ All notable changes to tls are recorded here. The format follows
 
 ### Fixed
 
+- The build resolves the libcrypto family through pkg-config, so an aws-lc
+  package that installs `libcrypto-awslc`/`libssl-awslc` with headers under
+  `include/aws-lc` links and translates instead of failing with
+  `unable to find dynamic system library "crypto"`. Unprefixed packagings keep
+  linking `-lcrypto`/`-lssl`. A prefixed aws-lc build (`symbolPrefix` set)
+  remains unsupported: translate-c cannot evaluate the prefix header's
+  token-pasting aliases, so build the package with `symbolPrefix = null` (#223).
 - Both server engines (`ServerHandshake` and `handshake_core.Server`) enforce
   `signature_algorithms_cert`, falling back to `signature_algorithms` when
   omitted, during certificate selection, including RSASSA-PSS-signed
