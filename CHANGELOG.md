@@ -5,6 +5,15 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `cryptoLibs(b)` in `build.zig` reports the libcrypto-family pkg-config
+  modules this build resolved: `libcrypto`/`libssl`, `libcrypto-awslc`/
+  `libssl-awslc`, or the bare library name. A consumer that compiles its own C
+  API against the same library reaches it with
+  `b.lazyImport(@This(), "tls")` and passes `.crypto`/`.ssl` to
+  `linkSystemLibrary`, so both builds name one library (#223).
+
 ## [0.4.5] - 2026-11-23
 
 ### Added

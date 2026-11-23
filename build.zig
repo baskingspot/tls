@@ -12,6 +12,23 @@ const examples_mod = @import("src/build/examples.zig");
 const tests = @import("src/build/tests.zig");
 const translate_c = @import("src/build/translate_c.zig");
 
+/// The libcrypto-family pkg-config modules this build resolved (#223):
+/// `libcrypto`/`libssl` when the package answers to OpenSSL's names,
+/// `libcrypto-awslc`/`libssl-awslc` when it suffixes them, and the bare library
+/// name when no pkg-config file exists either way.
+///
+/// A consumer that compiles its own C API against the same libcrypto reaches
+/// this through the dependency's build.zig, so both builds name one library:
+///
+///     const tls_build = b.lazyImport(@This(), "tls") orelse @panic("tls is lazy");
+///     const libs = tls_build.cryptoLibs(b);
+///     module.linkSystemLibrary(libs.crypto, .{});
+///
+/// `b` is the caller's build, so the probe reads the caller's pkg-config path.
+pub fn cryptoLibs(b: *Build) crypto_libs.Libraries {
+    return crypto_libs.resolve(b);
+}
+
 fn nativeTarget() Target.Query {
     var query: Target.Query = .{ .cpu_model = .native };
     // Zig's native CPU detection reports generic under some Apple-Silicon Linux
