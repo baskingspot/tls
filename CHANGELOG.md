@@ -5,6 +5,19 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Clients advertise and accept `rsa_pss_rsae_sha256/384/512` in
+  `signature_algorithms_cert` on libcrypto and native backends. PSS-signed
+  certificate chains can now complete handshakes (#219).
+
+### Changed
+
+- Certificates issued by an RSASSA-PSS SubjectPublicKeyInfo key now fail with
+  `error.CertificateSignatureAlgorithmUnsupported`. The `rsa_pss_pss_*` schemes
+  and RFC 4055 §3.3 parameter validation remain unsupported instead of using
+  the `rsa_pss_rsae_*` mapping (#219).
+
 ## [0.4.6] - 2026-11-23
 
 ### Added

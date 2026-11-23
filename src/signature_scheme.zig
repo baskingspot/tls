@@ -35,6 +35,9 @@ pub const SignatureScheme = enum(u16) {
         .rsa_pkcs1_sha512,
         .ecdsa_secp256r1_sha256,
         .ecdsa_secp384r1_sha384,
+        .rsa_pss_rsae_sha256,
+        .rsa_pss_rsae_sha384,
+        .rsa_pss_rsae_sha512,
         .ed25519,
     };
 

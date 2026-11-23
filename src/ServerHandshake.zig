@@ -6883,6 +6883,105 @@ test "sendPreparedServerFlight: RSASSA-PSS signed certificate matches rsa_pss_rs
     }
 }
 
+// RFC 8446 §4.2.3, §4.4.2.2, §4.4.3 — the default ClientHello offers the
+// RSASSA-PSS certificate schemes, and a client completes a handshake with a
+// server whose certificate is signed with RSASSA-PSS.
+test "client accepts an RSASSA-PSS-signed server certificate by default" {
+    // Native verifies RSA-PSS but deliberately has no RSA private-key signing.
+    if (comptime backend.native_selected) return error.SkipZigTest;
+    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+        return error.SkipZigTest;
+
+    var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
+    defer signer.deinit();
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 1_800_000_000,
+        .random = .zero,
+        .insecure_no_chain_anchor = true,
+    });
+    defer client.deinit();
+    var client_out: [1024]u8 = undefined;
+    const ch_record = try client.start(&client_out);
+    client.completeWrite();
+
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer server.deinit();
+    try server.setCredentials(&.{serverRsaPssSignedCertDer()}, signer.signer());
+    var server_out: [4096]u8 = undefined;
+    const sh_record = try server.acceptClientHello(ch_record, &server_out);
+    server.completeWrite();
+    try client.processServerHello(sh_record[frame.header_len..]);
+
+    const flight_record = (try server.sendPreparedServerFlight(&server_out)).?;
+    const event = try client.handleRecord(server_out[0..flight_record.len], &client_out);
+    const client_finished = switch (event) {
+        .write => |record| record,
+        else => return error.UnexpectedEvent,
+    };
+    client.completeWrite();
+    try server.processClientFinished(client_out[0..client_finished.len]);
+    try testing.expect(client.isConnected());
+    try testing.expect(server.isConnected());
+}
+
+// RFC 8446 §4.2.3, §4.4.2.2 — a client that excludes PSS certificate schemes
+// rejects a PSS-signed certificate even if a peer sends it anyway.
+test "client rejects an excluded RSASSA-PSS-signed server certificate" {
+    if (comptime backend.native_selected) return error.SkipZigTest;
+    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+        return error.SkipZigTest;
+
+    var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
+    defer signer.deinit();
+    const client_keypair: x25519.KeyPair = .generate();
+    var ch_buf: [512]u8 = undefined;
+    const ch = try encodeClientHelloWithSignatureOffersForTest(
+        &ch_buf,
+        client_keypair,
+        &.{.rsa_pss_rsae_sha256},
+        &.{.ecdsa_secp256r1_sha256},
+    );
+    var ch_record: [1024]u8 = undefined;
+    const header: frame.Header = .init(.handshake, @intCast(ch.len));
+    header.write(ch_record[0..frame.header_len]);
+    @memcpy(ch_record[frame.header_len..][0..ch.len], ch);
+
+    var server: ServerHandshake = .init(.{}, try testConfig(.generate()));
+    defer server.deinit();
+    try server.setCredentials(&.{serverRsaPssSignedCertDer()}, signer.signer());
+    var server_out: [4096]u8 = undefined;
+    const sh_record = try server.acceptClientHello(
+        ch_record[0 .. frame.header_len + ch.len],
+        &server_out,
+    );
+    server.completeWrite();
+
+    var client: ClientHandshake = .init(.{
+        .keypairs = .initWithP256(client_keypair, try testP256KeyPair()),
+        .host_name = null,
+        .now_sec = 1_800_000_000,
+        .random = .zero,
+        .insecure_no_chain_anchor = true,
+    });
+    defer client.deinit();
+    client.injectClientHello(ch);
+    try client.processServerHello(sh_record[frame.header_len..]);
+
+    // Fault injection: emit a chain that the client explicitly excluded. The
+    // server's own selection check is tested separately; this isolates the
+    // client's certificate policy from that server-side refusal.
+    server.offered_cert_signature_schemes.insert(.rsa_pss_rsae_sha256);
+    const flight_record = (try server.sendPreparedServerFlight(&server_out)).?;
+    var client_out: [1024]u8 = undefined;
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmRejected,
+        client.handleRecord(server_out[0..flight_record.len], &client_out),
+    );
+}
+
 // Configuration-time validation: unreadable or empty certificate chains fail
 // when credentials are configured instead of surfacing as per-handshake
 // handshake_failure alerts.
@@ -13203,13 +13302,14 @@ fn expectHex(actual: []const u8, comptime expected_hex: []const u8) !void {
 }
 
 const golden_client_hello =
-    "16030300d9010000d5030300000000000000000000000000000000000000000000000000" ++
-    "00000000000000000006130113021303010000a6002b0003020304000a00060004001d00" ++
-    "17000d000a000804030503080408050032000e000c040105010601040305030807002d00" ++
-    "0201010033006b0069001d0020ad908a8a708aca07588cda7c4ed3e44d4966a80a9abb2f" ++
-    "1e4bbac53c67414e340017004104d797737d4081542dfe111a9a6cba6a52e91118f27a81" ++
-    "4f8e831e8f72d5165f9308da9652224eaf39f459098b545d520900d372da6e73cf33c403" ++
-    "2a8264e7bae4";
+    "16030300df010000db0303000000000000000000000000000000000000000000" ++
+    "0000000000000000000000000006130113021303010000ac002b000302030400" ++
+    "0a00060004001d0017000d000a00080403050308040805003200140012040105" ++
+    "010601040305030804080508060807002d000201010033006b0069001d0020ad" ++
+    "908a8a708aca07588cda7c4ed3e44d4966a80a9abb2f1e4bbac53c67414e3400" ++
+    "17004104d797737d4081542dfe111a9a6cba6a52e91118f27a814f8e831e8f72" ++
+    "d5165f9308da9652224eaf39f459098b545d520900d372da6e73cf33c4032a82" ++
+    "64e7bae4";
 
 const golden_server_hello =
     "160303005a02000056030300000000000000000000000000000000000000000000000000" ++
@@ -13217,19 +13317,19 @@ const golden_server_hello =
     "d0b15158f6050889c9481d79c2d7d2fa07002b00020304";
 
 const golden_server_flight =
-    "170303003baa28ea4b32de66dd45eaf439d99fdb8fa0a0ba2786becb04c259041b4610d2" ++
-    "a8b5d03e2b6bf8935fdd5c735ab234dc52c8fa8479dba9b9f1f45cfe";
+    "170303003b4abae78be13a937fb3e3615393c9578c83eb6c9c46fb5c5ca3723e" ++
+    "21174126d9d5f08717e22d8f31f29b348a34d9bbfc5286b16248610e71c48cb7";
 
 const golden_alert =
-    "1703030013ed6c49d952551265b4237a8a8fc4d467246447";
+    "17030300139e335ac86b4345cd6a3f057bca14ad5a75ed64";
 
 const golden_client_hello_p256 =
-    "16030300b1010000ad0303000000000000000000000000000000000000000000" ++
-    "00000000000000000000000000041301130201000080002b0003020304000a00" ++
-    "0400020017000d000a000804030503080408050032000e000c04010501060104" ++
-    "0305030807002d000201010033004700450017004104d797737d4081542dfe11" ++
-    "1a9a6cba6a52e91118f27a814f8e831e8f72d5165f9308da9652224eaf39f459" ++
-    "098b545d520900d372da6e73cf33c4032a8264e7bae4";
+    "16030300b7010000b30303000000000000000000000000000000000000000000" ++
+    "00000000000000000000000000041301130201000086002b0003020304000a00" ++
+    "0400020017000d000a0008040305030804080500320014001204010501060104" ++
+    "0305030804080508060807002d000201010033004700450017004104d797737d" ++
+    "4081542dfe111a9a6cba6a52e91118f27a814f8e831e8f72d5165f9308da9652" ++
+    "224eaf39f459098b545d520900d372da6e73cf33c4032a8264e7bae4";
 
 const golden_server_hello_p256 =
     "160303007b020000770303000000000000000000000000000000000000000000" ++
@@ -13238,8 +13338,8 @@ const golden_server_hello_p256 =
     "d030230da8a212793e13209e48d5e6de1d218fd9cd2bae83dfed002b00020304";
 
 const golden_server_flight_p256 =
-    "170303003bfd326c4126780c4d1d5f92ba567984241945f9ae4a92d3514edae6" ++
-    "526a60701c2274d8403df2d32394074098659d854a9751cfec45773d91276e41";
+    "170303003bd488966a4d280cfdd6569e0cc8f1bd29aa4b3094ce3bbbd361f733" ++
+    "31f45640176b8a341742028449c8b061ca6db797cccfb3fa1b88a1d25d288d64";
 
 const golden_alert_p256 =
-    "1703030013615955fa4c0b80d743cea14f6ccd55c1325878";
+    "17030300138963c91c515f783cfe746ab154fe14c7e221fd";
