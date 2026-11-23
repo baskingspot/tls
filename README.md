@@ -39,7 +39,7 @@ Not implemented:
 ## Install
 
 ```sh
-zig fetch --save https://baskingspot.dev/tls/v0.4.4.tar.gz
+zig fetch --save https://baskingspot.dev/tls/v0.4.5.tar.gz
 ```
 
 Add the module to your build:

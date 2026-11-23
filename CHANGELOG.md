@@ -5,6 +5,8 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-11-23
+
 ### Added
 
 - `-Dcrypto=native` selects an opt-in, primitive-only backend over `std.crypto`.
