@@ -5,6 +5,8 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-23
+
 ### Added
 
 - `cryptoLibs(b)` in `build.zig` reports the libcrypto-family pkg-config
