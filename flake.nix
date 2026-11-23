@@ -105,6 +105,14 @@
                 name = "tls-aws-lc";
                 inputsFrom = tooling;
                 inherit zig-tools;
+                # The nixpkgs pin predates the aws-lc packaging change: the
+                # libraries are unsuffixed and carry no symbol prefix. When
+                # the pin reaches nixpkgs-unstable 2026-10-31 or later, this
+                # shell needs `pkgs.aws-lc.override { symbolPrefix = null; }`.
+                # build.zig follows the suffixed libcrypto-awslc names (#223),
+                # but translate-c cannot evaluate the prefix header's
+                # BORINGSSL_ADD_PREFIX aliases, so a prefixed aws-lc fails to
+                # translate every public symbol.
                 pkgConfigPath = "${pkgs.aws-lc.dev}/lib/pkgconfig";
                 packages = lint ++ [
                   pkgs.aws-lc.dev
