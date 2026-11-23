@@ -3,7 +3,7 @@
 base_url = "https://baskingspot.dev/tls"
 theme = "baskingspot"
 title = "tls"
-description = "Sans-I/O TLS 1.3 in Zig: no sockets, no engine allocations, caller-owned buffers."
+description = "TLS 1.3 in Zig: a sans-I/O engine over caller-owned buffers, with blocking, nonblocking, and kTLS integrations."
 
 generate_feeds = false
 build_search_index = false

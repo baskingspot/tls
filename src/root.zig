@@ -1,3 +1,6 @@
+//! TLS 1.3 in Zig: a sans-I/O engine over caller-owned buffers, with
+//! blocking, nonblocking, and kTLS integrations.
+
 const stdx = @import("stdx");
 
 pub const aead = @import("aead.zig");

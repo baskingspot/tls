@@ -5,11 +5,12 @@
   </picture>
 </h1>
 
-Sans-I/O TLS 1.3 in Zig: no sockets, no engine allocations, caller-owned buffers.
+TLS 1.3 in Zig: a sans-I/O engine over caller-owned buffers, with blocking, nonblocking, and kTLS integrations.
 
-The library is a TLS 1.3 state machine. You feed it the bytes you read off the
+The engine is a TLS 1.3 state machine. You feed it the bytes you read off the
 wire and it hands back the bytes to write. The socket, the event loop, and the
-buffers stay yours.
+buffers stay yours. The `tls_std`, `tls_nonblocking`, and `tls_ktls` modules
+drive that engine over a transport; the core never opens one.
 
 It is faster than OpenSSL's libssl on every comparable application-data row
 measured, on x86_64, aarch64, and macOS Apple Silicon. Against rustls it wins on
@@ -17,7 +18,7 @@ AES-GCM on all three, and loses on small ChaCha20 records.
 
 It is in production use. The test suite is 910 tests with fuzzing on the parser
 and record-decrypt surfaces, three crypto backends, and conformance runs against
-TLS-Anvil and tlsfuzzer. The API is not frozen, so pin a commit.
+TLS-Anvil and tlsfuzzer. The API is not frozen, so pin a version.
 
 ## What is in it
 
@@ -32,7 +33,7 @@ TLS-Anvil and tlsfuzzer. The API is not frozen, so pin a commit.
 
 Not implemented:
 
-- Sockets, trust stores, and `connect()`: the engine is the state machine, and you write the drive loop.
+- Sockets, trust stores, and `connect()` in the core: `tls_std` has those on `std.Io.net`, and `tls_ktls` hands the data plane to the kernel. Every other transport is yours to drive.
 - TLS 1.2, DTLS, and Windows: out of scope, with no downgrade target.
 - Exporters: not planned until someone asks for one.
 

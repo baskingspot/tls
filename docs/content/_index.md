@@ -2,15 +2,16 @@
 title = "tls"
 +++
 
-Sans-I/O TLS 1.3 in Zig: no sockets, no engine allocations, caller-owned buffers.
+TLS 1.3 in Zig: a sans-I/O engine over caller-owned buffers, with blocking, nonblocking, and kTLS integrations.
 
-A TLS 1.3 implementation that does no I/O. You feed it the bytes you read off
-the wire; it hands you back the bytes to write. Your socket, your event loop,
-your buffers. The engine does the protocol.
+The engine does the protocol: you feed it the bytes you read off the wire, and
+it hands back the bytes to write. The socket, the event loop, and the buffers
+stay yours. `tls_std`, `tls_nonblocking`, and `tls_ktls` are opt-in integrations
+that put the engine on a transport; the core opens no socket.
 
 Production readiness is tracked per commit in
-[`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md);
-there is no tagged release, so pin a commit.
+[`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md).
+Releases are tagged, so pin a version and read the docs at that tag.
 
 - [Why this exists](#why-this-exists): when to reach for it, when to use something mature instead, and what the engine and libcrypto each do.
 - [Supported surface](#supported-surface): what CI exercises, what the caller owns, and what is out of scope.
@@ -819,9 +820,9 @@ regression gate compares a fresh n=10 capture against the committed baseline
 
 # Limits
 
-- **A drop-in OpenSSL replacement.** The engine is the TLS state machine. It does not open sockets, load OS trust stores, or give you a `connect()`. You write the drive loop.
+- **A drop-in OpenSSL replacement.** The engine is the TLS state machine. The core does not open sockets, load OS trust stores, or give you a `connect()`. `tls_std` provides those on `std.Io.net`; every other transport is yours to drive.
 - **The full TLS feature set.** It supports a bounded TLS 1.3 surface. [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md) is the authority on what is proven and what is not.
-- **A stable API.** Signatures move, and there are no release tags yet. `main` is the only artifact, so pin a commit and read the docs at that commit.
+- **A stable API.** Signatures move between minor releases. Pin a version and read the docs at that tag.
 - **TLS 1.2, DTLS, and Windows.** Out of scope. There is no downgrade target, and the library runs on Linux and macOS only.
 - **Exporters.** Not implemented, and not planned until someone asks for one.
 - **A general io_uring or arbitrary-runtime wrapper.** The in-tree integration packages cover `std.Io` and Linux kTLS without moving transport I/O into the core engine.
