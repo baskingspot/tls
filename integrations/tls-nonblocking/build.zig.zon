@@ -6,8 +6,8 @@
     .dependencies = .{
         .tls = .{ .path = "../.." },
         .testingx = .{
-            .url = "https://baskingspot.dev/testingx/v0.5.0.tar.gz",
-            .hash = "testingx-0.5.0-ib95-9FWAwAzwy03e-h52udEnWkVzuV-gCFJTp1IQ5rV",
+            .url = "https://baskingspot.dev/testingx/v0.6.0.tar.gz",
+            .hash = "testingx-0.6.0-ib95-yaGAwC1_nvSTOk8ktbCgVfBtDAVTCjNKgXRxBeo",
             .lazy = true,
         },
     },
