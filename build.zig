@@ -48,9 +48,9 @@ pub fn build(b: *Build) void {
     const crypto_backend = b.option(
         CryptoBackend,
         "crypto",
-        "Crypto backend: auto (default), native, openssl, aws-lc, or boringssl; " ++
+        "Crypto backend: native (default), auto, openssl, aws-lc, or boringssl; " ++
             "auto detects the libcrypto headers",
-    ) orelse .auto;
+    ) orelse .native;
     const native_crypto = crypto_backend == .native;
     const crypto_approved_only = b.option(
         bool,
@@ -108,7 +108,7 @@ pub fn build(b: *Build) void {
     }
 
     // #145 — the deprecated @cImport blocks moved to translate-c wrapper
-    // headers. Default and explicit libcrypto consumers still receive this
+    // headers. Auto and explicit libcrypto consumers still receive this
     // module before the consumer early return. Native never creates it.
     const c_modules: ?translate_c.Modules = if (native_crypto)
         null

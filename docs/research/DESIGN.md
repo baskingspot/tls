@@ -30,8 +30,8 @@ Everything else is ours.
   SHA-256, and record scanning are all candidates. Measure first, then apply.
 - **Use libcrypto-family for provider-sensitive production primitives.**
   OpenSSL/libcrypto is the first concrete backend target. AWS-LC remains
-  first-class in the architecture. The opt-in native backend uses `std.crypto`
-  for its declared capabilities and is not the production profile (#199).
+  first-class in the architecture. The default native backend uses `std.crypto`
+  for development and iteration. It is not the production profile (#199).
   Certificate signature verification and ECDSA P-256/P-384 signing run in-tree
   over `std.crypto` (#183). ztls owns TLS framing, transcripts, alerts, record
   sequencing, and caller-buffer discipline.
@@ -293,18 +293,21 @@ benchmark coverage. AWS-LC remains a first-class architecture target, not an
 afterthought hidden behind an accidental OpenSSL-only design. BoringSSL may be a
 later backend if its API differences are worth supporting directly.
 
-The opt-in native backend supplies its declared primitives from `std.crypto`
-(#199). Its capability table rejects primitive and handshake paths that lack an
-implementation. ECDSA signing and certificate signature verification run
-in-tree (#183). Timing-safe comparison, secure zeroing, and randomness are
+The default native backend supplies its declared primitives from `std.crypto`
+(#199). No performance measurement against libcrypto or independent security
+review exists for native. Production builds must select `-Dcrypto=openssl` or
+`-Dcrypto=aws-lc`. Its capability table rejects primitive and handshake paths
+that lack an implementation. ECDSA signing and certificate signature
+verification run in-tree (#183). Timing-safe comparison, secure zeroing, and randomness are
 acceptable where they keep the code smaller and do not create backend policy or
 algorithm agility divergence.
 
-The default handshake key schedule uses libcrypto SHA-2 (#138). Stdlib SHA-2
+A libcrypto handshake key schedule uses libcrypto SHA-2 (#138). Stdlib SHA-2
 selects its code at compile time from the target CPU, so a portable build loses
 the SHA extensions. `src/crypto/sha2.zig` runs SHA-256/SHA-384 on libcrypto's
-runtime-dispatched code instead. Opt-in native uses stdlib SHA-2. HMAC
-(`src/hmac.zig`) and HKDF (`src/hkdf.zig`) are ztls code over the selected types,
+runtime-dispatched code instead. The default native backend uses stdlib SHA-2.
+HMAC (`src/hmac.zig`) and HKDF (`src/hkdf.zig`) are ztls code over the selected
+types,
 so one keying of a secret serves every label derived from it.
 
 This changes the memory contract. ztls-owned code still does not allocate, does
@@ -402,7 +405,7 @@ See `docs/research/PERFORMANCE.md` for the benchmark methodology and prior-art n
 
 1. ~~**libcrypto vs zig stdlib crypto**~~ — resolved: production crypto uses the
    libcrypto family. OpenSSL/libcrypto is the first concrete target; AWS-LC
-   remains first-class in the architecture. The opt-in native `std.crypto`
+   remains first-class in the architecture. The default native `std.crypto`
    backend belongs to #199, with support limited to its capability table.
 
 2. **Internal buffer ownership**: Does the engine own its staging buffers

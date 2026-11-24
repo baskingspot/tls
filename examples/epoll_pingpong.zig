@@ -13,8 +13,8 @@
 //! Run:
 //!     zig build example-epoll_pingpong
 //!
-//! Libcrypto backends use the RSA PEM fixture. Native uses an embedded P-256
-//! certificate and scalar because it cannot load PEM keys or verify RSA chains.
+//! Libcrypto backends use the RSA PEM fixture. Native uses embedded P-256
+//! credentials because that fixture requires RSA signing.
 //!
 //! With real certificates on an explicit libcrypto backend:
 //!     zig build example-epoll_pingpong -- \

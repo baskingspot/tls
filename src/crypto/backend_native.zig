@@ -1,8 +1,9 @@
-//! Pure-Zig crypto primitives for the opt-in native backend (#199).
+//! Pure-Zig crypto primitives for the default native backend (#199).
 //!
-//! This backend is not a production replacement for libcrypto. ML-KEM-1024 and
-//! RSA signing remain unsupported in this slice. RSA verification runs in
-//! `certificate_parser.zig`, outside this seam.
+//! This backend is for development and iteration, not production. No performance
+//! comparison against libcrypto or independent security review exists.
+//! ML-KEM-1024, RSA signing, and encrypted PEM remain unsupported. RSA
+//! verification runs in `certificate_parser.zig`, outside this seam.
 const std = @import("std");
 const crypto = std.crypto;
 const mem = std.mem;

@@ -5,6 +5,39 @@ run IDs, per-claim tables, and forensic notes. The human-facing status page is
 `PRODUCTION_READINESS.md`; this file is where you check whether a claim on that
 page is true.
 
+## 2026-11-23 native default (#199)
+
+Scope: the default backend, its standalone integration and conformance defaults,
+and the production warning. The base revision is `dd080e9`. The host is Linux
+arm64 with Zig 0.17.0 and OpenSSL 3.6.5.
+
+Bare `zig build`, `zig build test`, and `zig build test-bin` selected native.
+The default suite passed 347 tests with 12 skips. The selected core regression
+binary passed 12 tests with one skip. `file zig-out/bin/test` reported a static
+aarch64 executable. `ldd` printed `not a dynamic executable`. `readelf -d`
+reported no dynamic section. `nm -u` listed only the linker-generated `_DYNAMIC`
+symbol. A scan for undefined libcrypto-family symbols returned no matches.
+
+The explicit auto control passed 1,068 tests with six skips. Its installed test
+binary linked `libcrypto.so.3`. The no-flag `just conformance/tlsfuzzer` run
+selected native and passed 132 cases with four named exclusions. Three require
+RSA private-key signing. One requires ML-KEM-1024.
+
+The first full gate exposed a coverage error in `conformance/ci`. Its auto test
+build passed, but its pytest dependency rebuilt with the new native default.
+The new `tlsfuzzer-auto` recipe names `-Dcrypto=auto`. The corrected control
+passed 134 cases with one ordinary skip and one named OpenSSL exclusion. The
+RSA signing and ML-KEM-1024 cases passed in that lane.
+
+All four no-flag examples completed native handshakes and application-data
+exchanges. The native C ABI guard exited 1 with `-Dcapi requires a libcrypto
+-Dcrypto backend`. The default native approved-only guard exited 1 with
+`-Dcrypto-approved-only=true is unsupported with native`.
+
+The final `just ci` passed after the auto-control fix. `just distribution-ci`
+also passed from an isolated fetched package for the core, nonblocking, std,
+and kTLS modules.
+
 ## 2026-11-22 native key loading review fixes (#218)
 
 Scope: the review findings on the native PEM and DER loader. The base revision
