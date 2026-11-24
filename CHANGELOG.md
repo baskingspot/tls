@@ -13,8 +13,8 @@ All notable changes to tls are recorded here. The format follows
   security review exists for native. Production builds must select
   `-Dcrypto=openssl` or `-Dcrypto=aws-lc`. `-Dcrypto=auto` remains available for
   libcrypto header detection. Native does not support RSA signing, encrypted
-  PEM, or ML-KEM-1024. A native server needs an ECDSA credential. Native loads
-  Ed25519 keys and verifies Ed25519 chain signatures, but it does not support
+  PEM, or ML-KEM-1024. A native server needs an ECDSA P-256 or P-384 credential.
+  Native loads Ed25519 keys and verifies Ed25519 chain signatures, but it does not support
   Ed25519 CertificateVerify (#199).
 - Certificates issued by an RSASSA-PSS SubjectPublicKeyInfo key now fail with
   `error.CertificateSignatureAlgorithmUnsupported`. The `rsa_pss_pss_*` schemes

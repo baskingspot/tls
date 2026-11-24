@@ -13,8 +13,8 @@ independent security review exists for native. Production builds must select
 `-Dcrypto=openssl` or `-Dcrypto=aws-lc`.
 
 Native does not support RSA signing, encrypted PEM, or ML-KEM-1024. A native
-server needs an ECDSA credential. Native loads Ed25519 keys and verifies
-Ed25519 chain signatures, but it does not support Ed25519 CertificateVerify.
+server needs an ECDSA P-256 or P-384 credential. Native loads Ed25519 keys and
+verifies Ed25519 chain signatures, but it does not support Ed25519 CertificateVerify.
 
 The engine is a TLS 1.3 state machine. You feed it the bytes you read off the
 wire and it hands back the bytes to write. The socket, the event loop, and the

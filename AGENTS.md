@@ -364,8 +364,8 @@ capability table. It verifies RSA PKCS#1 v1.5 certificate-chain signatures and
 RSA-PSS CertificateVerify with SHA-256/384/512. It loads unencrypted
 P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, plus Ed25519 seeds from
 PKCS#8 (#215, #216). Native does not support RSA signing, encrypted PEM, or
-ML-KEM-1024. A native server needs an ECDSA credential. Native loads Ed25519
-keys and verifies Ed25519 chain signatures, but it does not support Ed25519
+ML-KEM-1024. A native server needs an ECDSA P-256 or P-384 credential. Native
+loads Ed25519 keys and verifies Ed25519 chain signatures, but it does not support Ed25519
 CertificateVerify.
 
 The strict no-allocation invariant applies to tls-owned framing, state machine,
