@@ -1105,6 +1105,27 @@ test "parse: extracts public key from ECDSA P-256 certificate" {
     try testing.expectEqualSlices(u8, fixtureCertDer(), verified.leaf_der);
 }
 
+// RFC 8446 §4.2.3, §4.4.2.2 — the server-side client-chain parser accepts a
+// PSS-signed certificate through the default policy and rejects it when PSS is
+// excluded. ServerHandshake.init derives its client certificate policy from
+// this same default before applying the caller's client-auth settings.
+test "parseClientChain: default policy accepts PSS and exclusion rejects it" {
+    var buf: [2048]u8 = undefined;
+    const msg = buildCertMsg(&buf, &fixtures.rsa_pss_signed_cert_der);
+    var policy: Policy = .init;
+    policy.insecure_no_chain_anchor = true;
+    policy.now_sec = 1_800_000_000;
+
+    const verified = try parseClientChain(msg, &.{}, policy);
+    try testing.expectEqualSlices(u8, &fixtures.rsa_pss_signed_cert_der, verified.leaf_der);
+
+    policy.certificate_signature_schemes = &.{.ecdsa_secp256r1_sha256};
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmRejected,
+        parseClientChain(msg, &.{}, policy),
+    );
+}
+
 test "parse: wrong handshake type" {
     var buf: [1024]u8 = undefined;
     _ = buildCertMsg(&buf, fixtureCertDer());
@@ -2526,9 +2547,9 @@ test "chainMatchesSignatureSchemes: leaf, intermediate, and self-signed root" {
     try testing.expect(!ecdsa_only.containsAll(pss_required));
 }
 
-// RFC 4055 §3.1, §4.1 — an RSASSA-PSS SubjectPublicKeyInfo retains its hash,
-// MGF1 hash, salt length, and trailer field, then verifies a matching signature.
-test "certificate_parser: RSASSA-PSS SubjectPublicKeyInfo parameters verify" {
+// RFC 4055 §3.1, RFC 8446 §4.2.3 — an RSASSA-PSS SubjectPublicKeyInfo retains
+// its parameters, but the corresponding rsa_pss_pss_* schemes are unsupported.
+test "certificate_parser: RSASSA-PSS issuer keys return a named unsupported error" {
     const parsed = try Certificate.parse(.{
         .buffer = &fixtures.rsa_pss_spki_cert_der,
         .index = 0,
@@ -2543,12 +2564,15 @@ test "certificate_parser: RSASSA-PSS SubjectPublicKeyInfo parameters verify" {
         },
         else => return error.TestUnexpectedResult,
     }
-    try parsed.verify(parsed, fixtures.public_chain_now_sec);
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmUnsupported,
+        parsed.verify(parsed, fixtures.public_chain_now_sec),
+    );
 }
 
-// RFC 4055 §3.1, RFC 8446 §4.2.3 — a PSS key constrained to salt 20 cannot
-// verify a TLS PSS signature with salt 32, even when every other field matches.
-test "certificate_parser: RSASSA-PSS SubjectPublicKeyInfo salt constraint is enforced" {
+// RFC 4055 §3.3, RFC 8446 §4.2.3 — a constrained PSS issuer key is rejected
+// before its parameter limits can be mistaken for rsa_pss_rsae_* parameters.
+test "certificate_parser: constrained RSASSA-PSS issuer keys are unsupported" {
     const parsed = try Certificate.parse(.{
         .buffer = &fixtures.rsa_pss_spki_salt20_cert_der,
         .index = 0,
@@ -2564,15 +2588,16 @@ test "certificate_parser: RSASSA-PSS SubjectPublicKeyInfo salt constraint is enf
         else => return error.TestUnexpectedResult,
     }
     try testing.expectError(
-        error.CertificateSignatureAlgorithmMismatch,
+        error.CertificateSignatureAlgorithmUnsupported,
         parsed.verify(parsed, fixtures.public_chain_now_sec),
     );
 }
 
-// RFC 4055 §3.1 — absent RSASSA-PSS public-key parameters mean unrestricted.
-// The certificate signature still carries the TLS-required PSS parameters.
+// RFC 4055 §3.3, RFC 8446 §4.2.3 — absent key parameters do not make the
+// RSASSA-PSS OID an rsaEncryption key. The PSS-specific schemes remain
+// unsupported even when the key has no parameter restrictions.
 const rsa_pss_unrestricted_now_sec: i64 = 1_795_363_592;
-test "certificate_parser: absent RSASSA-PSS SubjectPublicKeyInfo parameters are unrestricted" {
+test "certificate_parser: unrestricted RSASSA-PSS issuer keys are unsupported" {
     const parsed = try Certificate.parse(.{
         .buffer = &fixtures.rsa_pss_unrestricted_cert_der,
         .index = 0,
@@ -2581,7 +2606,10 @@ test "certificate_parser: absent RSASSA-PSS SubjectPublicKeyInfo parameters are 
         .rsassa_pss => |params| try testing.expect(params == null),
         else => return error.TestUnexpectedResult,
     }
-    try parsed.verify(parsed, rsa_pss_unrestricted_now_sec);
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmUnsupported,
+        parsed.verify(parsed, rsa_pss_unrestricted_now_sec),
+    );
 }
 
 // RFC 8446 §4.4.2.2 — a leaf with no KeyUsage/EKU restrictions and a supported

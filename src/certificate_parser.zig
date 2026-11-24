@@ -3255,10 +3255,10 @@ fn verifyRsaPss(
 ) !void {
     const params = switch (pub_key_algo) {
         .rsaEncryption => PssParameters.forTls(Hash),
-        .rsassa_pss => |maybe_params| if (maybe_params) |params|
-            params
-        else
-            PssParameters.forTls(Hash),
+        // RFC 8446 §4.2.3 assigns RSASSA-PSS OID keys to rsa_pss_pss_*.
+        // Those schemes and RFC 4055 §3.3 parameter validation are not
+        // implemented, so do not treat the issuer as an rsaEncryption key.
+        .rsassa_pss => return error.CertificateSignatureAlgorithmUnsupported,
         else => return error.CertificateSignatureAlgorithmMismatch,
     };
     return rsa.PSSSignature.verifyDer(Hash, msg, sig, pub_key, 512, params);

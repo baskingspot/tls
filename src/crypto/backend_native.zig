@@ -57,6 +57,9 @@ pub const capabilities = struct {
         .rsa_pkcs1_sha512,
         .ecdsa_secp256r1_sha256,
         .ecdsa_secp384r1_sha384,
+        .rsa_pss_rsae_sha256,
+        .rsa_pss_rsae_sha384,
+        .rsa_pss_rsae_sha512,
         .ed25519,
     };
 };
@@ -1104,7 +1107,7 @@ test "native ECDSA P-256 and P-384 sign, verify, and reject invalid inputs" {
 }
 
 // RFC 8446 §4.2.3 and RFC 10024 — native verifies RSA-PSS CertificateVerify
-// and PKCS#1 chain signatures. RSA signing and ML-KEM-1024 stay off.
+// and chain signatures. RSA signing and ML-KEM-1024 stay off.
 test "native capabilities scope RSA to verification" {
     const pkcs1_schemes = [_]SignatureScheme{
         .rsa_pkcs1_sha256,
@@ -1134,12 +1137,11 @@ test "native capabilities scope RSA to verification" {
             capabilities.certificate_verify_schemes,
             scheme,
         ) != null);
-        // PSS chain signatures remain outside the native certificate table.
         try testing.expect(mem.findScalar(
             SignatureScheme,
             capabilities.certificate_signature_schemes,
             scheme,
-        ) == null);
+        ) != null);
     }
     try testing.expect(capabilities.client_x25519_mlkem768);
     try testing.expect(capabilities.server_x25519_mlkem768);

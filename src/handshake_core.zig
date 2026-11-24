@@ -3411,6 +3411,31 @@ test "core client: signature_algorithms_cert and fallback reject excluded server
     while (client_c.next()) |_| {}
     try client_c.provideHandshake(.handshake, ee.raw);
     try client_c.provideHandshake(.handshake, ecdsa_cert_msg);
+
+    // The same explicit offer excludes rsa_pss_rsae_sha256. Use the PSS-signed
+    // fixture so this rejection covers the newly supported certificate family
+    // on native as well as libcrypto.
+    var pss_cert_buf: [2048]u8 = undefined;
+    const pss_cert_msg = try certificate.encode(
+        &pss_cert_buf,
+        &.{&fixtures.rsa_pss_signed_cert_der},
+    );
+    var pss_policy = policy;
+    pss_policy.now_sec = 1_800_000_000;
+    var slots_d: [16]level.Output = undefined;
+    var client_d: Client = .init(&slots_d, pss_policy);
+    defer client_d.deinit();
+    client_d.offered.insert(.server_name);
+    client_d.offered.insert(.record_size_limit);
+    try client_d.start(&ch_buf);
+    while (client_d.next()) |_| {}
+    try client_d.provideWithSecret(.plaintext, &rfc8448_server_hello, &dhe_rfc8448);
+    while (client_d.next()) |_| {}
+    try client_d.provideHandshake(.handshake, ee.raw);
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmRejected,
+        client_d.provideHandshake(.handshake, pss_cert_msg),
+    );
 }
 
 // RFC 8446 §4.4.3 — an ECDSA credential cannot answer an RSA-PSS-only offer.
