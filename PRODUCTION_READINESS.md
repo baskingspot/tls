@@ -16,6 +16,15 @@ consumers run it.
 Qualification is per commit and per profile. It does not travel to a later
 commit because the branch moved.
 
+**Warning: the default `native` backend is for development and iteration. It is
+not yet for production use.** No performance measurement against libcrypto or
+independent security review exists for native. Production builds must select
+`-Dcrypto=openssl` or `-Dcrypto=aws-lc`.
+
+Native does not support RSA signing, encrypted PEM, or ML-KEM-1024. A native
+server needs an ECDSA credential. Native loads Ed25519 keys and verifies
+Ed25519 chain signatures, but it does not support Ed25519 CertificateVerify.
+
 ## What works, and how it is known
 
 | Surface | Status | What the status rests on |
@@ -24,7 +33,7 @@ commit because the branch moved.
 | Record layer, framing, alerts, `close_notify` | Proven | RFC 8446 §5 tests, fuzz targets, and tlsfuzzer |
 | Certificate chains, hostname verification, leaf policy | Proven | Chain and policy tests, name-constraint fixtures, and TLS-Anvil |
 | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 | Proven | Record tests and OpenSSL interop for each |
-| Opt-in `native` crypto backend | Partial | ECDH, ECDSA, ML-KEM-768, RSA PKCS#1 v1.5 and RSA-PSS chain verification, and RSA-PSS CertificateVerify match libcrypto. Native client/server examples exchange application data in memory and over TCP. The in-memory server loads its P-256 key from a PKCS#8 PEM file. Native loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, and Ed25519 seeds from PKCS#8. Native/OpenSSL tests cover verified chains, hostname rejection, untrusted anchors, RSA-signed ECDSA chains, RSA-PSS-signed RSA chains, RSA-PSS CertificateVerify with SHA-256/384/512, P-384 ECDH, P-384 CertificateVerify, and `x25519_mlkem768`. Captured Google, Cloudflare, and example.com chains verify through their RSA issuer roots. All 777 RSA PKCS#1 v1.5 and 428 RSA-PSS Wycheproof cases match the expected results. Captured signatures match libcrypto on acceptance and tamper rejection. Both excluded capabilities have wire-level failure controls. Native ECDH and ECDSA reject malformed P-256 and P-384 points. A foreign ServerHello with those points receives an exact `illegal_parameter` alert. ML-KEM-1024, RSA signing, and encrypted PEM remain unsupported. A native TLS-Anvil client run disabled all 65 RFC 8446 cases after feature extraction failed to detect TLS 1.3. No native TLS-Anvil mutation result exists |
+| Default `native` crypto backend | Partial | ECDH, ECDSA, ML-KEM-768, RSA PKCS#1 v1.5 and RSA-PSS chain verification, and RSA-PSS CertificateVerify match libcrypto. Native client/server examples exchange application data in memory and over TCP. The in-memory server loads its P-256 key from a PKCS#8 PEM file. Native loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, and Ed25519 seeds from PKCS#8. Native/OpenSSL tests cover verified chains, hostname rejection, untrusted anchors, RSA-signed ECDSA chains, RSA-PSS-signed RSA chains, RSA-PSS CertificateVerify with SHA-256/384/512, P-384 ECDH, P-384 CertificateVerify, and `x25519_mlkem768`. Captured Google, Cloudflare, and example.com chains verify through their RSA issuer roots. All 777 RSA PKCS#1 v1.5 and 428 RSA-PSS Wycheproof cases match the expected results. Captured signatures match libcrypto on acceptance and tamper rejection. Both excluded capabilities have wire-level failure controls. Native ECDH and ECDSA reject malformed P-256 and P-384 points. A foreign ServerHello with those points receives an exact `illegal_parameter` alert. ML-KEM-1024, RSA signing, and encrypted PEM remain unsupported. A native TLS-Anvil client run disabled all 65 RFC 8446 cases after feature extraction failed to detect TLS 1.3. No native TLS-Anvil mutation result exists |
 | X25519 and P-256 key exchange | Proven | Handshake tests and OpenSSL interop |
 | P-384 key exchange | Proven, opt-in | Bidirectional OpenSSL interop on every non-FIPS libcrypto backend. Native adds client-side OpenSSL interop to its primitive differential evidence |
 | RFC 10024 hybrid groups | Proven, opt-in | Provider-backed ML-KEM on OpenSSL, AWS-LC, and BoringSSL; OpenSSL interop and the upstream tlsfuzzer matrix. Native ML-KEM-768 adds client-side OpenSSL negotiation and classical fallback to its key-exchange differentials and server-side upstream tlsfuzzer coverage |
@@ -38,19 +47,17 @@ commit because the branch moved.
 | C ABI | Partial | Client lifecycle only; see `include/baskingspot_tls.h` |
 | TLS 1.2, DTLS, Windows | Out of scope | Not coming |
 
-The default build infers a libcrypto backend from the selected headers. OpenSSL,
-AWS-LC, and BoringSSL are each CI-gated and each passed the same conformance
-run. Production builds use `auto` or an explicit libcrypto backend until native
-is measured and reviewed. The opt-in `-Dcrypto=native` path completes
-native/native and native/OpenSSL handshakes through the evidence in the table.
-Its facade caller owns all primitive buffers. The C ABI stays libcrypto-only
-and rejects `-Dcapi -Dcrypto=native`.
+The default build selects `native` and links no libcrypto. `-Dcrypto=auto`
+retains header detection. OpenSSL, AWS-LC, and BoringSSL are each CI-gated and
+each passed the same conformance run. The default path completes native/native
+and native/OpenSSL handshakes through the evidence in the table. Its facade
+caller owns all primitive buffers. The C ABI stays libcrypto-only and rejects
+`-Dcapi -Dcrypto=native`.
 
 Native verifies RSA PKCS#1 v1.5 and RSA-PSS certificate-chain signatures and
 RSA-PSS CertificateVerify with SHA-256/384/512, and loads unencrypted
 P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, plus Ed25519 seeds from
-PKCS#8. RSA signing and encrypted PEM remain unsupported. Use
-`-Dcrypto=openssl` or `-Dcrypto=aws-lc` for those capabilities (#215, #216).
+PKCS#8. RSA signing and encrypted PEM remain unsupported (#215, #216).
 RSASSA-PSS SubjectPublicKeyInfo issuer keys return
 `CertificateSignatureAlgorithmUnsupported` because `rsa_pss_pss_*` is
 unsupported (#219).
@@ -105,6 +112,9 @@ and `docs/research/NEGATIVE_SPACE.md` for what the engine does with each class
 of malformed input.
 
 ## Performance
+
+No performance measurement compares native against libcrypto. The captures
+below measure libcrypto builds.
 
 Three n=10 captures, on an Intel `c7i.2xlarge`, a Graviton `c7g.2xlarge`, and
 an Apple M1 Max. On every comparable application-data row, tls is faster than

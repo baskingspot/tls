@@ -25,7 +25,7 @@ pub const HkdfSha256 = Hkdf(sha2.Sha256, crypto.hash.sha2.Sha256);
 pub const HkdfSha384 = Hkdf(sha2.Sha384, crypto.hash.sha2.Sha384);
 
 /// Construct the TLS 1.3 schedule over a runtime and comptime hash pair.
-/// Libcrypto supplies the default runtime hash (#138). Native supplies std's
+/// A libcrypto backend supplies its runtime hash (#138). Native supplies std's
 /// implementation. The comptime hash must match because libcrypto cannot run
 /// during compilation.
 pub fn Hkdf(comptime Hash: type, comptime ComptimeHash: type) type {

@@ -58,6 +58,10 @@ build-native:
     zig build -Dcrypto=native
 
 [private]
+build-auto:
+    zig build -Dcrypto=auto
+
+[private]
 build-openssl:
     zig build -Dcrypto=openssl
 
@@ -65,7 +69,7 @@ build-openssl:
 build-anvil:
     zig build -Dcrypto=auto
 
-[doc("Run tlsfuzzer TLS 1.3 conformance smoke tests with the auto-detected backend")]
+[doc("Run tlsfuzzer TLS 1.3 conformance smoke tests with the default native backend")]
 [group("conformance")]
 tlsfuzzer *ARGS: build
     uv run pytest {{ ARGS }}
@@ -73,6 +77,11 @@ tlsfuzzer *ARGS: build
 [doc("Run the conformance suite with the native crypto backend")]
 [group("conformance")]
 tlsfuzzer-native *ARGS: build-native
+    uv run pytest {{ ARGS }}
+
+[doc("Run the conformance suite with auto-detected libcrypto")]
+[group("conformance")]
+tlsfuzzer-auto *ARGS: build-auto
     uv run pytest {{ ARGS }}
 
 [doc("Run the conformance suite with OpenSSL libcrypto")]
@@ -84,7 +93,7 @@ tlsfuzzer-openssl *ARGS: build-openssl
 [group("conformance")]
 ci:
     zig build test -Dcrypto=auto
-    just tlsfuzzer -v
+    just tlsfuzzer-auto -v
     just anvil-report-test
     just anvil-adapter-test
     just anvil-server-test

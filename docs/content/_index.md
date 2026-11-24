@@ -13,6 +13,15 @@ Production readiness is tracked per commit in
 [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md).
 Releases are tagged, so pin a version and read the docs at that tag.
 
+**Warning: the default `native` backend is for development and iteration. It is
+not yet for production use.** No performance measurement against libcrypto or
+independent security review exists for native. Production builds must select
+`-Dcrypto=openssl` or `-Dcrypto=aws-lc`.
+
+Native does not support RSA signing, encrypted PEM, or ML-KEM-1024. A native
+server needs an ECDSA credential. Native loads Ed25519 keys and verifies
+Ed25519 chain signatures, but it does not support Ed25519 CertificateVerify.
+
 - [Why this exists](#why-this-exists): when to reach for it, when to use something mature instead, and what the engine and libcrypto each do.
 - [Supported surface](#supported-surface): what CI exercises, what the caller owns, and what is out of scope.
 - [The buffer model](#the-buffer-model): the engine owns the protocol, you own every buffer, and `RecordBuffer` frames a byte stream into records.
@@ -50,23 +59,20 @@ choose:
 | `tls_nonblocking` | Zig 0.17, caller-driven server transport          |
 | `tls_ktls` | Zig 0.17 on Linux                                |
 
-The default `auto` backend detects OpenSSL, AWS-LC, or BoringSSL from the
-selected headers. Libcrypto builds use `PKG_CONFIG_PATH` to find the headers and
-library. Production builds use `auto` or an explicit libcrypto backend until
-native is measured and reviewed.
+The default `native` backend uses `std.crypto` and in-tree primitives. It needs
+no libcrypto headers, library, or `pkg-config`. Native verifies RSA PKCS#1 v1.5
+certificate-chain signatures and RSA-PSS CertificateVerify with
+SHA-256/384/512. It loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM
+and DER, plus Ed25519 seeds from PKCS#8.
 
-`-Dcrypto=native` opts into `std.crypto` and in-tree primitives without
-libcrypto. Native verifies RSA PKCS#1 v1.5 certificate-chain signatures and
-RSA-PSS CertificateVerify with SHA-256/384/512, and loads unencrypted
-P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER. RSA signing and encrypted
-PEM remain unsupported. Use `-Dcrypto=openssl` or
-`-Dcrypto=aws-lc` for those capabilities. ML-KEM-1024 is unsupported on native
-too.
+For a production build, set `.crypto = .openssl` or `.crypto = .@"aws-lc"` in
+`b.dependency`. The corresponding root build flags are `-Dcrypto=openssl` and
+`-Dcrypto=aws-lc`.
 
-Set `.crypto = .openssl`, `.crypto = .@"aws-lc"`, or `.crypto = .boringssl` in
-`b.dependency` to name a libcrypto family. Use `.crypto = .auto` for header
-detection. The corresponding root build flags are `-Dcrypto=openssl`,
-`-Dcrypto=aws-lc`, `-Dcrypto=boringssl`, and `-Dcrypto=auto`.
+Use `.crypto = .auto` for libcrypto header detection. Set `.crypto = .boringssl`
+to name BoringSSL explicitly. The corresponding root build flags are
+`-Dcrypto=auto` and `-Dcrypto=boringssl`. Libcrypto builds use `PKG_CONFIG_PATH`
+to find the headers and library.
 
 Add `.@"crypto-approved-only" = true` to negotiate only approved algorithms on
 OpenSSL or AWS-LC. It is an algorithm policy, not a FIPS validation claim.
@@ -93,11 +99,11 @@ just examples-ci
 just integrations/tls-ktls/ci
 ```
 
-These commands use the default auto-detected libcrypto backend. The default
-shell supplies OpenSSL. `nix develop .#aws-lc` supplies AWS-LC headers and
-libraries. `nix develop .#boringssl` supplies BoringSSL. In each shell, `auto`
-detects that backend without a flag. Pass `-Dcrypto=aws-lc` or
-`-Dcrypto=boringssl` only to name the backend explicitly.
+These commands use the default native backend. The default shell also supplies
+OpenSSL for explicit libcrypto builds and interop peers. `nix develop .#aws-lc`
+supplies AWS-LC headers and libraries. `nix develop .#boringssl` supplies
+BoringSSL. Pass `-Dcrypto=auto` to detect the family from the shell's headers.
+Pass `-Dcrypto=aws-lc` or `-Dcrypto=boringssl` to name either backend.
 
 `just examples-ci` builds and runs the core paths. The integration gate runs the packaged examples and tests. When this page and the examples disagree, the examples are right.
 
@@ -129,7 +135,7 @@ engine never calls an allocator.
 - You care where memory comes from. The engine holds no heap state. You give it
   buffers and it uses those, so memory behavior is something to reason about
   rather than profile after the fact.
-- You are on Zig and want TLS without a C crypto library through `-Dcrypto=native`.
+- You are on Zig and want TLS without a C crypto library in the default build.
 - You want TLS 1.3 and nothing else. No 1.2 downgrade path, no DTLS, no Windows
   portability layer.
 
@@ -150,7 +156,7 @@ Third-party audit status is stated in
 ## Where the work happens
 
 The engine never calls an allocator. You hand it buffers, it uses those buffers,
-and that is all the memory it touches. The opt-in native backend keeps the
+and that is all the memory it touches. The default native backend keeps the
 primitive buffers caller-owned. Explicit libcrypto backends allocate during
 setup and inside their own routines. The engine's own code, the parsing,
 framing, transcript, and record sequencing, allocates nothing on every backend.
@@ -194,11 +200,11 @@ Select crypto primitives at build time:
 
 | Backend   | Selection and support                                      |
 | --------- | ---------------------------------------------------------- |
-| Native    | `-Dcrypto=native`. Opt into `std.crypto` and in-tree code, with no libcrypto |
+| Native    | Default. `std.crypto` and in-tree code for development, with no libcrypto |
 | OpenSSL   | `-Dcrypto=openssl`. Explicit production libcrypto          |
 | AWS-LC    | `-Dcrypto=aws-lc`. Explicit production libcrypto           |
 | BoringSSL | `-Dcrypto=boringssl`. Explicit libcrypto                   |
-| Auto      | Default. Detect the family from the selected headers       |
+| Auto      | `-Dcrypto=auto`. Detect the family from the selected headers |
 
 Native supports X25519, P-256/P-384, ECDSA, Ed25519 chain signatures, RSA
 PKCS#1 v1.5 chain signatures and RSA-PSS CertificateVerify with
@@ -206,8 +212,8 @@ SHA-256/384/512, and both ML-KEM-768 hybrid groups. It loads unencrypted
 P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, and Ed25519 seeds from
 PKCS#8. RSA signing and encrypted PEM remain unsupported. Use
 `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for those capabilities. ML-KEM-1024 is
-unsupported on native too. Production builds use `auto` or an explicit
-libcrypto backend until native is measured and reviewed.
+unsupported on native too. Production builds must select `-Dcrypto=openssl` or
+`-Dcrypto=aws-lc`.
 
 All three RFC 10024 groups use provider-backed pure ML-KEM with engine-owned
 hybrid composition on OpenSSL, AWS-LC, and BoringSSL. Approved-only builds do
@@ -767,6 +773,9 @@ and `libtls.a` are LibreSSL's, and a short abbreviation reads as noise in a
 linker error.
 
 # Performance
+
+No performance measurement compares native against libcrypto. The captures
+below measure libcrypto builds.
 
 It is faster than OpenSSL's libssl on every comparable application-data row
 measured, on x86_64, aarch64, and macOS Apple Silicon. Against rustls it wins on

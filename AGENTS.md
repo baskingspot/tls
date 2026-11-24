@@ -352,15 +352,21 @@ first implementation target because it is already in the dev shell and interop
 harnesses; AWS-LC must remain a first-class design target, with BoringSSL
 possible later behind its own backend if the API surface is worth it.
 
-The opt-in `native` backend is the explicit exception to the libcrypto-only
-backend rule (#199). It uses `std.crypto` and in-tree code, with support limited
-to its capability table. Keep the default on libcrypto auto-detection while
-native is unmeasured and unreviewed. Native verifies RSA PKCS#1 v1.5
-certificate-chain signatures and RSA-PSS CertificateVerify with
-SHA-256/384/512, and loads unencrypted P-256/P-384 PKCS#8 and SEC1 keys from PEM
-and DER, plus Ed25519 seeds from PKCS#8. RSA signing and encrypted PEM remain
-unsupported. Use `-Dcrypto=openssl` or `-Dcrypto=aws-lc` for those capabilities
-(#215, #216).
+The default `native` backend is the explicit exception to the libcrypto-only
+backend rule (#199). It is for development and iteration, not production. No
+performance measurement against libcrypto or independent security review exists
+for native. Production builds must select `-Dcrypto=openssl` or
+`-Dcrypto=aws-lc`. `-Dcrypto=auto` remains selectable for libcrypto header
+detection.
+
+Native uses `std.crypto` and in-tree code, with support limited to its
+capability table. It verifies RSA PKCS#1 v1.5 certificate-chain signatures and
+RSA-PSS CertificateVerify with SHA-256/384/512. It loads unencrypted
+P-256/P-384 PKCS#8 and SEC1 keys from PEM and DER, plus Ed25519 seeds from
+PKCS#8 (#215, #216). Native does not support RSA signing, encrypted PEM, or
+ML-KEM-1024. A native server needs an ECDSA credential. Native loads Ed25519
+keys and verifies Ed25519 chain signatures, but it does not support Ed25519
+CertificateVerify.
 
 The strict no-allocation invariant applies to tls-owned framing, state machine,
 record buffers, and caller-visible TLS I/O. A libcrypto-family production build

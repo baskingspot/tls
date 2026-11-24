@@ -54,7 +54,8 @@ The parser exits 0 only when the report has no unexpected pass/fail/skipped clas
 
 ### Crypto backends
 
-The default backend is `auto`, which detects the selected libcrypto family. From the repository root, run the native suite with:
+The default backend is `native`, which is for development and iteration, not
+production. From the repository root, run the native suite with:
 
 ```sh
 just conformance/ci-native
@@ -62,7 +63,11 @@ just conformance/ci-native
 
 This command forwards `-Dcrypto=native` to tls. It includes both OpenSSL interop directions and the tlsfuzzer cases.
 
-Run `just conformance/ci` for the auto-detected libcrypto control. Run `just conformance/tlsfuzzer-openssl` for an explicit OpenSSL run. Run `just conformance/tlsfuzzer` for the default auto-detected suite without the helper tests.
+Run `just conformance/ci` or `just conformance/tlsfuzzer-auto` for the
+auto-detected libcrypto control. Run `just conformance/tlsfuzzer-openssl` for an
+explicit OpenSSL run. Run `just conformance/tlsfuzzer` for the default native
+suite without the helper tests. Production builds must select
+`-Dcrypto=openssl` or `-Dcrypto=aws-lc`.
 
 The client wrapper accepts `TLS_CA_FILE` for trust anchors and `TLS_HOST_NAME` for hostname verification. `TLS_CLIENT_GROUP` adds a selected classical or hybrid group to the offer. The OpenSSL cases cover chain and hostname failures, P-384 ECDH, P-384 CertificateVerify, and hybrid negotiation outcomes.
 

@@ -1,7 +1,7 @@
 //! Crypto provider selection.
 //!
-//! The default `auto` backend detects the libcrypto family from its headers.
-//! Opt-in `native` selects pure-Zig primitives and does not import the facade.
+//! The default `native` backend selects pure-Zig primitives and does not import
+//! the facade. `auto` detects the libcrypto family from its headers.
 const std = @import("std");
 const testing = std.testing;
 const assert = std.debug.assert;
@@ -22,8 +22,8 @@ const backend_boringssl = if (native_selected) struct {} else @import("backend_b
 // ziglint-ignore: Z028 — native must not import any libcrypto backend.
 const backend_openssl = if (native_selected) struct {} else @import("backend_openssl.zig");
 
-/// Libcrypto uses runtime dispatch (#138). Opt-in native uses std's
-/// compile-time-selected SHA-256 and SHA-384 implementation.
+/// Libcrypto uses runtime dispatch (#138). The default native backend uses
+/// std's compile-time-selected SHA-256 and SHA-384 implementation.
 // ziglint-ignore: Z028 — the non-native arm owns the libcrypto SHA import.
 pub const sha2 = if (native_selected) backend_native.sha2 else @import("sha2.zig");
 
@@ -36,7 +36,7 @@ pub const Backend = enum {
     @"aws-lc-approved",
 };
 
-/// Explicit native selection wins without reading libcrypto headers. Auto and
+/// Native selection wins without reading libcrypto headers. Auto and
 /// explicit libcrypto selections resolve against the selected header family.
 pub const active: Backend = if (native_selected)
     (if (approved_only)

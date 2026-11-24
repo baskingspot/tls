@@ -5,6 +5,22 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** The default `-Dcrypto` value is `native`. Default builds need no
+  libcrypto headers or library. Native is for development and iteration, not
+  production. No performance measurement against libcrypto or independent
+  security review exists for native. Production builds must select
+  `-Dcrypto=openssl` or `-Dcrypto=aws-lc`. `-Dcrypto=auto` remains available for
+  libcrypto header detection. Native does not support RSA signing, encrypted
+  PEM, or ML-KEM-1024. A native server needs an ECDSA credential. Native loads
+  Ed25519 keys and verifies Ed25519 chain signatures, but it does not support
+  Ed25519 CertificateVerify (#199).
+- Certificates issued by an RSASSA-PSS SubjectPublicKeyInfo key now fail with
+  `error.CertificateSignatureAlgorithmUnsupported`. The `rsa_pss_pss_*` schemes
+  and RFC 4055 §3.3 parameter validation remain unsupported instead of using
+  the `rsa_pss_rsae_*` mapping (#219).
+
 ### Added
 
 - Clients advertise and accept `rsa_pss_rsae_sha256/384/512` in
@@ -12,13 +28,6 @@ All notable changes to tls are recorded here. The format follows
   certificate chains can now complete handshakes (#219).
 - Servers that request client certificates now accept PSS-signed chains through
   the default certificate policy (#219).
-
-### Changed
-
-- Certificates issued by an RSASSA-PSS SubjectPublicKeyInfo key now fail with
-  `error.CertificateSignatureAlgorithmUnsupported`. The `rsa_pss_pss_*` schemes
-  and RFC 4055 §3.3 parameter validation remain unsupported instead of using
-  the `rsa_pss_rsae_*` mapping (#219).
 
 ## [0.4.6] - 2026-11-23
 
