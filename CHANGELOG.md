@@ -10,6 +10,8 @@ All notable changes to tls are recorded here. The format follows
 - Clients advertise and accept `rsa_pss_rsae_sha256/384/512` in
   `signature_algorithms_cert` on libcrypto and native backends. PSS-signed
   certificate chains can now complete handshakes (#219).
+- Servers that request client certificates now accept PSS-signed chains through
+  the default certificate policy (#219).
 
 ### Changed
 

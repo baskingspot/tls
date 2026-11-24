@@ -1105,6 +1105,27 @@ test "parse: extracts public key from ECDSA P-256 certificate" {
     try testing.expectEqualSlices(u8, fixtureCertDer(), verified.leaf_der);
 }
 
+// RFC 8446 §4.2.3, §4.4.2.2 — the server-side client-chain parser accepts a
+// PSS-signed certificate through the default policy and rejects it when PSS is
+// excluded. ServerHandshake.init derives its client certificate policy from
+// this same default before applying the caller's client-auth settings.
+test "parseClientChain: default policy accepts PSS and exclusion rejects it" {
+    var buf: [2048]u8 = undefined;
+    const msg = buildCertMsg(&buf, &fixtures.rsa_pss_signed_cert_der);
+    var policy: Policy = .init;
+    policy.insecure_no_chain_anchor = true;
+    policy.now_sec = 1_800_000_000;
+
+    const verified = try parseClientChain(msg, &.{}, policy);
+    try testing.expectEqualSlices(u8, &fixtures.rsa_pss_signed_cert_der, verified.leaf_der);
+
+    policy.certificate_signature_schemes = &.{.ecdsa_secp256r1_sha256};
+    try testing.expectError(
+        error.CertificateSignatureAlgorithmRejected,
+        parseClientChain(msg, &.{}, policy),
+    );
+}
+
 test "parse: wrong handshake type" {
     var buf: [1024]u8 = undefined;
     _ = buildCertMsg(&buf, fixtureCertDer());
