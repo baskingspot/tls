@@ -26,7 +26,7 @@ verifies Ed25519 chain signatures, but it does not support Ed25519 CertificateVe
 - [Supported surface](#supported-surface): what CI exercises, what the caller owns, and what is out of scope.
 - [The buffer model](#the-buffer-model): the engine owns the protocol, you own every buffer, and `RecordBuffer` frames a byte stream into records.
 - [The drive loop](#the-drive-loop): working client and server code, the `pending_write` interlock, close semantics, and peer alerts.
-- [Credentials and negotiation](#credentials-and-negotiation): server credentials, certificate policy, tickets, SNI, ALPN, and the RFC 10024 hybrid groups.
+- [Credentials and negotiation](#credentials-and-negotiation): server credentials, external PSKs, certificate policy, tickets, SNI, ALPN, and the RFC 10024 hybrid groups.
 - [Integrations](#integrations): blocking streams, epoll, io_uring, and kTLS.
 - [C ABI](#c-abi): the partial, client-only C surface.
 - [Performance](#performance): the headline row, the three captures, and where it loses.
@@ -188,6 +188,7 @@ is not coming.
 | Post-quantum: RFC 10024 hybrid groups    | Supported    | X25519MLKEM768, SecP256r1MLKEM768, and SecP384r1MLKEM1024; opt-in, OpenSSL-interoperable, upstream tlsfuzzer matrix |
 | Server certificate auth                  | Supported    | Hostname verification, chain validation, leaf policy                                                                |
 | Client certificate auth                  | Supported    | Both roles, EKU and KU enforcement, OpenSSL interop                                                                 |
+| External PSK                             | Supported    | `startWithExternalPsk`, `psk_dhe_ke`, no certificates or early data; provisioning is a caller obligation           |
 | Session resumption (PSK)                 | Partial      | Ticket persistence, expiry, rotation, replay rejection, and SNI partitioning are caller obligations                 |
 | 0-RTT early data                         | Partial      | Offer, accept, reject are proven; accept is gated on the ticket's exact cipher suite, ALPN, and first identity; anti-replay is the caller's, and the engine default is disabled |
 | HelloRetryRequest                        | Supported    | Both roles; forced-HRR OpenSSL interop is not gated                                                                 |
@@ -541,6 +542,29 @@ if (try server.sendServerFlightBuffered(&flight)) |flight_bytes| {
 ```
 
 `sendAuthenticatedFlight` remains available as a lower-level escape hatch. Use up-front `setCredentials` plus `sendServerFlightBuffered` for new callers. On PSK resumption these methods automatically omit Certificate and CertificateVerify. `PrivateKey.deinit()` zeroes key material through the selected backend.
+
+## External PSKs
+
+Use an external PSK when provisioning installs the same high-entropy secret on both endpoints. Use certificates when an endpoint must authenticate a name through a trust anchor. A PSK does not turn a password into a safe credential: RFC 8446 §2.2 permits offline guessing from the binder.
+
+Call `startWithExternalPsk` with the provisioned identity, key, and cipher suite. The identity must be non-empty. The key must contain at least 16 bytes (RFC 9257 §6). Keep the identity and key alive until the handshake ends. The suite selects the binder hash, and a PSK is bound to that one hash. The server skips an entry no offered suite can use, and a default server prefers `TLS_AES_128_GCM_SHA256`, so a SHA-384 PSK completes only against a server configured with `supportSuites(&.{.aes_256_gcm_sha384})`. Without that, the offer falls through to the certificate path and fails when the server has no credentials.
+
+```zig
+const record = try client.startWithExternalPsk(
+    identity,
+    psk,
+    .aes_128_gcm_sha256,
+    &out,
+);
+```
+
+The offer has an obfuscated ticket age of zero, only `psk_dhe_ke`, and no early data. Call `offerAlpn()` before this method if the application negotiates ALPN.
+
+Configure `ServerHandshake.Config.psk_lookup` to return the same identity and key with `.kind = .external`. `PskEntry.init` selects `.resumption` for ticket lookups. A selected PSK needs no `setCredentials` call. The server sends EncryptedExtensions and Finished without Certificate or CertificateVerify. If the lookup returns null, the server can continue with configured certificate credentials. That fallback accepts a client with a certificate or with none, so a server that must accept only PSK clients configures no credentials, or checks `isResumed()` after the handshake.
+
+Leave the client `bundle` null and `insecure_no_chain_anchor` false when the connection requires PSK authentication. Certificate fallback then fails with `error.MissingTrustAnchor`. Configure a trust bundle only when certificate fallback is acceptable.
+
+NVMe/TCP uses this shape: TLS 1.3, an external PSK, identity version 0, no certificates, and `psk_dhe_ke`. `nvme gen-tls-key --insert` provisions the key in the kernel keyring on each endpoint.
 
 ## Certificate policy
 

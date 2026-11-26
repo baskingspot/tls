@@ -45,6 +45,7 @@ pub const KeyUpdateRequest = handshake.KeyUpdateRequest;
 const max_post_handshake_messages = handshake.max_post_handshake_messages;
 const HashArm = @import("suite_state.zig").HashArm;
 const hkdf = @import("hkdf.zig");
+const PskKind = hkdf.PskKind;
 const memx = @import("memx.zig");
 const NewSessionTicket = @import("NewSessionTicket.zig");
 const NamedGroup = @import("kex.zig").NamedGroup;
@@ -63,10 +64,10 @@ const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 pub const SignError = signature.SignError;
 pub const Signer = signature.Signer;
 
-/// Caller-provided PSK lookup for session resumption (RFC 8446 §4.2.11). The
-/// server calls `lookup` for each offered identity; a non-null result carries
-/// the PSK and the cipher suite under which it was derived (the binder hash
-/// uses that suite's hash). Caller-owned: tls stores no heap state.
+/// Caller-provided PSK lookup for resumption or an external PSK (RFC 8446
+/// §4.2.11). The server calls `lookup` for each offered identity. A non-null
+/// result carries the PSK, its provision source, and the cipher suite whose
+/// hash derives the binder. Caller-owned: tls stores no heap state.
 ///
 /// `lookup` may be called repeatedly for the same identity within one
 /// handshake: once during ClientHello PSK selection, again when a
@@ -74,9 +75,13 @@ pub const Signer = signature.Signer;
 /// continuity, and once more for ClientHello2 selection. Implementations
 /// must be side-effect-free and return a consistent entry (or consistent
 /// null) for the same identity.
+// ast-grep-ignore: public-struct-field-default -- existing literals remain resumption entries
 pub const PskEntry = struct {
     psk: []const u8,
     cipher_suite: CipherSuite,
+    /// Provision source for the RFC 8446 §7.1 binder label. `PskEntry.init`
+    /// returns `.resumption`. Set `.external` for an out-of-band PSK.
+    kind: PskKind = .resumption,
     /// max_early_data_size from the ticket's early_data extension, or null if
     /// the ticket does not permit 0-RTT. Setting it opts this entry into
     /// 0-RTT acceptance; the engine then enforces RFC 8446 §4.2.10: the
@@ -92,11 +97,12 @@ pub const PskEntry = struct {
     /// absent counts as equal, exactly one absent does not.
     alpn: ?[]const u8,
 
-    /// An entry that permits no 0-RTT and binds no ALPN.
+    /// A resumption entry that permits no 0-RTT and binds no ALPN.
     pub fn init(psk: []const u8, cipher_suite: CipherSuite) PskEntry {
         return .{
             .psk = psk,
             .cipher_suite = cipher_suite,
+            .kind = .resumption,
             .max_early_data_size = null,
             .alpn = null,
         };
@@ -760,14 +766,15 @@ pub fn supportAlpn(self: *ServerHandshake, protocols: root.AlpnProtocols) void {
 /// §4.2.11). For each offered identity, look up the PSK via `lookup`, derive
 /// the binder key, compute the binder transcript hash over `msg[0..
 /// parsed.binders_offset]`, and compare to the offered binder. Returns the
-/// first verifying entry plus its index, or null if the client offered no PSK
-/// or no identity verified. Malformed binders return an error.
+/// first known hash-compatible entry when its binder verifies, or null if the
+/// client offered no PSK or no identity resolved. A known identity with a bad
+/// binder returns `error.InvalidPskBinder`. Malformed binders return a parse error.
 pub fn selectPsk(
     parsed: client_hello.Parsed,
     msg: []const u8,
     lookup: PskLookup,
     negotiated_suite: CipherSuite,
-) error{ InvalidExtensionLength, InvalidVectorLength, UnexpectedEof }!?struct {
+) error{ InvalidExtensionLength, InvalidVectorLength, UnexpectedEof, InvalidPskBinder }!?struct {
     entry: PskEntry,
     identity_index: usize,
 } {
@@ -784,7 +791,12 @@ fn selectPskWithTranscript(
     lookup: PskLookup,
     negotiated_suite: CipherSuite,
     retry_transcript: ?*const RetryTranscript,
-) error{ InvalidExtensionLength, InvalidVectorLength, UnexpectedEof }!?PskSelection {
+) error{
+    InvalidExtensionLength,
+    InvalidVectorLength,
+    UnexpectedEof,
+    InvalidPskBinder,
+}!?PskSelection {
     const psk_ext = parsed.psk_ext orelse return null;
     // PskOfferIter bounds both readers to their own vectors: a truncated or
     // slack-padded identities vector is a clean error, never the usize
@@ -805,6 +817,7 @@ fn selectPskWithTranscript(
                     hkdf.HkdfSha256,
                     Sha256,
                     entry.psk,
+                    entry.kind,
                     prefix,
                     offer.binder,
                     if (retry_transcript) |rt| switch (rt.*) {
@@ -816,6 +829,7 @@ fn selectPskWithTranscript(
                     hkdf.HkdfSha384,
                     Sha384,
                     entry.psk,
+                    entry.kind,
                     prefix,
                     offer.binder,
                     if (retry_transcript) |rt| switch (rt.*) {
@@ -825,6 +839,7 @@ fn selectPskWithTranscript(
                 ),
             };
             if (ok) return .{ .entry = entry, .identity_index = idx };
+            return error.InvalidPskBinder;
         }
         idx += 1;
     }
@@ -844,14 +859,18 @@ fn verifyBinderSha(
     comptime H: type,
     comptime Hash: type,
     psk: []const u8,
+    psk_kind: PskKind,
     prefix: []const u8,
     offered_binder: []const u8,
     initial_transcript: ?*const Hash,
 ) bool {
     if (offered_binder.len != H.prk_len) return false;
-    const early = H.pskEarlySecret(psk);
-    const binder_key = H.resumptionBinderKey(early);
-    const fin_key = H.finishedKey(.{ .data = binder_key.data });
+    var early = H.pskEarlySecret(psk);
+    defer early.secureZero();
+    var binder_key = H.binderKey(early, psk_kind);
+    defer binder_key.secureZero();
+    var fin_key = H.finishedKey(.{ .data = binder_key.data });
+    defer fin_key.secureZero();
     var transcript: Hash = if (initial_transcript) |initial| initial.* else .init(.{});
     transcript.update(prefix);
     const digest = transcript.peek();
@@ -1187,6 +1206,7 @@ pub const AcceptError =
         IdentityElement,
         IllegalParameter,
         LibcryptoFailed,
+        InvalidPskBinder,
         TooManyPskIdentities,
         /// A caller-required extension was absent from the ClientHello;
         /// `missingExtension()` names it. RFC 8446 §6.2 `missing_extension`.
@@ -1454,6 +1474,11 @@ fn processClientHelloMessage(
         false;
     self.ticket_compatibility = if (offers_psk_dhe_ke) .psk_dhe_ke else .unavailable;
 
+    // Record a bad binder for a known identity, but let key-share selection
+    // emit HelloRetryRequest before failing the handshake. Unknown identities
+    // still fall through to certificate authentication.
+    var invalid_psk_binder = false;
+
     // RFC 8446 §4.2.9 — pre_shared_key requires psk_key_exchange_modes.
     if (ch.psk_ext != null) {
         if (ch.psk_key_exchange_modes == null) return error.MissingExtension;
@@ -1464,13 +1489,19 @@ fn processClientHelloMessage(
             if (self.psk_lookup) |lookup| {
                 const retry_transcript: ?*const RetryTranscript =
                     if (self.retry_transcript) |*transcript| transcript else null;
-                const selection = try selectPskWithTranscript(
+                const selection = selectPskWithTranscript(
                     ch,
                     ch_msg,
                     lookup,
                     suite,
                     retry_transcript,
-                );
+                ) catch |err| switch (err) {
+                    error.InvalidPskBinder => blk: {
+                        invalid_psk_binder = true;
+                        break :blk null;
+                    },
+                    else => return err,
+                };
                 if (selection) |sel| {
                     self.selected_psk = sel.entry;
                     self.selected_psk_index = @intCast(sel.identity_index);
@@ -1638,6 +1669,8 @@ fn processClientHelloMessage(
         self.state = .wait_ch;
         return hrr;
     } else return error.UnsupportedKeyShare;
+
+    if (invalid_psk_binder) return error.InvalidPskBinder;
 
     self.negotiated_group = switch (client_key_share) {
         .x25519 => .x25519,
@@ -8884,6 +8917,365 @@ test "in-memory KeyUpdate round trip across all cipher suites" {
     }
 }
 
+const ExternalPskTestLookup = struct {
+    identity: []const u8,
+    psk: []const u8,
+    cipher_suite: CipherSuite,
+
+    fn get(context: *anyopaque, identity: []const u8) ?PskEntry {
+        const self: *ExternalPskTestLookup = @ptrCast(@alignCast(context));
+        if (!mem.eql(u8, identity, self.identity)) return null;
+        return .{
+            .psk = self.psk,
+            .cipher_suite = self.cipher_suite,
+            .kind = .external,
+            .max_early_data_size = null,
+            .alpn = null,
+        };
+    }
+
+    fn pskLookup(self: *ExternalPskTestLookup) PskLookup {
+        return .{ .context = self, .lookup = get };
+    }
+};
+
+fn expectExternalPskFlight(rx: *RecordLayer, record: []const u8) !void {
+    var wire: [4096]u8 = undefined;
+    @memcpy(wire[0..record.len], record);
+    const decrypted = try rx.decrypt(wire[0..record.len]);
+    try testing.expectEqual(.handshake, decrypted.content_type);
+    var reader: HandshakeReader = .init(decrypted.content);
+    try testing.expectEqual(.encrypted_extensions, (try reader.next()).?.type);
+    try testing.expectEqual(.finished, (try reader.next()).?.type);
+    try testing.expect((try reader.next()) == null);
+}
+
+// RFC 8446 §2.2, §4.2.11.1 — an external PSK authenticates both peers without
+// a server certificate, and psk_dhe_ke still permits application data.
+test "external PSK handshake needs no server credentials" {
+    const identity = "nvme0n1";
+    const psk: [32]u8 = @splat(0x42);
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client.deinit();
+    var certificate_storage: [1024]u8 = undefined;
+    client.usePeerCertificateBuffer(&certificate_storage);
+    var client_out: [4096]u8 = undefined;
+    const ch_record = try client.startWithExternalPsk(
+        identity,
+        &psk,
+        .aes_128_gcm_sha256,
+        &client_out,
+    );
+    client.completeWrite();
+
+    var lookup: ExternalPskTestLookup = .{
+        .identity = identity,
+        .psk = &psk,
+        .cipher_suite = .aes_128_gcm_sha256,
+    };
+    var server: ServerHandshake = .init(
+        .{ .psk_lookup = lookup.pskLookup() },
+        .{ .keypairs = try .init(.generate()), .random = .zero },
+    );
+    defer server.deinit();
+    try testing.expect(server.server_credentials == .none);
+    var server_out: [4096]u8 = undefined;
+    const sh_record = try server.acceptClientHello(ch_record, &server_out);
+    server.completeWrite();
+    try testing.expect(server.selected_psk != null);
+    try client.processServerHello(sh_record[frame.header_len..]);
+
+    var flight_rx = try server.tx.clone();
+    defer flight_rx.deinit();
+    const flight = (try server.sendPreparedServerFlight(&server_out)).?;
+    try expectExternalPskFlight(&flight_rx, flight);
+    server.completeWrite();
+    const event = try client.handleRecord(server_out[0..flight.len], &client_out);
+    const client_finished = switch (event) {
+        .write => |record| record,
+        else => return error.UnexpectedEvent,
+    };
+    client.completeWrite();
+    try server.processClientFinished(client_out[0..client_finished.len]);
+    try testing.expect(client.isConnected());
+    try testing.expect(server.isConnected());
+    try testing.expectEqual(@as(usize, 0), client.peerCertificateChain().len);
+
+    const ping = try client.sendApplicationData("ping", &client_out);
+    client.completeWrite();
+    try testing.expectEqualStrings("ping", try server.receiveApplicationData(
+        client_out[0..ping.len],
+    ));
+    const pong = try server.sendApplicationData("pong", &server_out);
+    server.completeWrite();
+    var pong_wire: [128]u8 = undefined;
+    @memcpy(pong_wire[0..pong.len], pong);
+    const pong_event = try client.handleRecord(pong_wire[0..pong.len], &client_out);
+    try testing.expectEqualStrings("pong", pong_event.application_data);
+}
+
+// RFC 8446 §4.2.11.2 — a PSK is bound to one hash, and the server skips an
+// entry that no offered suite can use. A default server prefers AES-128, so a
+// SHA-384 PSK completes only on a server configured for
+// TLS_AES_256_GCM_SHA384. This is the case the guide documents.
+test "external PSK with a SHA-384 key completes on a SHA-384 server" {
+    const identity = "nvme0n2";
+    const psk: [48]u8 = @splat(0x5a);
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client.deinit();
+    var certificate_storage: [1024]u8 = undefined;
+    client.usePeerCertificateBuffer(&certificate_storage);
+    var client_out: [4096]u8 = undefined;
+    const ch_record = try client.startWithExternalPsk(
+        identity,
+        &psk,
+        .aes_256_gcm_sha384,
+        &client_out,
+    );
+    client.completeWrite();
+
+    var lookup: ExternalPskTestLookup = .{
+        .identity = identity,
+        .psk = &psk,
+        .cipher_suite = .aes_256_gcm_sha384,
+    };
+    var server: ServerHandshake = .init(
+        .{ .psk_lookup = lookup.pskLookup() },
+        .{ .keypairs = try .init(.generate()), .random = .zero },
+    );
+    defer server.deinit();
+    server.supportSuites(&.{.aes_256_gcm_sha384});
+    var server_out: [4096]u8 = undefined;
+    const sh_record = try server.acceptClientHello(ch_record, &server_out);
+    server.completeWrite();
+    try testing.expect(server.selected_psk != null);
+    try client.processServerHello(sh_record[frame.header_len..]);
+
+    var flight_rx = try server.tx.clone();
+    defer flight_rx.deinit();
+    const flight = (try server.sendPreparedServerFlight(&server_out)).?;
+    try expectExternalPskFlight(&flight_rx, flight);
+    server.completeWrite();
+    const event = try client.handleRecord(server_out[0..flight.len], &client_out);
+    const client_finished = switch (event) {
+        .write => |record| record,
+        else => return error.UnexpectedEvent,
+    };
+    client.completeWrite();
+    try server.processClientFinished(client_out[0..client_finished.len]);
+    try testing.expect(client.isConnected());
+    try testing.expect(server.isConnected());
+    try testing.expectEqual(@as(usize, 0), client.peerCertificateChain().len);
+
+    const ping = try client.sendApplicationData("ping", &client_out);
+    client.completeWrite();
+    try testing.expectEqualStrings("ping", try server.receiveApplicationData(
+        client_out[0..ping.len],
+    ));
+    const pong = try server.sendApplicationData("pong", &server_out);
+    server.completeWrite();
+    var pong_wire: [128]u8 = undefined;
+    @memcpy(pong_wire[0..pong.len], pong);
+    const pong_event = try client.handleRecord(pong_wire[0..pong.len], &client_out);
+    try testing.expectEqualStrings("pong", pong_event.application_data);
+}
+
+// RFC 8446 §4.2.11 — an unknown external identity declines PSK authentication
+// and falls through to the certificate flight.
+test "external PSK decline falls through to certificates" {
+    const psk: [32]u8 = @splat(0x42);
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = "ztls.server.test",
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client.deinit();
+    client.policy.insecure_no_chain_anchor = true;
+    var certificate_storage: [1024]u8 = undefined;
+    client.usePeerCertificateBuffer(&certificate_storage);
+    var client_out: [4096]u8 = undefined;
+    const ch_record = try client.startWithExternalPsk(
+        "unknown",
+        &psk,
+        .aes_128_gcm_sha256,
+        &client_out,
+    );
+    client.completeWrite();
+
+    var lookup: ExternalPskTestLookup = .{
+        .identity = "different",
+        .psk = &psk,
+        .cipher_suite = .aes_128_gcm_sha256,
+    };
+    var server: ServerHandshake = .init(
+        .{ .psk_lookup = lookup.pskLookup() },
+        .{ .keypairs = try .init(.generate()), .random = .zero },
+    );
+    defer server.deinit();
+    var signer = try signature.PrivateKey.fromP256Scalar(serverEcdsaScalar()[0..32]);
+    defer signer.deinit();
+    try server.setCredentials(&.{serverEcdsaCertDer()}, signer.signer());
+    var server_out: [4096]u8 = undefined;
+    const sh_record = try server.acceptClientHello(ch_record, &server_out);
+    server.completeWrite();
+    try testing.expect(server.selected_psk == null);
+    try client.processServerHello(sh_record[frame.header_len..]);
+
+    const flight = (try server.sendPreparedServerFlight(&server_out)).?;
+    server.completeWrite();
+    const event = try client.handleRecord(server_out[0..flight.len], &client_out);
+    const client_finished = switch (event) {
+        .write => |record| record,
+        else => return error.UnexpectedEvent,
+    };
+    client.completeWrite();
+    try server.processClientFinished(client_out[0..client_finished.len]);
+    try testing.expect(client.isConnected());
+    try testing.expect(server.isConnected());
+    try testing.expectEqual(@as(usize, 1), client.peerCertificateChain().len);
+}
+
+// RFC 8446 §4.2.11.2, §6.2 — a bad binder for a known external identity is a
+// cryptographic failure and receives decrypt_error, not certificate fallback.
+test "external PSK binder tamper aborts with decrypt_error" {
+    const identity = "nvme0n1";
+    const psk: [32]u8 = @splat(0x42);
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client.deinit();
+    var client_out: [4096]u8 = undefined;
+    const ch_record = try client.startWithExternalPsk(
+        identity,
+        &psk,
+        .aes_128_gcm_sha256,
+        &client_out,
+    );
+    client_out[ch_record.len - 1] ^= 1;
+
+    var lookup: ExternalPskTestLookup = .{
+        .identity = identity,
+        .psk = &psk,
+        .cipher_suite = .aes_128_gcm_sha256,
+    };
+    var server: ServerHandshake = .init(
+        .{ .psk_lookup = lookup.pskLookup() },
+        .{ .keypairs = try .init(.generate()), .random = .zero },
+    );
+    defer server.deinit();
+    var server_out: [4096]u8 = undefined;
+    try testing.expectError(
+        error.InvalidPskBinder,
+        server.acceptClientHello(ch_record, &server_out),
+    );
+    const description = alert.alertForError(error.InvalidPskBinder).?;
+    try testing.expectEqual(.decrypt_error, description);
+    const alert_record = try server.sendAlert(description, &server_out);
+    const header = try frame.parseHeader(alert_record);
+    try testing.expectEqual(.alert, header.content_type);
+    const received = try alert.parse(alert_record[frame.header_len..]);
+    try testing.expectEqual(.fatal, received.level);
+    try testing.expectEqual(.decrypt_error, received.description);
+}
+
+const ExternalHrrBinderCase = enum { valid, tampered };
+
+fn expectExternalPskHrr(case: ExternalHrrBinderCase) !void {
+    const group: NamedGroup = .secp256r1_mlkem768;
+    if (!backend.supportsServerHybridGroup(group)) return error.SkipZigTest;
+    const identity = "nvme0n1";
+    const psk: [32]u8 = @splat(0x42);
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .hybrid = .{ .supported_groups = &.{group}, .initial_key_share = null },
+    });
+    defer client.deinit();
+    var client_out: [4096]u8 = undefined;
+    const ch1_record = try client.startWithExternalPsk(
+        identity,
+        &psk,
+        .aes_128_gcm_sha256,
+        &client_out,
+    );
+    client.completeWrite();
+
+    var lookup: ExternalPskTestLookup = .{
+        .identity = identity,
+        .psk = &psk,
+        .cipher_suite = .aes_128_gcm_sha256,
+    };
+    var server: ServerHandshake = .init(
+        .{ .psk_lookup = lookup.pskLookup(), .hybrid_groups = &.{group} },
+        .{ .keypairs = try .init(.generate()), .random = .zero },
+    );
+    defer server.deinit();
+    var server_out: [4096]u8 = undefined;
+    const hrr_record = try server.acceptClientHello(ch1_record, &server_out);
+    try testing.expect(server.selected_psk == null);
+    var hrr_wire: [4096]u8 = undefined;
+    @memcpy(hrr_wire[0..hrr_record.len], hrr_record);
+    const hrr_event = try client.handleRecord(hrr_wire[0..hrr_record.len], &client_out);
+    const ch2_record = switch (hrr_event) {
+        .write => |record| record,
+        else => return error.UnexpectedEvent,
+    };
+    client.completeWrite();
+    if (case == .tampered) client_out[ch2_record.len - 1] ^= 1;
+
+    const sh_record = server.acceptClientHello(ch2_record, &server_out) catch |err| {
+        try testing.expectEqual(.tampered, case);
+        try testing.expectEqual(error.InvalidPskBinder, err);
+        return;
+    };
+    try testing.expectEqual(.valid, case);
+    try testing.expect(server.selected_psk != null);
+    server.completeWrite();
+    try client.processServerHello(sh_record[frame.header_len..]);
+
+    var flight_rx = try server.tx.clone();
+    defer flight_rx.deinit();
+    const flight = (try server.sendPreparedServerFlight(&server_out)).?;
+    try expectExternalPskFlight(&flight_rx, flight);
+    server.completeWrite();
+    const event = try client.handleRecord(server_out[0..flight.len], &client_out);
+    const client_finished = switch (event) {
+        .write => |record| record,
+        else => return error.UnexpectedEvent,
+    };
+    client.completeWrite();
+    try server.processClientFinished(client_out[0..client_finished.len]);
+    try testing.expect(client.isConnected());
+    try testing.expect(server.isConnected());
+}
+
+// RFC 8446 §4.1.2, §4.2.11.2, §7.1 — ClientHello2 retains the external PSK
+// kind and recomputes its binder over the retry transcript.
+test "external PSK survives HelloRetryRequest" {
+    try expectExternalPskHrr(.valid);
+}
+
+// RFC 8446 §4.2.11.2, §6.2 — a bad external binder in ClientHello2 aborts.
+test "external PSK binder tamper in ClientHello2 aborts" {
+    try expectExternalPskHrr(.tampered);
+}
+
 // RFC 8446 §4.2.11 — selectPsk parses a PSK ClientHello, looks up the PSK,
 // and verifies the binder over the truncated prefix.
 test "selectPsk: verifies the binder for a matching PSK identity" {
@@ -8931,7 +9323,7 @@ test "selectPsk: verifies the binder for a matching PSK identity" {
     try testing.expectEqual(@as(usize, 0), sel.?.identity_index);
 }
 
-test "selectPsk: returns null when the PSK binder does not verify" {
+test "selectPsk: rejects a PSK binder that does not verify" {
     const identity = [_]u8{ 0x2c, 0x03, 0x5d, 0x82, 0x93, 0x59 };
     const wrong_psk = @as([32]u8, @splat(0x42));
 
@@ -8973,8 +9365,55 @@ test "selectPsk: returns null when the PSK binder does not verify" {
     var lookup_ctx: Lookup = .{ .psk = &right_psk.data, .identity = &identity };
     const lookup: PskLookup = .{ .context = &lookup_ctx, .lookup = Lookup.l };
 
-    const sel = try selectPsk(parsed, ch_msg, lookup, .aes_128_gcm_sha256);
-    try testing.expectEqual(@as(?@TypeOf(sel.?), null), sel);
+    try testing.expectError(
+        error.InvalidPskBinder,
+        selectPsk(parsed, ch_msg, lookup, .aes_128_gcm_sha256),
+    );
+}
+
+// RFC 8446 §4.2.11 — the server selects the first known hash-compatible
+// identity. A bad binder aborts instead of trying a later valid identity.
+test "selectPsk: a bad first binder aborts before a later valid identity" {
+    const offers = [_]TestPskOffer{ .{ .identity = "a" }, .{ .identity = "b" } };
+    const psks = [_][32]u8{ @splat(0xa5), @splat(0x5a) };
+    var base: [1024]u8 = undefined;
+    const base_ch = try encodeClientHelloWithPskForTest(
+        &base,
+        x25519.KeyPair.generate().public_key,
+        null,
+        &.{},
+        .psk_dhe_ke,
+        "a",
+        0,
+        Sha256.digest_length,
+        false,
+    );
+    var msg: [1024]u8 = undefined;
+    const multi = try clientHelloWithPskIdentities(&msg, base_ch.msg, &offers, 0);
+    for (&psks, 0..) |*psk, index| {
+        const H = hkdf.HkdfSha256;
+        const early = H.pskEarlySecret(psk);
+        const binder_key = H.resumptionBinderKey(early);
+        const fin_key = H.finishedKey(.{ .data = binder_key.data });
+        var th: H.TranscriptHash = undefined;
+        Sha256.hash(multi.msg[0..multi.binder_list_offset], &th.data, .{});
+        const binder = H.binder(fin_key, &th);
+        const offset = multiPskBinderOffset(multi, &offers, index);
+        @memcpy(msg[offset..][0..binder.len], &binder);
+    }
+    msg[multiPskBinderOffset(multi, &offers, 0)] ^= 1;
+
+    const entries = [_]RetryPskLookupEntry{
+        .{ .identity = "a", .psk = &psks[0], .cipher_suite = .aes_128_gcm_sha256 },
+        .{ .identity = "b", .psk = &psks[1], .cipher_suite = .aes_128_gcm_sha256 },
+    };
+    var table: RetryPskTable = .{ .entries = &entries };
+    const lookup: PskLookup = .{ .context = &table, .lookup = RetryPskTable.lookup };
+    const parsed = try client_hello.parse(multi.msg);
+    try testing.expectError(
+        error.InvalidPskBinder,
+        selectPsk(parsed, multi.msg, lookup, .aes_128_gcm_sha256),
+    );
 }
 
 // RFC 8446 §4.2.11 — the binders list-length field is attacker-controlled.

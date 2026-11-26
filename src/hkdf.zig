@@ -18,6 +18,9 @@ const memx = @import("memx.zig");
 const RecordLayer = @import("RecordLayer.zig");
 const sha2 = backend.sha2;
 
+/// The provision source that selects the binder label in RFC 8446 §7.1.
+pub const PskKind = enum { external, resumption };
+
 /// TLS_AES_128_GCM_SHA256 and TLS_CHACHA20_POLY1305_SHA256.
 pub const HkdfSha256 = Hkdf(sha2.Sha256, crypto.hash.sha2.Sha256);
 
@@ -240,6 +243,13 @@ pub fn Hkdf(comptime Hash: type, comptime ComptimeHash: type) type {
 
         pub inline fn resumptionBinderKey(early: Prk) FinishedKey {
             return deriveSecret(early, "res binder", &empty_hash);
+        }
+
+        pub inline fn binderKey(early: Prk, kind: PskKind) FinishedKey {
+            return switch (kind) {
+                .external => externalBinderKey(early),
+                .resumption => resumptionBinderKey(early),
+            };
         }
 
         pub inline fn clientEarlyTrafficSecret(

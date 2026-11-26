@@ -5,8 +5,23 @@ All notable changes to tls are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Servers reject a known PSK identity with an invalid binder using
+  `error.InvalidPskBinder`, which maps to `decrypt_error`. Unknown identities
+  still fall through to certificate authentication (#227).
+- External PSK encoding rejects a ClientHello over 2^14 bytes with
+  `error.ClientHelloTooLarge` and an oversized extension vector with
+  `error.ExtensionTooLong` (#227).
+
 ### Changed
 
+- **Breaking:** A known PSK identity whose binder does not verify now aborts
+  the handshake with `error.InvalidPskBinder` (`decrypt_error`) instead of
+  falling through to certificates, and `ServerHandshake.selectPsk` returns
+  that error instead of `null`. RFC 8446 §4.2.11.2 requires the abort, and
+  it applies to resumption tickets as well as external PSKs. A bad first
+  known binder also aborts rather than trying a later identity (#227).
 - **Breaking:** The default `-Dcrypto` value is `native`. Default builds need no
   libcrypto headers or library. Native is for development and iteration, not
   production. No performance measurement against libcrypto or independent
@@ -23,6 +38,12 @@ All notable changes to tls are recorded here. The format follows
 
 ### Added
 
+- `ClientHandshake.startWithExternalPsk` offers an externally provisioned
+  identity and key with age zero, `psk_dhe_ke`, and no early data. Set
+  `PskEntry.kind = .external` in the server lookup. A selected identity needs
+  no certificate credentials. External identities can exceed the 256-byte
+  resumption-ticket capacity. Empty identities and keys shorter than 16 bytes
+  return `error.EmptyIdentity` and `error.PskTooShort` (#227).
 - Clients advertise and accept `rsa_pss_rsae_sha256/384/512` in
   `signature_algorithms_cert` on libcrypto and native backends. PSS-signed
   certificate chains can now complete handshakes (#219).
