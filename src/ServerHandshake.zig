@@ -9019,6 +9019,77 @@ test "external PSK handshake needs no server credentials" {
     try testing.expectEqualStrings("pong", pong_event.application_data);
 }
 
+// RFC 8446 §4.2.11.2 — a PSK is bound to one hash, and the server skips an
+// entry that no offered suite can use. A default server prefers AES-128, so a
+// SHA-384 PSK completes only on a server configured for
+// TLS_AES_256_GCM_SHA384. This is the case the guide documents.
+test "external PSK with a SHA-384 key completes on a SHA-384 server" {
+    const identity = "nvme0n2";
+    const psk: [48]u8 = @splat(0x5a);
+    var client: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer client.deinit();
+    var certificate_storage: [1024]u8 = undefined;
+    client.usePeerCertificateBuffer(&certificate_storage);
+    var client_out: [4096]u8 = undefined;
+    const ch_record = try client.startWithExternalPsk(
+        identity,
+        &psk,
+        .aes_256_gcm_sha384,
+        &client_out,
+    );
+    client.completeWrite();
+
+    var lookup: ExternalPskTestLookup = .{
+        .identity = identity,
+        .psk = &psk,
+        .cipher_suite = .aes_256_gcm_sha384,
+    };
+    var server: ServerHandshake = .init(
+        .{ .psk_lookup = lookup.pskLookup() },
+        .{ .keypairs = try .init(.generate()), .random = .zero },
+    );
+    defer server.deinit();
+    server.supportSuites(&.{.aes_256_gcm_sha384});
+    var server_out: [4096]u8 = undefined;
+    const sh_record = try server.acceptClientHello(ch_record, &server_out);
+    server.completeWrite();
+    try testing.expect(server.selected_psk != null);
+    try client.processServerHello(sh_record[frame.header_len..]);
+
+    var flight_rx = try server.tx.clone();
+    defer flight_rx.deinit();
+    const flight = (try server.sendPreparedServerFlight(&server_out)).?;
+    try expectExternalPskFlight(&flight_rx, flight);
+    server.completeWrite();
+    const event = try client.handleRecord(server_out[0..flight.len], &client_out);
+    const client_finished = switch (event) {
+        .write => |record| record,
+        else => return error.UnexpectedEvent,
+    };
+    client.completeWrite();
+    try server.processClientFinished(client_out[0..client_finished.len]);
+    try testing.expect(client.isConnected());
+    try testing.expect(server.isConnected());
+    try testing.expectEqual(@as(usize, 0), client.peerCertificateChain().len);
+
+    const ping = try client.sendApplicationData("ping", &client_out);
+    client.completeWrite();
+    try testing.expectEqualStrings("ping", try server.receiveApplicationData(
+        client_out[0..ping.len],
+    ));
+    const pong = try server.sendApplicationData("pong", &server_out);
+    server.completeWrite();
+    var pong_wire: [128]u8 = undefined;
+    @memcpy(pong_wire[0..pong.len], pong);
+    const pong_event = try client.handleRecord(pong_wire[0..pong.len], &client_out);
+    try testing.expectEqualStrings("pong", pong_event.application_data);
+}
+
 // RFC 8446 §4.2.11 — an unknown external identity declines PSK authentication
 // and falls through to the certificate flight.
 test "external PSK decline falls through to certificates" {

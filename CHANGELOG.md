@@ -16,6 +16,12 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- **Breaking:** A known PSK identity whose binder does not verify now aborts
+  the handshake with `error.InvalidPskBinder` (`decrypt_error`) instead of
+  falling through to certificates, and `ServerHandshake.selectPsk` returns
+  that error instead of `null`. RFC 8446 §4.2.11.2 requires the abort, and
+  it applies to resumption tickets as well as external PSKs. A bad first
+  known binder also aborts rather than trying a later identity (#227).
 - **Breaking:** The default `-Dcrypto` value is `native`. Default builds need no
   libcrypto headers or library. Native is for development and iteration, not
   production. No performance measurement against libcrypto or independent

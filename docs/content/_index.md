@@ -547,7 +547,7 @@ if (try server.sendServerFlightBuffered(&flight)) |flight_bytes| {
 
 Use an external PSK when provisioning installs the same high-entropy secret on both endpoints. Use certificates when an endpoint must authenticate a name through a trust anchor. A PSK does not turn a password into a safe credential: RFC 8446 §2.2 permits offline guessing from the binder.
 
-Call `startWithExternalPsk` with the provisioned identity, key, and cipher suite. The identity must be non-empty. The key must contain at least 16 bytes (RFC 9257 §6). Keep the identity and key alive until the handshake ends. The suite selects the binder hash.
+Call `startWithExternalPsk` with the provisioned identity, key, and cipher suite. The identity must be non-empty. The key must contain at least 16 bytes (RFC 9257 §6). Keep the identity and key alive until the handshake ends. The suite selects the binder hash, and a PSK is bound to that one hash. The server skips an entry no offered suite can use, and a default server prefers `TLS_AES_128_GCM_SHA256`, so a SHA-384 PSK completes only against a server configured with `supportSuites(&.{.aes_256_gcm_sha384})`. Without that, the offer falls through to the certificate path and fails when the server has no credentials.
 
 ```zig
 const record = try client.startWithExternalPsk(
@@ -560,7 +560,7 @@ const record = try client.startWithExternalPsk(
 
 The offer has an obfuscated ticket age of zero, only `psk_dhe_ke`, and no early data. Call `offerAlpn()` before this method if the application negotiates ALPN.
 
-Configure `ServerHandshake.Config.psk_lookup` to return the same identity and key with `.kind = .external`. `PskEntry.init` selects `.resumption` for ticket lookups. A selected PSK needs no `setCredentials` call. The server sends EncryptedExtensions and Finished without Certificate or CertificateVerify. If the lookup returns null, the server can continue with configured certificate credentials.
+Configure `ServerHandshake.Config.psk_lookup` to return the same identity and key with `.kind = .external`. `PskEntry.init` selects `.resumption` for ticket lookups. A selected PSK needs no `setCredentials` call. The server sends EncryptedExtensions and Finished without Certificate or CertificateVerify. If the lookup returns null, the server can continue with configured certificate credentials. That fallback accepts a client with a certificate or with none, so a server that must accept only PSK clients configures no credentials, or checks `isResumed()` after the handshake.
 
 Leave the client `bundle` null and `insecure_no_chain_anchor` false when the connection requires PSK authentication. Certificate fallback then fails with `error.MissingTrustAnchor`. Configure a trust bundle only when certificate fallback is acceptable.
 

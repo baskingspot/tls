@@ -37,8 +37,8 @@ Mutation checks, each restored afterwards:
 - Hardcoding `.resumption` in the ClientHello2 binder patch made the valid HRR
   test fail with `InvalidPskBinder` during ClientHello2 selection.
 
-The review follow-up also raised the borrowed-identity cap from 256 to the wire
-limit, added empty-identity and short-key rejection, and wiped binder secrets on
+The review follow-up also raised the borrowed-identity cap from 256 to the u16
+extension bound (the practical cap is the 2^14-byte ClientHello record), added empty-identity and short-key rejection, and wiped binder secrets on
 both client and server paths. A second review found the missing whole-message
 bounds. The final tests accept an exact 2^14-byte ClientHello, reject the next
 byte, reject extension-length overflow, and reject an HRR cookie that pushes
@@ -3024,3 +3024,13 @@ These are not feature work; they stop the bleeding and make the rest legible.
 5. **DONE — Unify the conformance façade.** `just conformance/<recipe>` delegates
    to the conformance subproject, and TLS-Anvil/tlsfuzzer normalized result
    formats are CI-tested under `just conformance/ci`.
+
+The PSK review found that a SHA-384 PSK is bound to one hash and is never
+selected by a default server, which prefers TLS_AES_128_GCM_SHA256 and then
+skips the hash-mismatched entry before falling back to certificates. The
+SHA-384 end-to-end test configures `supportSuites(&.{.aes_256_gcm_sha384})`;
+removing that call makes the test fail on `selected_psk == null`, which is the
+evidence that the suite requirement is real rather than documentation theatre.
+The same review confirmed the HRR deferral cannot launder a bad binder: a
+tampered ClientHello1 that draws an HRR, followed by an honest ClientHello2,
+fails with `InvalidPskBinder`.
