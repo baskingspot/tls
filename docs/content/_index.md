@@ -13,9 +13,9 @@ Production readiness is tracked per commit in
 [`PRODUCTION_READINESS.md`](https://github.com/baskingspot/tls/blob/main/PRODUCTION_READINESS.md).
 Releases are tagged, so pin a version and read the docs at that tag.
 
-**Warning: the default `native` backend is for development and iteration. It is
-not yet for production use.** No performance measurement against libcrypto or
-independent security review exists for native. Production builds must select
+**Warning: the default `native` backend is for development and iteration, not
+production.** No performance measurement against libcrypto or independent
+security review exists for native. Production builds must select
 `-Dcrypto=openssl` or `-Dcrypto=aws-lc`.
 
 Native does not support RSA signing, encrypted PEM, or ML-KEM-1024. A native
