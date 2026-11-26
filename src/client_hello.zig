@@ -250,6 +250,7 @@ pub const RetryEncodeError = error{
     ServerNameTooLong,
     IdentityTooLong,
     InvalidBinderLength,
+    ExtensionTooLong,
     UnsupportedGroup,
 } || capabilities.HybridPolicyError || AlpnError;
 
@@ -317,7 +318,7 @@ fn retryExtensionsLen(
         ext_psk_kem_len +
         cookie_len +
         psk_len;
-    assert(total <= std.math.maxInt(u16));
+    if (total > std.math.maxInt(u16)) return error.ExtensionTooLong;
     return @intCast(total);
 }
 
@@ -404,7 +405,7 @@ pub fn encodeRetryAfterHrrWithHybridAndPsk(
         if (c.len == 0 or c.len > std.math.maxInt(u16)) return error.BufferTooShort;
     }
     if (psk) |offer| {
-        if (offer.identity.len > 256) return error.IdentityTooLong;
+        if (offer.identity.len > std.math.maxInt(u16)) return error.IdentityTooLong;
         if (offer.binder_len != 32 and offer.binder_len != 48)
             return error.InvalidBinderLength;
     }
@@ -835,6 +836,7 @@ pub fn encodeWithPsk(
     ServerNameTooLong,
     IdentityTooLong,
     InvalidBinderLength,
+    ExtensionTooLong,
 } || capabilities.HybridPolicyError || AlpnError)!PskEncodeResult {
     return encodeWithPskAndHybridGroups(
         out,
@@ -853,7 +855,7 @@ pub fn encodeWithPsk(
         offer_early_data,
         &.{},
     ) catch |err| switch (err) {
-        error.ReservedExtension, error.DuplicateExtension, error.ExtensionTooLong => unreachable,
+        error.ReservedExtension, error.DuplicateExtension => unreachable,
         else => |e| return e,
     };
 }
@@ -884,7 +886,7 @@ pub fn encodeWithPskAndHybridGroups(
     InvalidBinderLength,
 } || capabilities.HybridPolicyError || AlpnError ||
     extension_type.ExtraExtensionError)!PskEncodeResult {
-    if (identity.len > 256) return error.IdentityTooLong;
+    if (identity.len > std.math.maxInt(u16)) return error.IdentityTooLong;
     if (binder_len != 32 and binder_len != 48) return error.InvalidBinderLength;
     try extension_type.validateExtraExtensions(extras);
     try validateHybridGroups(hybrid_groups, hybrid_share);
@@ -914,6 +916,7 @@ pub fn encodeWithPskAndHybridGroups(
     const early_data_ext_len: usize = if (offer_early_data) 4 else 0;
     const ext_len = base_ext_len + early_data_ext_len +
         try extension_type.extraExtensionsLen(extras) + psk_ext_len;
+    if (ext_len > std.math.maxInt(u16)) return error.ExtensionTooLong;
     const encoded_len = handshake_header_len + body_fixed_len + ext_len;
     if (out.len < encoded_len) return error.BufferTooShort;
 

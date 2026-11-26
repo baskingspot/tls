@@ -39,6 +39,7 @@ verifies Ed25519 chain signatures, but it does not support Ed25519 CertificateVe
 | RFC 10024 hybrid groups | Proven, opt-in | Provider-backed ML-KEM on OpenSSL, AWS-LC, and BoringSSL; OpenSSL interop and the upstream tlsfuzzer matrix. Native ML-KEM-768 adds client-side OpenSSL negotiation and classical fallback to its key-exchange differentials and server-side upstream tlsfuzzer coverage |
 | KeyUpdate | Proven | Both directions and both roles, with a flood bound |
 | HelloRetryRequest | Proven | Both roles in memory and in TLS-Anvil; forced-HRR OpenSSL interop is not gated |
+| External PSK | Proven | In-memory client/server handshakes with no server certificate, application data in both directions, certificate fallback, exact `psk_dhe_ke` encoding, and binder-tamper rejection |
 | Session resumption | Partial | The engine side is proven; persistence, expiry, rotation, replay, and SNI partitioning are yours |
 | 0-RTT early data | Partial | Offer, accept, and reject are proven; accept is gated on the RFC 8446 §4.2.10 exact-suite, ALPN, and first-identity checks; ticket-age and anti-replay policy are yours, and the engine default is off |
 | Caller-driven readiness server | Proven | `tls_nonblocking.Server` has byte-stream and OpenSSL tests on Linux. `http` runs `just conformance-run-tls-readiness` in `just ci`, and `h2spec` over TLS passes on ubuntu-26.04 and macos-26 (run 44221027341, `503515f`, against `tls` v0.4.4 at `3ba8fbd`). |

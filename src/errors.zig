@@ -40,7 +40,7 @@ pub const ServerFlightError = switch (@typeInfo(
 pub const Class = enum {
     /// Peer certificate chain / hostname / signature did not authenticate.
     certificate,
-    /// AEAD tag or Finished MAC mismatch.
+    /// AEAD tag, Finished MAC, or PSK binder mismatch.
     decrypt,
     /// Peer sent a fatal alert.
     alert,
@@ -115,9 +115,10 @@ pub fn classify(err: HandshakeError) Class {
         => .certificate,
 
         // ── Cryptographic proof failed ──
-        // RFC 8446 §4.4.4 (Finished) and §5.2 (record AEAD).
+        // RFC 8446 §4.2.11.2 (PSK binder), §4.4.4 (Finished), §5.2 (record AEAD).
         error.AuthenticationFailed,
         error.EarlyDataSkipLimitExceeded,
+        error.InvalidPskBinder,
         error.InvalidVerifyData,
         => .decrypt,
 
@@ -186,7 +187,10 @@ pub fn classify(err: HandshakeError) Class {
         error.HybridGroupUnavailable,
         error.UnsupportedPrimitive,
         error.IdentityTooLong,
+        error.EmptyIdentity,
+        error.PskTooShort,
         error.InvalidBinderLength,
+        error.ClientHelloTooLarge,
         error.EmptyCertificateChain,
         error.InvalidCertificate,
         error.InvalidHybridPolicy,

@@ -37,7 +37,7 @@ version.
 - [Supported surface](https://baskingspot.dev/tls/#supported-surface): what CI exercises, what the caller owns, and what is out of scope. Native crypto is the development default. OpenSSL and AWS-LC are the production choices.
 - [The buffer model](https://baskingspot.dev/tls/#the-buffer-model): the engine owns the protocol, you own every buffer, and `RecordBuffer` frames a byte stream into records.
 - [The drive loop](https://baskingspot.dev/tls/#the-drive-loop): working client and server code, the `pending_write` interlock, close semantics, and peer alerts.
-- [Credentials and negotiation](https://baskingspot.dev/tls/#credentials-and-negotiation): server credentials, certificate policy, tickets, SNI, ALPN, and the RFC 10024 hybrid groups.
+- [Credentials and negotiation](https://baskingspot.dev/tls/#credentials-and-negotiation): server credentials, external PSKs, certificate policy, tickets, SNI, ALPN, and the RFC 10024 hybrid groups.
 - [Integrations](https://baskingspot.dev/tls/#integrations): blocking streams, epoll, io_uring, and kTLS.
 - [C ABI](https://baskingspot.dev/tls/#c-abi): the partial, client-only C surface: `baskingspot_tls_*`, `include/baskingspot_tls.h`, and `libbaskingspot_tls.a`.
 - [Performance](https://baskingspot.dev/tls/#performance): the AES-128-GCM headline row against rustls and libssl, three n=10 captures, and where it loses.

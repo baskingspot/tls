@@ -44,6 +44,7 @@ const max_post_handshake_key_updates = handshake.max_post_handshake_key_updates;
 const max_post_handshake_new_session_tickets =
     handshake.max_post_handshake_new_session_tickets;
 const hkdf = @import("hkdf.zig");
+const PskKind = hkdf.PskKind;
 const handshake_key_pairs = @import("handshake_key_pairs.zig");
 const hybrid_kex = @import("hybrid_kex.zig");
 const traffic_secrets = @import("traffic_secrets.zig");
@@ -689,18 +690,19 @@ received_certificate_request: bool,
 /// RFC 8446 §4.4.2, §4.4.3. Caller-owned: tls stores references and does not
 /// copy; the chain and signer must outlive the handshake.
 client_credentials: ?ClientCredentials,
-/// PSK offered for resumption via startWithPsk (RFC 8446 §4.2.11), retained
-/// so processServerHello can use it as the early secret when the server
-/// selects it. Caller-owned: the PSK and identity bytes live in the
-/// SessionTicket passed to startWithPsk, which must outlive the handshake.
+/// PSK offered through startWithPsk or startWithExternalPsk (RFC 8446
+/// §4.2.11), retained so processServerHello can use it as the early secret
+/// when the server selects it. The caller's PSK and identity bytes must
+/// outlive the handshake.
 offered_psk: ?[]const u8,
 offered_psk_identity: ?[]const u8,
 /// Exact value encoded in ClientHello1 and retained for a possible retry.
 offered_psk_obfuscated_ticket_age: u32,
 offered_psk_cipher_suite: CipherSuite,
-/// ALPN protocol of the session that issued the offered ticket (RFC 8446
-/// §4.2.10). Borrows the SessionTicket passed to startWithPsk, which must
-/// outlive the handshake. Empty means the issuing session negotiated no ALPN.
+/// Binder label provisioned with the PSK. RFC 8446 §7.1.
+offered_psk_kind: PskKind,
+/// ALPN protocol of the session that issued a resumption ticket (RFC 8446
+/// §4.2.10). Empty for an external PSK or a session that negotiated no ALPN.
 offered_psk_alpn: []const u8,
 /// Whether the server selected our offered PSK (RFC 8446 §4.2.11). Set in
 /// processServerHello from ServerHello `pre_shared_key.selected_identity`.
@@ -800,6 +802,7 @@ pub fn init(config: Config) ClientHandshake {
         .offered_psk_identity = null,
         .offered_psk_obfuscated_ticket_age = 0,
         .offered_psk_cipher_suite = .aes_128_gcm_sha256,
+        .offered_psk_kind = .resumption,
         .offered_psk_alpn = "",
         .server_selected_psk = false,
         .early_tx = null,
@@ -874,7 +877,10 @@ pub const StartError = error{
     InvalidServerName,
     ServerNameTooLong,
     IdentityTooLong,
+    EmptyIdentity,
+    PskTooShort,
     InvalidBinderLength,
+    ClientHelloTooLarge,
 } || AlpnError || aead.Error || hybrid_kex.Error || ConfigError ||
     extension_type.ExtraExtensionError;
 
@@ -1044,22 +1050,61 @@ pub fn startWithPsk(
     out: []u8,
     offer_early_data: bool,
 ) StartError![]const u8 {
+    const offer = offer_early_data and ticket.max_early_data_size != null;
+    return self.startWithPskOffer(
+        ticket.identity.constSlice(),
+        ticket.psk.constSlice(),
+        ticket.cipher_suite,
+        .resumption,
+        ticket.ticket_age_add,
+        ticket.alpn_protocol.constSlice(),
+        offer,
+        out,
+    );
+}
+
+/// Begin a handshake with an externally provisioned PSK. The ClientHello
+/// offers `identity` with an obfuscated ticket age of zero and only the
+/// psk_dhe_ke key exchange mode. External PSKs do not offer early data through
+/// this entry point. Call offerAlpn() first to offer ALPN protocols. The
+/// identity must be non-empty, and the PSK must contain at least 16 bytes
+/// (RFC 9257 §6). Both slices must outlive the handshake. RFC 8446 §2.2,
+/// §4.2.9, §4.2.11.1.
+pub fn startWithExternalPsk(
+    self: *ClientHandshake,
+    identity: []const u8,
+    psk: []const u8,
+    suite: CipherSuite,
+    out: []u8,
+) StartError![]const u8 {
+    if (identity.len == 0) return error.EmptyIdentity;
+    // RFC 9257 §6 requires at least 128 bits for an external PSK.
+    if (psk.len < 16) return error.PskTooShort;
+    return self.startWithPskOffer(identity, psk, suite, .external, 0, "", false, out);
+}
+
+fn startWithPskOffer(
+    self: *ClientHandshake,
+    identity: []const u8,
+    psk: []const u8,
+    suite: CipherSuite,
+    psk_kind: PskKind,
+    obfuscated_ticket_age: u32,
+    ticket_alpn: []const u8,
+    offer_early_data: bool,
+    out: []u8,
+) StartError![]const u8 {
     assert(self.state == .start);
     if (out.len < frame.header_len) return error.BufferTooShort;
-    const identity = ticket.identity.constSlice();
-    // Retain the exact wire value passed to the encoder in case HRR requires
-    // an otherwise identical PSK identity entry in ClientHello2.
-    const obfuscated_ticket_age = ticket.ticket_age_add;
-    // binder hash length is the PSK's original cipher suite hash length.
-    const binder_len: u8 = switch (ticket.cipher_suite) {
+    // The binder hash length is the hash length provisioned with the PSK.
+    const binder_len: u8 = switch (suite) {
         .aes_128_gcm_sha256, .chacha20_poly1305_sha256 => 32,
         .aes_256_gcm_sha384 => 48,
     };
-    const offer = offer_early_data and ticket.max_early_data_size != null;
 
-    // Resumption retains the full RFC 10024 policy: the PSK authenticates the
-    // handshake, while psk_dhe_ke still negotiates a fresh (possibly hybrid)
-    // shared secret. Explicit hybrid intent fails closed just as start() does.
+    // PSK authentication retains the full RFC 10024 policy: psk_dhe_ke still
+    // negotiates a fresh (possibly hybrid) shared secret. Explicit hybrid
+    // intent fails closed just as start() does.
     try validateHybridPolicy(self.hybrid, &self.keypairs);
     var hybrid_public: [hybrid_kex.max_client_share_len]u8 = undefined;
     var hybrid_share: ?client_hello.KemShare = null;
@@ -1082,26 +1127,26 @@ pub fn startWithPsk(
         hybrid_share,
         .psk_dhe_ke,
         identity,
-        // obfuscated_ticket_age = (ticket_age + ticket_age_add) mod 2^32;
-        // the caller adds the real age. For a fresh offer at age 0 this is
-        // just ticket_age_add.
         obfuscated_ticket_age,
         binder_len,
-        offer,
+        offer_early_data,
         self.extra_extensions,
     );
     const ch = r.msg;
+    if (ch.len > frame.max_plaintext_len) return error.ClientHelloTooLarge;
 
     // Compute the binder over the truncated prefix. RFC 8446 §4.2.11.2:
     // binder = HMAC(finished_key, Hash(prefix)), where the binder key chain is
-    // pskEarlySecret(psk) -> resumptionBinderKey -> finishedKey.
-    const psk = ticket.psk.constSlice();
-    switch (ticket.cipher_suite) {
+    // pskEarlySecret(psk) -> binderKey(psk_kind) -> finishedKey.
+    switch (suite) {
         .aes_128_gcm_sha256, .chacha20_poly1305_sha256 => {
             const H = hkdf.HkdfSha256;
-            const early = H.pskEarlySecret(psk);
-            const binder_key = H.resumptionBinderKey(early);
-            const fin_key = H.finishedKey(.{ .data = binder_key.data });
+            var early = H.pskEarlySecret(psk);
+            defer early.secureZero();
+            var binder_key = H.binderKey(early, psk_kind);
+            defer binder_key.secureZero();
+            var fin_key = H.finishedKey(.{ .data = binder_key.data });
+            defer fin_key.secureZero();
             var th: H.TranscriptHash = undefined;
             Sha256.hash(ch[0..r.prefix_len], &th.data, .{});
             const binder = H.binder(fin_key, &th);
@@ -1109,9 +1154,12 @@ pub fn startWithPsk(
         },
         .aes_256_gcm_sha384 => {
             const H = hkdf.HkdfSha384;
-            const early = H.pskEarlySecret(psk);
-            const binder_key = H.resumptionBinderKey(early);
-            const fin_key = H.finishedKey(.{ .data = binder_key.data });
+            var early = H.pskEarlySecret(psk);
+            defer early.secureZero();
+            var binder_key = H.binderKey(early, psk_kind);
+            defer binder_key.secureZero();
+            var fin_key = H.finishedKey(.{ .data = binder_key.data });
+            defer fin_key.secureZero();
             var th: H.TranscriptHash = undefined;
             Sha384.hash(ch[0..r.prefix_len], &th.data, .{});
             const binder = H.binder(fin_key, &th);
@@ -1122,13 +1170,14 @@ pub fn startWithPsk(
     const header: frame.Header = .init(.handshake, @intCast(ch.len));
     header.write(out[0..frame.header_len]);
     // Retain the offered PSK so processServerHello can use it as the early
-    // secret if the server selects it. The PSK bytes live in the caller's
-    // SessionTicket, which must outlive the handshake.
+    // secret if the server selects it. The caller's PSK and identity bytes
+    // must outlive the handshake.
     self.offered_psk = psk;
     self.offered_psk_identity = identity;
     self.offered_psk_obfuscated_ticket_age = obfuscated_ticket_age;
-    self.offered_psk_cipher_suite = ticket.cipher_suite;
-    self.offered_psk_alpn = ticket.alpn_protocol.constSlice();
+    self.offered_psk_cipher_suite = suite;
+    self.offered_psk_kind = psk_kind;
+    self.offered_psk_alpn = ticket_alpn;
 
     // 0-RTT (RFC 8446 §4.2.10, §7.1): if the caller opted in and the ticket
     // permits early data, derive the client_early_traffic_secret over the
@@ -1136,8 +1185,8 @@ pub fn startWithPsk(
     // The caller uses sendEarlyData() to send 0-RTT data before the server
     // Finished. Replay risk: 0-RTT data is replayable; the caller is
     // responsible for replay-safe policy (disabled by default).
-    if (offer) {
-        switch (ticket.cipher_suite) {
+    if (offer_early_data) {
+        switch (suite) {
             .aes_128_gcm_sha256, .chacha20_poly1305_sha256 => {
                 const H = hkdf.HkdfSha256;
                 const early = H.pskEarlySecret(psk);
@@ -1146,7 +1195,7 @@ pub fn startWithPsk(
                 const early_traffic = H.clientEarlyTrafficSecret(early, &th);
                 if (self.traffic_secret_storage) |keep|
                     keep.setClientEarly(early_traffic.data[0..H.prk_len]);
-                self.early_tx = try H.makeRecordLayer(ticket.cipher_suite, early_traffic);
+                self.early_tx = try H.makeRecordLayer(suite, early_traffic);
             },
             .aes_256_gcm_sha384 => {
                 const H = hkdf.HkdfSha384;
@@ -1156,7 +1205,7 @@ pub fn startWithPsk(
                 const early_traffic = H.clientEarlyTrafficSecret(early, &th);
                 if (self.traffic_secret_storage) |keep|
                     keep.setClientEarly(early_traffic.data[0..H.prk_len]);
-                self.early_tx = try H.makeRecordLayer(ticket.cipher_suite, early_traffic);
+                self.early_tx = try H.makeRecordLayer(suite, early_traffic);
             },
         }
     }
@@ -1503,6 +1552,7 @@ pub const HelloRetryRequestError = server_hello.HrrParseError ||
     error{
         UnsupportedCipherSuite,
         UnsupportedKeyShareGroup,
+        ClientHelloTooLarge,
         IllegalParameter,
         UnexpectedMessage,
         BufferTooShort,
@@ -1544,6 +1594,7 @@ fn patchRetryBinderSha(
     comptime Hash: type,
     initial_transcript: *const Hash,
     psk: []const u8,
+    psk_kind: PskKind,
     encoded: client_hello.PskEncodeResult,
 ) void {
     assert(encoded.binder_len == H.prk_len);
@@ -1552,9 +1603,12 @@ fn patchRetryBinderSha(
     const digest = transcript.peek();
     var th: H.TranscriptHash = undefined;
     @memcpy(th.data[0..], digest[0..]);
-    const early = H.pskEarlySecret(psk);
-    const binder_key = H.resumptionBinderKey(early);
-    const fin_key = H.finishedKey(.{ .data = binder_key.data });
+    var early = H.pskEarlySecret(psk);
+    defer early.secureZero();
+    var binder_key = H.binderKey(early, psk_kind);
+    defer binder_key.secureZero();
+    var fin_key = H.finishedKey(.{ .data = binder_key.data });
+    defer fin_key.secureZero();
     const binder = H.binder(fin_key, &th);
     @memcpy(encoded.msg[encoded.binder_offset..][0..encoded.binder_len], &binder);
 }
@@ -1571,6 +1625,7 @@ fn patchRetryPskBinder(
                 Sha256,
                 &s.transcript,
                 psk,
+                self.offered_psk_kind,
                 encoded,
             ),
             else => unreachable,
@@ -1581,6 +1636,7 @@ fn patchRetryPskBinder(
                 Sha384,
                 &s.transcript,
                 psk,
+                self.offered_psk_kind,
                 encoded,
             ),
             else => unreachable,
@@ -1736,6 +1792,7 @@ pub fn processHelloRetryRequest(
         hybrid_share,
         retry_psk,
     );
+    if (encoded.msg.len > frame.max_plaintext_len) return error.ClientHelloTooLarge;
 
     if (retry_psk != null) self.patchRetryPskBinder(encoded);
 
@@ -4565,6 +4622,251 @@ test "startWithPsk: binder matches an independent HMAC over the prefix" {
 
     // The offered identity appears in the pre_shared_key extension.
     try testing.expect(mem.find(u8, ch, &identity) != null);
+}
+
+// RFC 8446 §4.2.11.1, §4.2.9, §7.1 — an external PSK has age zero and offers
+// only psk_dhe_ke. Both entry points share every ClientHello byte through the
+// binder prefix. Their binders differ because external and resumption PSKs use
+// different labels.
+test "startWithExternalPsk: shares the resumption ClientHello path" {
+    const identity = "nvme0n1";
+    const psk: [32]u8 = @splat(0x42);
+    const keypairs: KeyPairs = .initWithP256(.generate(), try .generate());
+    var resumption: ClientHandshake = .init(.{
+        .keypairs = keypairs,
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer resumption.deinit();
+    var external: ClientHandshake = .init(.{
+        .keypairs = keypairs,
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer external.deinit();
+
+    var ticket: SessionTicket = .init(0, 0, .aes_128_gcm_sha256, 16384);
+    ticket.identity.appendSliceAssumeCapacity(identity);
+    ticket.psk.appendSliceAssumeCapacity(&psk);
+    var resumption_out: [1024]u8 = undefined;
+    var external_out: [1024]u8 = undefined;
+    const expected = try resumption.startWithPsk(&ticket, &resumption_out, false);
+    const record = try external.startWithExternalPsk(
+        identity,
+        &psk,
+        .aes_128_gcm_sha256,
+        &external_out,
+    );
+    const parsed = try client_hello.parse(record[frame.header_len..]);
+    const prefix_len = frame.header_len + parsed.binders_offset;
+    try testing.expectEqualSlices(u8, expected[0..prefix_len], record[0..prefix_len]);
+    try testing.expect(!mem.eql(
+        u8,
+        expected[expected.len - 32 ..],
+        record[record.len - 32 ..],
+    ));
+    try testing.expectEqualSlices(
+        u8,
+        &.{compat.enumToInt(client_hello.PskKeyExchangeMode.psk_dhe_ke)},
+        parsed.psk_key_exchange_modes.?,
+    );
+    try testing.expect(!parsed.offered_early_data);
+    try testing.expectEqual(@as(usize, 0), parsed.alpn_protocols.len);
+    try testing.expect(external.early_tx == null);
+
+    const psk_ext = parsed.psk_ext.?;
+    const age_offset = 2 + 2 + identity.len;
+    try testing.expectEqual(@as(u32, 0), memx.readInt(u32, psk_ext[age_offset..][0..4]));
+    var offers: client_hello.PskOfferIter = try .init(psk_ext);
+    const offer = (try offers.next()).?;
+    try testing.expectEqualStrings(identity, offer.identity);
+    try testing.expectEqual(@as(usize, 32), offer.binder.len);
+    try testing.expect((try offers.next()) == null);
+
+    const H = hkdf.HkdfSha256;
+    const early = H.pskEarlySecret(&psk);
+    const binder_key = H.externalBinderKey(early);
+    const fin_key = H.finishedKey(.{ .data = binder_key.data });
+    var th: H.TranscriptHash = undefined;
+    Sha256.hash(record[frame.header_len..][0..parsed.binders_offset], &th.data, .{});
+    const expected_binder = H.binder(fin_key, &th);
+    try testing.expectEqualSlices(u8, &expected_binder, offer.binder);
+}
+
+// RFC 8446 §4.2.11 — an external identity borrows caller storage and can
+// exceed the 256-byte fixed capacity of a resumption SessionTicket.
+test "startWithExternalPsk: accepts an identity longer than ticket storage" {
+    const identity: [512]u8 = @splat(0x61);
+    const psk: [32]u8 = @splat(0x42);
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer hs.deinit();
+    var out: [2048]u8 = undefined;
+    const record = try hs.startWithExternalPsk(
+        &identity,
+        &psk,
+        .aes_128_gcm_sha256,
+        &out,
+    );
+    const parsed = try client_hello.parse(record[frame.header_len..]);
+    var offers: client_hello.PskOfferIter = try .init(parsed.psk_ext.?);
+    try testing.expectEqualSlices(u8, &identity, (try offers.next()).?.identity);
+}
+
+// RFC 8446 §4.2.11 and RFC 9257 §6 — an external identity is non-empty and an
+// external PSK carries at least 128 bits. Reject caller mistakes before encoding.
+test "startWithExternalPsk: rejects an empty identity and a short key" {
+    const psk: [32]u8 = @splat(0x42);
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer hs.deinit();
+    var out: [1024]u8 = undefined;
+    try testing.expectError(
+        error.EmptyIdentity,
+        hs.startWithExternalPsk("", &psk, .aes_128_gcm_sha256, &out),
+    );
+    try testing.expectError(
+        error.PskTooShort,
+        hs.startWithExternalPsk("identity", psk[0..15], .aes_128_gcm_sha256, &out),
+    );
+    try testing.expectEqual(.start, hs.state);
+    _ = try hs.startWithExternalPsk("identity", &psk, .aes_128_gcm_sha256, &out);
+}
+
+fn startExternalForTest(identity: []const u8, psk: []const u8, out: []u8) StartError![]const u8 {
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+    });
+    defer hs.deinit();
+    return hs.startWithExternalPsk(identity, psk, .aes_128_gcm_sha256, out);
+}
+
+// RFC 8446 §5.1 — one ClientHello record carries at most 2^14 bytes. The
+// extension vector also retains its u16 bound at larger caller input sizes.
+test "startWithExternalPsk: bounds the encoded ClientHello" {
+    const psk: [32]u8 = @splat(0x42);
+    var probe_out: [1024]u8 = undefined;
+    const probe = try startExternalForTest("x", &psk, &probe_out);
+    const overhead = probe.len - 1;
+    const exact_identity_len = frame.max_plaintext_len + frame.header_len - overhead;
+
+    var identity: [std.math.maxInt(u16)]u8 = @splat(0x61);
+    var out: [std.math.maxInt(u16) + 1024]u8 = undefined;
+    const exact = try startExternalForTest(identity[0..exact_identity_len], &psk, &out);
+    try testing.expectEqual(frame.max_plaintext_len + frame.header_len, exact.len);
+    try testing.expectError(
+        error.ClientHelloTooLarge,
+        startExternalForTest(identity[0 .. exact_identity_len + 1], &psk, &out),
+    );
+    try testing.expectError(
+        error.ExtensionTooLong,
+        startExternalForTest(&identity, &psk, &out),
+    );
+}
+
+// RFC 8446 §5.1, §4.2.11 — the low-level PSK encoder reports extension
+// overflow instead of treating it as an invariant violation.
+test "encodeWithPsk rejects an oversized extension vector" {
+    const identity: [std.math.maxInt(u16)]u8 = @splat(0x61);
+    var out: [std.math.maxInt(u16) + 1024]u8 = undefined;
+    try testing.expectError(
+        error.ExtensionTooLong,
+        client_hello.encodeWithPsk(
+            &out,
+            .zero,
+            x25519.KeyPair.generate().public_key,
+            (try p256.KeyPair.generate()).public_key,
+            null,
+            null,
+            &.{},
+            .psk_dhe_ke,
+            &identity,
+            0,
+            32,
+            false,
+        ),
+    );
+}
+
+// RFC 8446 §5.1, §4.2.11 — a large retained identity and an HRR cookie cannot
+// overflow the ClientHello2 extension vector.
+test "ClientHello2 encoder rejects oversized PSK extensions" {
+    const identity: [std.math.maxInt(u16)]u8 = @splat(0x61);
+    const offer: client_hello.RetryPsk = .{
+        .identity = &identity,
+        .obfuscated_ticket_age = 0,
+        .binder_len = 32,
+        .mode = .psk_dhe_ke,
+    };
+    const selected_group: NamedGroup = if (root.capabilities.supportsGroup(.client, .x25519))
+        .x25519
+    else
+        .secp256r1;
+    var out: [64]u8 = undefined;
+    try testing.expectError(
+        error.ExtensionTooLong,
+        client_hello.encodeRetryAfterHrrWithHybridAndPsk(
+            &out,
+            .zero,
+            x25519.KeyPair.generate().public_key,
+            (try p256.KeyPair.generate()).public_key,
+            null,
+            selected_group,
+            "cookie",
+            null,
+            &.{},
+            &.{},
+            null,
+            offer,
+        ),
+    );
+}
+
+// RFC 8446 §5.1, §4.1.4 — a peer-supplied HRR cookie cannot push ClientHello2
+// past the single-record plaintext limit.
+test "processHelloRetryRequest rejects an oversized ClientHello2" {
+    const group: NamedGroup = .secp256r1_mlkem768;
+    if (!backend.supportsClientHybridGroup(group)) return error.SkipZigTest;
+    const identity: [16000]u8 = @splat(0x61);
+    const psk: [32]u8 = @splat(0x42);
+    var hs: ClientHandshake = .init(.{
+        .keypairs = try .init(.generate()),
+        .host_name = null,
+        .now_sec = 0,
+        .random = .zero,
+        .hybrid = .{ .supported_groups = &.{group}, .initial_key_share = null },
+    });
+    defer hs.deinit();
+    var ch1_out: [frame.max_plaintext_len + frame.header_len]u8 = undefined;
+    _ = try hs.startWithExternalPsk(&identity, &psk, .aes_128_gcm_sha256, &ch1_out);
+    hs.completeWrite();
+
+    const cookie: [32]u8 = @splat(0x5a);
+    var hrr_buf: [128]u8 = undefined;
+    const hrr = try encodeHrrWithCookieForTest(
+        &hrr_buf,
+        .aes_128_gcm_sha256,
+        group,
+        &cookie,
+    );
+    var ch2_out: [frame.max_plaintext_len + 2048]u8 = undefined;
+    try testing.expectError(
+        error.ClientHelloTooLarge,
+        hs.processHelloRetryRequest(hrr, &ch2_out),
+    );
 }
 
 // RFC 8446 §4.2.9, RFC 10024 §4.1 — psk_dhe_ke retains the configured

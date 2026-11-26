@@ -5,6 +5,51 @@ run IDs, per-claim tables, and forensic notes. The human-facing status page is
 `PRODUCTION_READINESS.md`; this file is where you check whether a claim on that
 page is true.
 
+## 2026-11-26 external PSK (#227)
+
+Scope: the client external-PSK entry point, the RFC 8446 §7.1 binder labels,
+PSK-only server flight, certificate fallback, and binder rejection. The base
+revision is `935a61b`. The host is Linux arm64 with Zig 0.17.0 and OpenSSL
+3.6.5.
+
+RFC 8446 §7.1 requires `ext binder` for an external PSK and `res binder` for
+resumption. This prevents byte-identical ClientHellos from the two client entry
+points. `PskEntry.kind` tells the server which label to verify. Its default and
+`PskEntry.init` preserve resumption behavior for existing callers.
+
+The focused OpenSSL-backend runs passed three `External` tests, five
+`external` tests, all 37 `PSK` tests, and four `selectPsk` tests. The PSK-only
+test decrypts the server flight and accepts exactly EncryptedExtensions
+followed by Finished. It also exchanges application data in both directions
+with `server_credentials == .none`. The HRR tests cover a valid external binder
+and a tampered ClientHello2 binder. Another test proves that a bad first
+identity aborts before a later valid identity. The final `just fmt`, `just
+lint`, and `just ci` runs passed on Linux arm64.
+
+Mutation checks, each restored afterwards:
+
+- Disabling the `InvalidPskBinder` return made the tamper test fail at
+  `expectError`: the server returned a ServerHello instead.
+- Changing the external binder kind to `.resumption` made the ClientHello test
+  fail on the assertion that the two binder labels produce different binders.
+- Changing the external obfuscated age from zero to one made the same test fail
+  on the prefix comparison at the age field.
+- Hardcoding `.resumption` in the ClientHello2 binder patch made the valid HRR
+  test fail with `InvalidPskBinder` during ClientHello2 selection.
+
+The review follow-up also raised the borrowed-identity cap from 256 to the wire
+limit, added empty-identity and short-key rejection, and wiped binder secrets on
+both client and server paths. A second review found the missing whole-message
+bounds. The final tests accept an exact 2^14-byte ClientHello, reject the next
+byte, reject extension-length overflow, and reject an HRR cookie that pushes
+ClientHello2 over 2^14 bytes. Removing either record check made its test accept
+the oversize message. Substituting `BufferTooShort` for either extension error
+made the corresponding test fail on the expected error. The low-level
+`encodeWithPsk` wrapper also returns `ExtensionTooLong` instead of reaching
+`unreachable`.
+
+No OpenSSL-peer or NVMe/TCP external-PSK interop run covers this change.
+
 ## 2026-11-23 native default (#199)
 
 Scope: the default backend, its standalone integration and conformance defaults,

@@ -131,6 +131,7 @@ pub fn alertForHandshakeError(err: HandshakeError) ?Description {
         error.EarlyDataSkipLimitExceeded => .bad_record_mac,
         error.SignatureVerificationFailed,
         error.InvalidVerifyData,
+        error.InvalidPskBinder,
         // RFC 8446 §6.2 names this case: decrypt_error covers "a certificate
         // signature that did not verify".
         error.CertificateSignatureInvalid,
@@ -263,7 +264,10 @@ pub fn alertForHandshakeError(err: HandshakeError) ?Description {
         error.InvalidServerName,
         error.ServerNameTooLong,
         error.IdentityTooLong,
+        error.EmptyIdentity,
+        error.PskTooShort,
         error.InvalidBinderLength,
+        error.ClientHelloTooLarge,
         error.TooManyAlpnBytes,
         error.AlpnProtocolTooLong,
         => .internal_error,
