@@ -94,6 +94,13 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const crypto_dep = b.dependency("crypto", .{
+        .target = target,
+        .optimize = optimize,
+        .crypto = crypto_backend,
+        .@"crypto-approved-only" = crypto_approved_only,
+    });
+    const crypto_mod = crypto_dep.module("crypto");
 
     const mod = b.addModule("tls", .{
         .root_source_file = b.path("src/root.zig"),
@@ -102,23 +109,11 @@ pub fn build(b: *Build) void {
     });
     mod.addOptions("build_options", build_options);
     mod.addImport("stdx", stdx_dep.module("stdx"));
+    mod.addImport("crypto", crypto_mod);
     if (!native_crypto) {
         mod.link_libc = true;
         mod.linkSystemLibrary(c_libs.?.crypto, .{});
     }
-
-    // #145 — the deprecated @cImport blocks moved to translate-c wrapper
-    // headers. Auto and explicit libcrypto consumers still receive this
-    // module before the consumer early return. Native never creates it.
-    const c_modules: ?translate_c.Modules = if (native_crypto)
-        null
-    else
-        translate_c.addModules(b, .{
-            .target = target,
-            .optimize = optimize,
-            .libs = c_libs.?,
-        });
-    if (c_modules) |modules| mod.addImport("openssl_c", modules.openssl_c);
 
     // Library-only mirrors of the standalone integration build scripts. The
     // distribution smoke compiles each mirror from the fetched root package.
@@ -152,6 +147,17 @@ pub fn build(b: *Build) void {
     // out of a core consumer's cache.
     if (b.pkg_hash.len != 0) return;
 
+    // tls's test and benchmark harnesses own their C imports separately from
+    // the provider package. Native never creates them.
+    const c_modules: ?translate_c.Modules = if (native_crypto)
+        null
+    else
+        translate_c.addModules(b, .{
+            .target = target,
+            .optimize = optimize,
+            .libs = c_libs.?,
+        });
+
     if (native_crypto) {
         const testingx_dep = b.lazyDependency("testingx", .{ .target = target });
         const native_test_mod = b.createModule(.{
@@ -161,6 +167,7 @@ pub fn build(b: *Build) void {
         });
         native_test_mod.addOptions("build_options", build_options);
         native_test_mod.addImport("stdx", stdx_dep.module("stdx"));
+        native_test_mod.addImport("crypto", crypto_mod);
         const native_core_test_mod = b.createModule(.{
             .root_source_file = b.path("src/test_native_core.zig"),
             .target = target,
@@ -168,6 +175,7 @@ pub fn build(b: *Build) void {
         });
         native_core_test_mod.addOptions("build_options", build_options);
         native_core_test_mod.addImport("stdx", stdx_dep.module("stdx"));
+        native_core_test_mod.addImport("crypto", crypto_mod);
         var fixtures_mod: ?*Build.Module = null;
         if (testingx_dep) |dep| {
             const testingx_mod = dep.module("testingx");
@@ -199,6 +207,7 @@ pub fn build(b: *Build) void {
             bench_mod.addNativeSteps(b, @This(), .{
                 .target = target,
                 .tls_mod = mod,
+                .crypto_mod = crypto_mod,
                 .build_options = build_options,
                 .fixtures_mod = fixtures,
                 .stdx_mod = stdx_dep.module("stdx"),
@@ -217,8 +226,9 @@ pub fn build(b: *Build) void {
     test_mod.addOptions("build_options", build_options);
     test_mod.link_libc = true;
     test_mod.linkSystemLibrary(libs.crypto, .{});
-    test_mod.addImport("openssl_c", modules.openssl_c);
     test_mod.addImport("stdx", stdx_dep.module("stdx"));
+    test_mod.addImport("crypto", crypto_mod);
+    test_mod.addImport("openssl_c", modules.openssl_c);
 
     // testingx: plain-text test runner, benchmark harness, and comptime
     // fixtures. Lazy — only fetched when a development step is built, not
@@ -275,9 +285,11 @@ pub fn build(b: *Build) void {
     bench_mod.addSteps(b, @This(), .{
         .target = target,
         .tls_mod = mod,
+        .crypto_mod = crypto_mod,
         .c_mod = c_mod,
         .c_ssl_mod = c_ssl_mod,
         .openssl_c = modules.openssl_c,
+        .openssl_ssl = modules.openssl_ssl,
         .build_options = build_options,
         .fixtures_mod = fixtures_mod,
         .stdx_mod = stdx_dep.module("stdx"),
@@ -302,10 +314,8 @@ pub fn build(b: *Build) void {
             .optimize = optimize,
         });
         capi_mod.addOptions("build_options", build_options);
-        // capi.zig imports root.zig relatively, so it compiles the crypto
-        // tree (and c_openssl.zig) within itself (#145).
-        capi_mod.addImport("openssl_c", modules.openssl_c);
         capi_mod.addImport("stdx", stdx_dep.module("stdx"));
+        capi_mod.addImport("crypto", crypto_mod);
         capi_mod.link_libc = true;
 
         // Zig 0.17's system-library search is paths-first and stops at the

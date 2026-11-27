@@ -26,7 +26,7 @@ const certificate_request = @import("certificate_request.zig");
 const client_hello = @import("client_hello.zig");
 const ClientHandshake = @import("ClientHandshake.zig");
 const capabilities = @import("capabilities.zig");
-const backend = @import("crypto/backend.zig");
+const backend = @import("crypto");
 const default_supported_suites = capabilities.current.cipher_suites;
 const encrypted_extensions = @import("encrypted_extensions.zig");
 const finished = @import("finished.zig");
@@ -6558,7 +6558,7 @@ test "sendPreparedServerFlight: excluded signature_algorithms_cert gets handshak
 // server falls back to signature_algorithms for certificate chain selection.
 test "sendPreparedServerFlight: omitted signature_algorithms_cert falls back" {
     // Native verifies RSA-PSS but deliberately has no RSA private-key signing.
-    if (comptime backend.native_selected) return error.SkipZigTest;
+    if (comptime backend.active == .native) return error.SkipZigTest;
     if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
     var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
@@ -6711,7 +6711,7 @@ test "sendPreparedServerFlight: permitted signature_algorithms_cert completes ha
 // client can verify via signature_algorithms_cert, rather than its own
 // preference order, even when signature_algorithms allows both signers.
 test "sendPreparedServerFlight: two-chain server selects the chain the client can verify" {
-    if (comptime backend.native_selected) return error.SkipZigTest;
+    if (comptime backend.active == .native) return error.SkipZigTest;
     if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
     var rsa_key: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
@@ -6852,7 +6852,7 @@ test "sendPreparedServerFlight: two-chain server selects the chain the client ca
 // signature_algorithms_cert or fallback signature_algorithms, and is rejected
 // when excluded.
 test "sendPreparedServerFlight: RSASSA-PSS signed certificate matches rsa_pss_rsae_sha256" {
-    if (comptime backend.native_selected) return error.SkipZigTest;
+    if (comptime backend.active == .native) return error.SkipZigTest;
     if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
     var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
@@ -6923,7 +6923,7 @@ test "sendPreparedServerFlight: RSASSA-PSS signed certificate matches rsa_pss_rs
 // server whose certificate is signed with RSASSA-PSS.
 test "client accepts an RSASSA-PSS-signed server certificate by default" {
     // Native verifies RSA-PSS but deliberately has no RSA private-key signing.
-    if (comptime backend.native_selected) return error.SkipZigTest;
+    if (comptime backend.active == .native) return error.SkipZigTest;
     if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
 
@@ -6965,7 +6965,7 @@ test "client accepts an RSASSA-PSS-signed server certificate by default" {
 // RFC 8446 §4.2.3, §4.4.2.2 — a client that excludes PSS certificate schemes
 // rejects a PSS-signed certificate even if a peer sends it anyway.
 test "client rejects an excluded RSASSA-PSS-signed server certificate" {
-    if (comptime backend.native_selected) return error.SkipZigTest;
+    if (comptime backend.active == .native) return error.SkipZigTest;
     if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
 

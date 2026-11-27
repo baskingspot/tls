@@ -10,7 +10,7 @@ const crypto = std.crypto;
 const testing = std.testing;
 
 const aead = @import("aead.zig");
-const backend = @import("crypto/backend.zig");
+const backend = @import("crypto");
 const capabilities = @import("capabilities.zig");
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 const hmac = @import("hmac.zig");

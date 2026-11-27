@@ -5,7 +5,7 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const testing = std.testing;
 
-const mlkem_parameters = @import("crypto/mlkem_parameters.zig");
+const ParameterSet = @import("crypto").ParameterSet;
 const x25519 = @import("x25519.zig");
 const p256 = @import("p256.zig");
 const p384 = @import("p384.zig");
@@ -17,7 +17,7 @@ pub const ComponentOrder = enum {
 
 pub const HybridSpec = struct {
     classical_group: NamedGroup,
-    parameter_set: mlkem_parameters.ParameterSet,
+    parameter_set: ParameterSet,
     client_share_len: u16,
     server_share_len: u16,
     shared_secret_len: u8,

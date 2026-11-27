@@ -13,7 +13,7 @@ const path = Io.Dir.path;
 
 const fixtures = @import("fixtures");
 
-const entropy = @import("entropy.zig");
+const entropy = @import("crypto").entropy;
 const tls = @import("root.zig");
 
 const host = "127.0.0.1";

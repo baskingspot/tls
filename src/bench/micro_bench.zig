@@ -6,7 +6,7 @@ const doNotOptimizeAway = mem.doNotOptimizeAway;
 const testingx = @import("testingx");
 
 const aead = @import("../aead.zig");
-const backend = @import("../crypto/backend.zig");
+const backend = @import("crypto");
 const frame = @import("../frame.zig");
 const memx = @import("../memx.zig");
 const NewSessionTicket = @import("../NewSessionTicket.zig");

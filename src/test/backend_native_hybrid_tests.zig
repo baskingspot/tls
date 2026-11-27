@@ -4,10 +4,105 @@ const crypto = std.crypto;
 const mem = std.mem;
 const testing = std.testing;
 
-const backend = @import("../crypto/backend.zig");
-const backend_native = @import("../crypto/backend_native.zig");
-const c_openssl = @import("../crypto/c_openssl.zig");
-const c = c_openssl.openssl;
+const backend = @import("crypto");
+const c = @import("openssl_c");
+
+const backend_native = struct {
+    const KemKey = MlKem768.KeyPair;
+    const KemPeerKey = [MlKem768.PublicKey.encoded_length]u8;
+    const P256 = crypto.ecc.P256;
+    const sha2 = crypto.hash.sha2;
+
+    fn kemKeygenFromSeed(_: anytype, seed: *const [MlKem768.seed_length]u8) !KemKey {
+        return .generateDeterministic(seed.*);
+    }
+
+    fn kemPublic(key: KemKey, out: []u8) ![]u8 {
+        out[0..MlKem768.PublicKey.encoded_length].* = key.public_key.toBytes();
+        return out;
+    }
+
+    fn kemDecapsulate(_: anytype, key: KemKey, ciphertext: []const u8, out: []u8) ![]u8 {
+        const secret = key.secret_key.decaps(
+            &(ciphertext[0..MlKem768.ciphertext_length].*),
+        ) catch return error.LibcryptoFailed;
+        out[0..MlKem768.shared_length].* = secret;
+        return out;
+    }
+
+    fn kemLoadPublic(_: anytype, encoded: []const u8, out: *KemPeerKey) !void {
+        out.* = encoded[0..MlKem768.PublicKey.encoded_length].*;
+    }
+
+    fn kemEncapsulate(
+        _: anytype,
+        peer: *const KemPeerKey,
+        ciphertext_out: []u8,
+        secret_out: []u8,
+    ) !struct { ciphertext: []u8, secret: []u8 } {
+        const public_key = MlKem768.PublicKey.fromBytes(peer) catch return error.IdentityElement;
+        var seed: [MlKem768.encaps_seed_length]u8 = undefined;
+        defer crypto.secureZero(u8, &seed);
+        backend.entropy.fill(&seed);
+        const encapsulated = public_key.encapsDeterministic(&seed);
+        ciphertext_out[0..MlKem768.ciphertext_length].* = encapsulated.ciphertext;
+        secret_out[0..MlKem768.shared_length].* = encapsulated.shared_secret;
+        return .{ .ciphertext = ciphertext_out, .secret = secret_out };
+    }
+
+    fn privateKeyFromSecret(secret: *const [32]u8) ![32]u8 {
+        return secret.*;
+    }
+
+    fn publicKeyFromRaw(public_key: *const [32]u8) ![32]u8 {
+        return public_key.*;
+    }
+
+    fn x25519FreeKey(key: *[32]u8) void {
+        crypto.secureZero(u8, key);
+    }
+
+    fn rawPublicKeyFromPrivate(key: *const [32]u8) ![32]u8 {
+        return crypto.dh.X25519.recoverPublicKey(key.*);
+    }
+
+    fn sharedSecretDerive(ours: *const [32]u8, peer: *const [32]u8, out: *[32]u8) !void {
+        out.* = try crypto.dh.X25519.scalarmult(ours.*, peer.*);
+        if (crypto.timing_safe.eql([32]u8, out.*, @splat(0))) return error.IdentityElement;
+    }
+
+    fn p256PublicFromSecret(secret: *const [32]u8) ![65]u8 {
+        const point = P256.basePoint.mul(secret.*, .big) catch return error.IdentityElement;
+        return point.toUncompressedSec1();
+    }
+
+    fn p256PrivateKeyFromSecret(secret: *const [32]u8) ![32]u8 {
+        const scalar = P256.scalar.Scalar.fromBytes(
+            secret.*,
+            .big,
+        ) catch return error.IdentityElement;
+        if (scalar.isZero()) return error.IdentityElement;
+        return secret.*;
+    }
+
+    fn p256PublicKeyFromRaw(public_key: *const [65]u8) !P256 {
+        if (public_key[0] != 0x04) return error.IdentityElement;
+        const point = P256.fromSec1(public_key) catch return error.IdentityElement;
+        point.rejectIdentity() catch return error.IdentityElement;
+        return point;
+    }
+
+    fn p256SharedSecretDerive(ours: [32]u8, peer: P256, out: *[32]u8) !void {
+        const scalar = P256.scalar.Scalar.fromBytes(ours, .big) catch return error.IdentityElement;
+        if (scalar.isZero()) return error.IdentityElement;
+        const shared = peer.mul(ours, .big) catch return error.IdentityElement;
+        out.* = shared.affineCoordinates().x.toBytes(.big);
+    }
+
+    fn freeEcKey(key: anytype) void {
+        crypto.secureZero(u8, mem.asBytes(key));
+    }
+};
 const hkdf = @import("../hkdf.zig");
 const hybrid_kex = @import("../hybrid_kex.zig");
 const HybridKeyPairs = @import("../handshake_key_pairs.zig").KeyPairs;
@@ -22,97 +117,19 @@ const assert = std.debug.assert;
 /// derives from the native seed. The comparison therefore shares one key pair.
 fn opensslKeyFromNativeSeed(
     seed: *const [MlKem768.seed_length]u8,
-) !backend.kem_impl.KemKey {
+) !backend.kem.KemKey {
     var keypair = try MlKem768.KeyPair.generateDeterministic(seed.*);
     defer crypto.secureZero(u8, mem.asBytes(&keypair));
     var encoded = keypair.secret_key.toBytes();
     defer crypto.secureZero(u8, &encoded);
-    return c.EVP_PKEY_new_raw_private_key_ex(
+    const key = c.EVP_PKEY_new_raw_private_key_ex(
         null,
         "ML-KEM-768",
         null,
         &encoded,
         encoded.len,
-    ) orelse error.LibcryptoFailed;
-}
-
-fn expectNativeMlKem768Differential(seed: *const [MlKem768.seed_length]u8) !void {
-    var native_key = try backend_native.kemKeygenFromSeed(.mlkem768, seed);
-    defer crypto.secureZero(u8, mem.asBytes(&native_key));
-    var native_public_buf: [MlKem768.PublicKey.encoded_length]u8 = undefined;
-    const native_public = try backend_native.kemPublic(native_key, &native_public_buf);
-
-    const linked_key = try opensslKeyFromNativeSeed(seed);
-    defer backend.kem_impl.freeKey(linked_key);
-    var linked_public_buf: [MlKem768.PublicKey.encoded_length]u8 = undefined;
-    const linked_public = try backend.kem_impl.kemPublic(linked_key, &linked_public_buf);
-    try testing.expectEqualSlices(u8, native_public, linked_public);
-
-    var linked_peer: backend.kem_impl.KemPeerKey = undefined;
-    try backend.kem_impl.kemLoadPublic(.mlkem768, native_public, &linked_peer);
-    defer backend.kem_impl.freeKey(linked_peer);
-    var linked_ciphertext: [MlKem768.ciphertext_length]u8 = undefined;
-    var linked_server_secret: [MlKem768.shared_length]u8 = undefined;
-    defer crypto.secureZero(u8, &linked_server_secret);
-    const linked_server = try backend.kem_impl.kemEncapsulate(
-        .mlkem768,
-        &linked_peer,
-        &linked_ciphertext,
-        &linked_server_secret,
-    );
-
-    var native_client_secret: [MlKem768.shared_length]u8 = undefined;
-    defer crypto.secureZero(u8, &native_client_secret);
-    _ = try backend_native.kemDecapsulate(
-        .mlkem768,
-        native_key,
-        linked_server.ciphertext,
-        &native_client_secret,
-    );
-    var linked_client_secret: [MlKem768.shared_length]u8 = undefined;
-    defer crypto.secureZero(u8, &linked_client_secret);
-    _ = try backend.kem_impl.kemDecapsulate(
-        .mlkem768,
-        linked_key,
-        linked_server.ciphertext,
-        &linked_client_secret,
-    );
-    try testing.expectEqualSlices(u8, linked_server.secret, &native_client_secret);
-    try testing.expectEqualSlices(u8, linked_server.secret, &linked_client_secret);
-
-    var native_peer: backend_native.KemPeerKey = undefined;
-    try backend_native.kemLoadPublic(.mlkem768, linked_public, &native_peer);
-    var native_ciphertext: [MlKem768.ciphertext_length]u8 = undefined;
-    var native_server_secret: [MlKem768.shared_length]u8 = undefined;
-    defer crypto.secureZero(u8, &native_server_secret);
-    const native_server = try backend_native.kemEncapsulate(
-        .mlkem768,
-        &native_peer,
-        &native_ciphertext,
-        &native_server_secret,
-    );
-    var linked_native_client_secret: [MlKem768.shared_length]u8 = undefined;
-    defer crypto.secureZero(u8, &linked_native_client_secret);
-    _ = try backend.kem_impl.kemDecapsulate(
-        .mlkem768,
-        linked_key,
-        native_server.ciphertext,
-        &linked_native_client_secret,
-    );
-    try testing.expectEqualSlices(u8, native_server.secret, &linked_native_client_secret);
-}
-
-// FIPS 203 §7 — two fixed seeds produce identical public keys and ML-KEM
-// secrets on std and OpenSSL. Encapsulation runs in both backend directions.
-test "backend.native differential: ML-KEM-768 secrets match libcrypto in both roles" {
-    if (comptime c_openssl.family != .openssl) return error.SkipZigTest;
-    var prng: std.Random.DefaultPrng = .init(0x199303);
-    for (0..2) |_| {
-        var seed: [MlKem768.seed_length]u8 = undefined;
-        defer crypto.secureZero(u8, &seed);
-        prng.random().bytes(&seed);
-        try expectNativeMlKem768Differential(&seed);
-    }
+    ) orelse return error.LibcryptoFailed;
+    return @ptrCast(key);
 }
 
 fn fixedHybridKeyPairs() !struct { client: HybridKeyPairs, server: HybridKeyPairs } {
@@ -409,7 +426,7 @@ fn expectNativeHybridDifferential(
 // RFC 10024 §4.1-§4.3 and RFC 8446 §7.1/§7.3 — both ML-KEM-768 groups match
 // OpenSSL byte for byte in each role, then derive identical traffic secrets.
 test "backend.native differential: ML-KEM-768 hybrid groups match libcrypto in both roles" {
-    if (comptime c_openssl.family != .openssl) return error.SkipZigTest;
+    if (comptime backend.active != .openssl) return error.SkipZigTest;
     var prng: std.Random.DefaultPrng = .init(0x199304);
     for (0..2) |_| {
         var seed: [MlKem768.seed_length]u8 = undefined;

@@ -12,7 +12,7 @@ const stdx = @import("stdx");
 const assert = std.debug.assert;
 const testing = std.testing;
 
-const backend = @import("crypto/backend.zig");
+const backend = @import("crypto");
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 const memx = @import("memx.zig");
 

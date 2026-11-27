@@ -17,6 +17,10 @@
             .hash = "testingx-0.6.0-ib95-yaGAwC1_nvSTOk8ktbCgVfBtDAVTCjNKgXRxBeo",
             .lazy = true,
         },
+        .crypto = .{
+            .url = "git+https://github.com/baskingspot/crypto#47f47b3ffe007a1095923baffb69f72cd4e68cc0",
+            .hash = "crypto-0.0.0-9YYe0n5LBACowSQlJrDFiS6qGQVEU0DTIxW64z75TjwW",
+        },
     },
     .paths = .{
         "LICENSE",
