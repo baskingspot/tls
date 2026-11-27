@@ -10,6 +10,7 @@ const bench_mod = @import("src/build/bench.zig");
 const crypto_libs = @import("src/build/crypto_libs.zig");
 const examples_mod = @import("src/build/examples.zig");
 const tests = @import("src/build/tests.zig");
+const translate_c = @import("src/build/translate_c.zig");
 
 /// The libcrypto-family pkg-config modules this build resolved (#223):
 /// `libcrypto`/`libssl` when the package answers to OpenSSL's names,
@@ -146,6 +147,17 @@ pub fn build(b: *Build) void {
     // out of a core consumer's cache.
     if (b.pkg_hash.len != 0) return;
 
+    // tls's test and benchmark harnesses own their C imports separately from
+    // the provider package. Native never creates them.
+    const c_modules: ?translate_c.Modules = if (native_crypto)
+        null
+    else
+        translate_c.addModules(b, .{
+            .target = target,
+            .optimize = optimize,
+            .libs = c_libs.?,
+        });
+
     if (native_crypto) {
         const testingx_dep = b.lazyDependency("testingx", .{ .target = target });
         const native_test_mod = b.createModule(.{
@@ -204,6 +216,7 @@ pub fn build(b: *Build) void {
         return;
     }
 
+    const modules = c_modules.?;
     const libs = c_libs.?;
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/test.zig"),
@@ -215,6 +228,7 @@ pub fn build(b: *Build) void {
     test_mod.linkSystemLibrary(libs.crypto, .{});
     test_mod.addImport("stdx", stdx_dep.module("stdx"));
     test_mod.addImport("crypto", crypto_mod);
+    test_mod.addImport("openssl_c", modules.openssl_c);
 
     // testingx: plain-text test runner, benchmark harness, and comptime
     // fixtures. Lazy — only fetched when a development step is built, not
@@ -236,18 +250,24 @@ pub fn build(b: *Build) void {
     if (testingx_mod) |tm| fixtures_mod.addImport("testingx", tm);
     test_mod.addImport("fixtures", fixtures_mod);
 
-    const pty_c = b.addTranslateC(.{
-        .root_source_file = b.path("src/test/pty_c.h"),
+    const c_mod = b.createModule(.{
+        .root_source_file = b.path("bench/c.zig"),
         .target = target,
         .optimize = optimize,
     });
-    pty_c.defineCMacro("_FORTIFY_SOURCE", "0");
-    const pty_mod = b.createModule(.{
-        .root_source_file = pty_c.getOutput(),
+    c_mod.link_libc = true;
+    c_mod.linkSystemLibrary(libs.crypto, .{});
+    c_mod.addImport("openssl_c", modules.openssl_c);
+
+    const c_ssl_mod = b.createModule(.{
+        .root_source_file = b.path("bench/c_ssl.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
     });
+    c_ssl_mod.link_libc = true;
+    c_ssl_mod.linkSystemLibrary(libs.ssl, .{});
+    c_ssl_mod.linkSystemLibrary(libs.crypto, .{});
+    c_ssl_mod.addImport("openssl_ssl", modules.openssl_ssl);
 
     tests.addSteps(b, .{
         .test_mod = test_mod,
@@ -255,18 +275,25 @@ pub fn build(b: *Build) void {
         .testingx = testingx_dep,
         .tls_mod = mod,
         .fixtures_mod = fixtures_mod,
-        .pty_c = pty_mod,
+        .openssl_c = modules.openssl_c,
+        .pty_c = modules.pty_c,
         .target = target,
         .optimize = optimize,
+        .libs = libs,
     });
 
     bench_mod.addSteps(b, @This(), .{
         .target = target,
         .tls_mod = mod,
         .crypto_mod = crypto_mod,
+        .c_mod = c_mod,
+        .c_ssl_mod = c_ssl_mod,
+        .openssl_c = modules.openssl_c,
+        .openssl_ssl = modules.openssl_ssl,
         .build_options = build_options,
         .fixtures_mod = fixtures_mod,
         .stdx_mod = stdx_dep.module("stdx"),
+        .libs = libs,
     });
 
     examples_mod.addSteps(b, .{
