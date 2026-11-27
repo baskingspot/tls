@@ -1,0 +1,18 @@
+target: aarch64-linux-gnu
+cpu: neoverse_v3
+mode: fast
+                  │ baseline.txt │         keyed.txt          │
+                  │    sec/op    │   sec/op     vs base       │
+aes256/seal/4096     3.374µ ± 0%   3.309µ ± 0%  -1.93% (n=60)
+aes256/open/4096     3.393µ ± 0%   3.319µ ± 0%  -2.18% (n=60)
+aes256/seal/16384    12.90µ ± 0%   12.80µ ± 0%  -0.70% (n=60)
+aes256/open/16384    12.92µ ± 0%   12.81µ ± 0%  -0.81% (n=60)
+geomean              6.608µ        6.515µ       -1.41%
+
+                  │ baseline.txt │              keyed.txt              │
+                  │     B/s      │     B/s       vs base               │
+aes256/seal/4096    1.130Gi ± 0%   1.153Gi ± 0%  +1.97% (p=0.000 n=60)
+aes256/open/4096    1.124Gi ± 0%   1.149Gi ± 0%  +2.23% (p=0.000 n=60)
+aes256/seal/16384   1.183Gi ± 0%   1.192Gi ± 0%  +0.71% (p=0.000 n=60)
+aes256/open/16384   1.181Gi ± 0%   1.191Gi ± 0%  +0.81% (p=0.000 n=60)
+geomean             1.154Gi        1.171Gi       +1.43%

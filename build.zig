@@ -1,7 +1,5 @@
 const std = @import("std");
 const Build = std.Build;
-const Target = std.Target;
-const builtin = @import("builtin");
 const panic = std.debug.panic;
 
 const CryptoBackend = enum { auto, native, openssl, @"aws-lc", boringssl };
@@ -29,21 +27,28 @@ pub fn cryptoLibs(b: *Build) crypto_libs.Libraries {
     return crypto_libs.resolve(b);
 }
 
-fn nativeTarget() Target.Query {
-    var query: Target.Query = .{ .cpu_model = .native };
-    // Zig's native CPU detection reports generic under some Apple-Silicon Linux
-    // VMs despite /proc/cpuinfo exposing aes/pmull. For performance work that
-    // silently selects std.crypto's soft AES path, which is not a useful target.
-    if (builtin.cpu.arch == .aarch64 and builtin.os.tag == .linux) {
-        query.cpu_model = .{ .explicit = &Target.aarch64.cpu.apple_m1 };
+/// The default target must be the host (#229). Zig's aarch64 Linux CPU
+/// detection uses the host's system registers; an explicit CPU model in
+/// `default_target` drops every feature the model lacks and can emit
+/// instructions the host does not implement. `-Dtarget` and `-Dcpu` stay the
+/// caller's choice.
+fn assertNativeTarget(b: *Build, target: Build.ResolvedTarget) void {
+    const user_selected = b.user_input_options.get("target") != null or
+        b.user_input_options.get("cpu") != null or
+        b.user_input_options.get("ofmt") != null or
+        b.user_input_options.get("dynamic-linker") != null;
+    if (!user_selected and !target.query.isNative()) {
+        panic(
+            "default build target is not native ({s}); pass -Dtarget/-Dcpu " ++
+                "explicitly to cross-compile",
+            .{target.result.cpu.model.name},
+        );
     }
-    return query;
 }
 
 pub fn build(b: *Build) void {
-    const target = b.standardTargetOptions(.{
-        .default_target = nativeTarget(),
-    });
+    const target = b.standardTargetOptions(.{});
+    assertNativeTarget(b, target);
     const optimize = b.standardOptimizeOption(.{});
     const crypto_backend = b.option(
         CryptoBackend,

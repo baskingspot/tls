@@ -354,12 +354,16 @@ with labels that describe their narrower boundary. Do not quote mixed geomeans;
 
 ## Methodology
 
-- Build benchmarks with `-Doptimize=ReleaseFast` and a native CPU target. The
-  build's default is native CPU; generic AArch64 silently selects std.crypto's
-  software AES/GHASH paths and is not a useful performance target.
+- Build benchmarks with `-Doptimize=ReleaseFast` and the host CPU target. The
+  build's default is the host CPU; do not pin a model with `-Dcpu` (#229). A
+  target without the `aes` feature silently selects std.crypto's software
+  AES/GHASH paths and is not a useful performance target.
 - Print machine/build metadata with each run: target, CPU model if available,
-  Zig version, optimization mode, git revision. If a benchmark says
-  `cpu generic`, do not use it for OpenSSL comparisons.
+  Zig version, optimization mode, git revision. If a benchmark header says
+  `cpu generic`, treat the capture as a smoke test, not OpenSSL comparison
+  evidence. A virtualized host can report a generic model while still enabling
+  the host's crypto features; the model name is a tuning label, not the
+  feature set.
 - Output machine-readable rows (`csv`-ish is enough): benchmark name, bytes,
   iterations, elapsed ns, throughput/op rate.
 - Warm up before measuring where branch/cache effects matter.
@@ -571,6 +575,21 @@ Three n=10 wall-time captures cover the three platforms:
   git revision `80083f50505d46bbbea6e6a4cee688925667a9a5`, `--count 10 --benchtime
   500ms`.
 
+Every capture records the CPU model its binaries were built for in the
+benchmark header. The x86_64 captures were built for `sapphirerapids`, matching
+the Xeon 8488C hosts. The macOS capture was built for `apple_m1`, matching the
+M1 Max host. The aarch64 Linux captures were built for `apple_m1` regardless
+of host because the build pinned that model until #229: the `c7g.2xlarge` rows
+are not host-native Graviton code and need a re-take. After #229 the default
+target is the host CPU, and a new capture records the host model
+(`neoverse_v3` on `launchpad`).
+
+The post-fix launchpad re-take is
+`docs/research/perf/20261127-060603-launchpad-neoverse-v3/`. Its headers record
+`cpu: neoverse_v3`, and its 45 app-data rows were taken at n=10. It covers the
+record and app-data rows, not the handshake or parser rows, and it does not
+replace the `c7g.2xlarge` baseline.
+
 Row-level perf/disassembly evidence for the x86_64 headline AES-GCM row and
 the small-record ChaCha20 row is under
 `docs/research/perf/20260705-215953-ec2-c7i-2xlarge-row-perf/explanations/`.
@@ -578,7 +597,10 @@ the small-record ChaCha20 row is under
 All three n=10 captures produce formal confidence intervals (`± 0%` to `± 5%`
 across rows) and p=0.000 for every comparable row. The deltas are large
 (the smallest ztls win on a comparable AES-GCM row is +69.86% on x86_64; the
-largest is +261%), so the result is decisive, not marginal.
+largest is +261%), so the result is decisive, not marginal. The aarch64 capture
+was built for `apple_m1` while libssl and rustls were built for the host, so
+its deltas are not a host-native Graviton baseline. The direction of the win
+holds, but those rows need a re-take before they are quoted as host-native.
 
 ### The claim
 

@@ -267,11 +267,11 @@ assert_linked_under "OpenSSL libssl benchmark ssl" "${linked_libssl_ssl}" "${TLS
 } > "${run_dir}/metadata.txt"
 
 run_step "run tls benchmarks -> ${run_dir}/tls.txt" \
-  zig_for_backend build bench -- "${bench_args[@]}" > "${run_dir}/tls.txt"
+  zig_for_backend build bench -Dcrypto="${crypto_backend}" -- "${bench_args[@]}" > "${run_dir}/tls.txt"
 run_step "run OpenSSL EVP crypto-floor benchmarks -> ${run_dir}/evp.txt" \
-  zig_for_openssl_baseline build bench-evp -- "${bench_args[@]}" > "${run_dir}/evp.txt"
+  zig_for_openssl_baseline build bench-evp -Dcrypto=openssl -- "${bench_args[@]}" > "${run_dir}/evp.txt"
 run_step "run OpenSSL libssl memory-BIO benchmarks -> ${run_dir}/libssl.txt" \
-  zig_for_openssl_baseline build bench-openssl -- "${bench_args[@]}" > "${run_dir}/libssl.txt"
+  zig_for_openssl_baseline build bench-openssl -Dcrypto=openssl -- "${bench_args[@]}" > "${run_dir}/libssl.txt"
 run_step "run rustls benchmarks -> ${run_dir}/rustls.txt" \
   run_rustls "${bench_args[@]}"
 

@@ -1,0 +1,43 @@
+target: aarch64-linux-gnu
+cpu: neoverse_v3
+mode: fast
+Benchmarkaes256/seal/4096	  177625	      3373 ns/op	1214.12 MB/s
+Benchmarkaes256/seal/4096	  177799	      3372 ns/op	1214.39 MB/s
+Benchmarkaes256/seal/4096	  177963	      3372 ns/op	1214.45 MB/s
+Benchmarkaes256/seal/4096	  177838	      3372 ns/op	1214.55 MB/s
+Benchmarkaes256/seal/4096	  177962	      3372 ns/op	1214.37 MB/s
+Benchmarkaes256/seal/4096	  177928	      3372 ns/op	1214.66 MB/s
+Benchmarkaes256/seal/4096	  177818	      3373 ns/op	1214.33 MB/s
+Benchmarkaes256/seal/4096	  177841	      3372 ns/op	1214.39 MB/s
+Benchmarkaes256/seal/4096	  177966	      3372 ns/op	1214.49 MB/s
+Benchmarkaes256/seal/4096	  177715	      3373 ns/op	1214.11 MB/s
+Benchmarkaes256/open/4096	  176793	      3393 ns/op	1207.17 MB/s
+Benchmarkaes256/open/4096	  176737	      3393 ns/op	1207.01 MB/s
+Benchmarkaes256/open/4096	  176877	      3393 ns/op	1206.98 MB/s
+Benchmarkaes256/open/4096	  176781	      3392 ns/op	1207.22 MB/s
+Benchmarkaes256/open/4096	  176858	      3393 ns/op	1207.04 MB/s
+Benchmarkaes256/open/4096	  176826	      3392 ns/op	1207.22 MB/s
+Benchmarkaes256/open/4096	  176815	      3393 ns/op	1206.84 MB/s
+Benchmarkaes256/open/4096	  176870	      3392 ns/op	1207.34 MB/s
+Benchmarkaes256/open/4096	  176629	      3393 ns/op	1206.85 MB/s
+Benchmarkaes256/open/4096	  176898	      3393 ns/op	1207.02 MB/s
+Benchmarkaes256/seal/16384	   46530	     12894 ns/op	1270.64 MB/s
+Benchmarkaes256/seal/16384	   46545	     12893 ns/op	1270.69 MB/s
+Benchmarkaes256/seal/16384	   46542	     12893 ns/op	1270.74 MB/s
+Benchmarkaes256/seal/16384	   46524	     12895 ns/op	1270.49 MB/s
+Benchmarkaes256/seal/16384	   46504	     12895 ns/op	1270.55 MB/s
+Benchmarkaes256/seal/16384	   46540	     12895 ns/op	1270.53 MB/s
+Benchmarkaes256/seal/16384	   46530	     12892 ns/op	1270.85 MB/s
+Benchmarkaes256/seal/16384	   46532	     12893 ns/op	1270.69 MB/s
+Benchmarkaes256/seal/16384	   46540	     12896 ns/op	1270.46 MB/s
+Benchmarkaes256/seal/16384	   46522	     12892 ns/op	1270.78 MB/s
+Benchmarkaes256/open/16384	   46444	     12918 ns/op	1268.24 MB/s
+Benchmarkaes256/open/16384	   46430	     12921 ns/op	1267.99 MB/s
+Benchmarkaes256/open/16384	   46452	     12919 ns/op	1268.15 MB/s
+Benchmarkaes256/open/16384	   46441	     12922 ns/op	1267.90 MB/s
+Benchmarkaes256/open/16384	   46442	     12919 ns/op	1268.13 MB/s
+Benchmarkaes256/open/16384	   46430	     12920 ns/op	1268.04 MB/s
+Benchmarkaes256/open/16384	   46426	     12923 ns/op	1267.72 MB/s
+Benchmarkaes256/open/16384	   46453	     12917 ns/op	1268.35 MB/s
+Benchmarkaes256/open/16384	   46432	     12920 ns/op	1268.05 MB/s
+Benchmarkaes256/open/16384	   46447	     12917 ns/op	1268.37 MB/s
