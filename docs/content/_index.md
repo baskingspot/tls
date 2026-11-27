@@ -162,10 +162,11 @@ setup and inside their own routines. The engine's own code, the parsing,
 framing, transcript, and record sequencing, allocates nothing on every backend.
 
 The protocol path is Zig. AEAD, ECDHE, CertificateVerify, and the SHA-2 under
-the key schedule come from the selected backend. ECDSA signing and certificate
-signature verification run in-tree on every backend. Ed25519 certificate-chain
-verification uses `std.crypto`. The only library C source is at the edge: the
-partial C ABI and its example.
+the key schedule come from `std.crypto` on the default native backend, or from
+libcrypto when an explicit libcrypto backend is selected. ECDSA signing and
+certificate signature verification run in-tree on every backend. Ed25519
+certificate-chain verification uses `std.crypto`. The only library C source is
+at the edge: the partial C ABI and its example.
 
 # Supported surface
 
