@@ -1,0 +1,21 @@
+timestamp_utc=20261127-070038
+scope=#229 re-take of the keyed native AES-256-GCM context A/B from #230
+classification=LOCAL within-host A/B measurement on launchpad; not an EC2 production comparison
+baseline_revision=43b499ff351ba765841e9c8134f2c7305fbd2a79
+candidate_revision=2a8c9f88af8688b06ca72282a65f41a6dc8f4dc4 (local experiment branch; patch is keyed-context.patch)
+baseline_dirty=false
+candidate_dirty=false
+zig_version=0.17.0
+optimize=ReleaseFast
+crypto_backend=native
+target_cpu=neoverse_v3
+target_source=benchmark header `cpu:`; host CPU, not apple_m1
+host=Linux launchpad 7.3.5 aarch64 Neoverse-V3, 8 vCPU
+pin_command=taskset -c 3
+samples=60 per row per binary (6 invocations x 10 samples), ABBA-alternated across 3 rounds
+bench_args=--filter aes256/ --count=10 --benchtime=500ms
+baseline_binary_sha256=86b0b45a4891931833723b2d88a47569e5f54d119b453ef8f2e08cce449ff37c
+candidate_binary_sha256=cdc1db63b4b5054ad95c3d67f0e3ad81f2047792075bb60a2eb9c06cad421a49
+baseline_linkage=not a dynamic executable
+candidate_linkage=not a dynamic executable
+patch=keyed-context.patch

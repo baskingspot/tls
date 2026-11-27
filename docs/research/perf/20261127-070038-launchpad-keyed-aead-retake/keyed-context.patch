@@ -1,0 +1,236 @@
+diff --git a/src/crypto/aes_gcm_native.zig b/src/crypto/aes_gcm_native.zig
+index 2df2f07..1ecac42 100644
+--- a/src/crypto/aes_gcm_native.zig
++++ b/src/crypto/aes_gcm_native.zig
+@@ -75,30 +75,36 @@ fn AesGcm(comptime Aes: anytype) type {
+ 
+         const AuthenticationError = crypto.errors.AuthenticationError;
+ 
++        aes: Aes,
++        ghash: Ghash,
++
++        pub fn init(key: [key_length]u8) @This() {
++            const aes: Aes = .initEnc(key);
++            var h: [16]u8 = undefined;
++            aes.encrypt(&h, &@splat(0));
++            defer crypto.secureZero(u8, &h);
++            return .{ .aes = aes, .ghash = .init(&h) };
++        }
++
+         pub fn encrypt(
++            self: *const @This(),
+             ciphertext: []u8,
+             tag: *[tag_length]u8,
+             plaintext: []const u8,
+             ad: []const u8,
+             npub: [nonce_length]u8,
+-            key: [key_length]u8,
+         ) void {
+             assert(ciphertext.len == plaintext.len);
+             assert(plaintext.len <= 16 * ((1 << 32) - 2));
+ 
+-            const aes = Aes.initEnc(key);
+-            var h: [16]u8 = undefined;
+-            aes.encrypt(&h, &@splat(0));
+-
++            const aes = self.aes;
+             var t: [16]u8 = undefined;
+             var j: [16]u8 = undefined;
+             j[0..nonce_length].* = npub;
+             mem.writeInt(u32, j[nonce_length..][0..4], 1, .big);
+             aes.encrypt(&t, &j);
+ 
+-            const block_count = @divCeil(ad.len, Ghash.block_length) +
+-                @divCeil(ciphertext.len, Ghash.block_length) + 1;
+-            var mac = Ghash.initForBlockCount(&h, block_count);
++            var mac = self.ghash;
+             mac.update(ad);
+             mac.pad();
+ 
+@@ -107,7 +113,7 @@ fn AesGcm(comptime Aes: anytype) type {
+             mac.update(ciphertext);
+             mac.pad();
+ 
+-            var final_block = h;
++            var final_block: [16]u8 = undefined;
+             mem.writeInt(u64, final_block[0..8], @as(u64, ad.len) * 8, .big);
+             mem.writeInt(u64, final_block[8..16], @as(u64, plaintext.len) * 8, .big);
+             mac.update(&final_block);
+@@ -116,34 +122,29 @@ fn AesGcm(comptime Aes: anytype) type {
+         }
+ 
+         pub fn decrypt(
++            self: *const @This(),
+             plaintext: []u8,
+             ciphertext: []const u8,
+             tag: [tag_length]u8,
+             ad: []const u8,
+             npub: [nonce_length]u8,
+-            key: [key_length]u8,
+         ) AuthenticationError!void {
+             assert(plaintext.len == ciphertext.len);
+ 
+-            const aes = Aes.initEnc(key);
+-            var h: [16]u8 = undefined;
+-            aes.encrypt(&h, &@splat(0));
+-
++            const aes = self.aes;
+             var t: [16]u8 = undefined;
+             var j: [16]u8 = undefined;
+             j[0..nonce_length].* = npub;
+             mem.writeInt(u32, j[nonce_length..][0..4], 1, .big);
+             aes.encrypt(&t, &j);
+ 
+-            const block_count = @divCeil(ad.len, Ghash.block_length) +
+-                @divCeil(ciphertext.len, Ghash.block_length) + 1;
+-            var mac = Ghash.initForBlockCount(&h, block_count);
++            var mac = self.ghash;
+             mac.update(ad);
+             mac.pad();
+             mac.update(ciphertext);
+             mac.pad();
+ 
+-            var final_block = h;
++            var final_block: [16]u8 = undefined;
+             mem.writeInt(u64, final_block[0..8], @as(u64, ad.len) * 8, .big);
+             mem.writeInt(u64, final_block[8..16], @as(u64, ciphertext.len) * 8, .big);
+             mac.update(&final_block);
+@@ -164,5 +165,29 @@ fn AesGcm(comptime Aes: anytype) type {
+     };
+ }
+ 
++// RFC 8446 §5.2 — one keyed context authenticates records of different lengths.
++test "AES-256-GCM: cached GHASH powers cover changing record lengths" {
++    const Reference = crypto.aead.aes_gcm.Aes256Gcm;
++    const key: [32]u8 = @splat(0xab);
++    const nonce: [12]u8 = @splat(0xcd);
++    const plaintext: [6144]u8 = @splat(0x42);
++    var ctx: Aes256Gcm = .init(key);
++    var ciphertext: [plaintext.len]u8 = undefined;
++    var expected: [plaintext.len]u8 = undefined;
++    var decrypted: [plaintext.len]u8 = undefined;
++
++    inline for ([_]usize{ 4096, 6144 }) |len| {
++        var tag: [16]u8 = undefined;
++        var expected_tag: [16]u8 = undefined;
++        ctx.encrypt(ciphertext[0..len], &tag, plaintext[0..len], "header", nonce);
++        Reference.encrypt(expected[0..len], &expected_tag, plaintext[0..len], "header", nonce, key);
++        try std.testing.expectEqualSlices(u8, expected[0..len], ciphertext[0..len]);
++        try std.testing.expectEqualSlices(u8, &expected_tag, &tag);
++
++        try ctx.decrypt(decrypted[0..len], ciphertext[0..len], tag, "header", nonce);
++        try std.testing.expectEqualSlices(u8, plaintext[0..len], decrypted[0..len]);
++    }
++}
++
+ const Ghash = crypto.onetimeauth.Ghash;
+ const modes = crypto.core.modes;
+diff --git a/src/crypto/backend_native.zig b/src/crypto/backend_native.zig
+index 2385322..9873e8e 100644
+--- a/src/crypto/backend_native.zig
++++ b/src/crypto/backend_native.zig
+@@ -96,10 +96,13 @@ pub const AeadError = error{
+     AeadEncryptFailed,
+ };
+ 
+-/// One copied key, no provider state, and no allocation.
+-pub const AeadContext = struct {
+-    suite: AeadAlgorithm,
+-    key: [32]u8,
++/// AES-GCM caches the key schedule and all 16 GHASH H powers, about 560 bytes
++/// on a 64-bit target, to keep both derivations out of the per-record path.
++/// ChaCha20-Poly1305 retains only its key. All state is inline and allocation-free.
++pub const AeadContext = union(AeadAlgorithm) {
++    aes_128_gcm: aes_gcm.Aes128Gcm,
++    aes_256_gcm: aes_gcm.Aes256Gcm,
++    chacha20_poly1305: [32]u8,
+ };
+ 
+ pub const aead_tag_len = 16;
+@@ -112,9 +115,11 @@ fn aeadKeyLen(suite: AeadAlgorithm) usize {
+ pub fn aeadInit(suite: AeadAlgorithm, key_bytes: []const u8) AeadError!AeadContext {
+     const key_len = aeadKeyLen(suite);
+     if (key_bytes.len != key_len) return error.AeadSetupFailed;
+-    var ctx: AeadContext = .{ .suite = suite, .key = @splat(0) };
+-    @memcpy(ctx.key[0..key_len], key_bytes);
+-    return ctx;
++    return switch (suite) {
++        .aes_128_gcm => .{ .aes_128_gcm = .init(key_bytes[0..16].*) },
++        .aes_256_gcm => .{ .aes_256_gcm = .init(key_bytes[0..32].*) },
++        .chacha20_poly1305 => .{ .chacha20_poly1305 = key_bytes[0..32].* },
++    };
+ }
+ 
+ pub fn aeadDeinit(ctx: *AeadContext) void {
+@@ -130,30 +135,16 @@ pub fn aeadEncrypt(
+     npub: *const [aead_nonce_len]u8,
+ ) AeadError!void {
+     assert(ciphertext.len == plaintext.len);
+-    switch (ctx.suite) {
+-        .aes_128_gcm => aes_gcm.Aes128Gcm.encrypt(
+-            ciphertext,
+-            tag,
+-            plaintext,
+-            ad,
+-            npub.*,
+-            ctx.key[0..16].*,
+-        ),
+-        .aes_256_gcm => aes_gcm.Aes256Gcm.encrypt(
+-            ciphertext,
+-            tag,
+-            plaintext,
+-            ad,
+-            npub.*,
+-            ctx.key,
+-        ),
+-        .chacha20_poly1305 => crypto.aead.chacha_poly.ChaCha20Poly1305.encrypt(
++    switch (ctx.*) {
++        .aes_128_gcm => |*gcm| gcm.encrypt(ciphertext, tag, plaintext, ad, npub.*),
++        .aes_256_gcm => |*gcm| gcm.encrypt(ciphertext, tag, plaintext, ad, npub.*),
++        .chacha20_poly1305 => |*key| crypto.aead.chacha_poly.ChaCha20Poly1305.encrypt(
+             ciphertext,
+             tag,
+             plaintext,
+             ad,
+             npub.*,
+-            ctx.key,
++            key.*,
+         ),
+     }
+ }
+@@ -168,30 +159,16 @@ pub fn aeadDecrypt(
+ ) AeadError!void {
+     assert(plaintext.len == ciphertext.len);
+     errdefer crypto.secureZero(u8, plaintext);
+-    return switch (ctx.suite) {
+-        .aes_128_gcm => aes_gcm.Aes128Gcm.decrypt(
+-            plaintext,
+-            ciphertext,
+-            tag.*,
+-            ad,
+-            npub.*,
+-            ctx.key[0..16].*,
+-        ),
+-        .aes_256_gcm => aes_gcm.Aes256Gcm.decrypt(
+-            plaintext,
+-            ciphertext,
+-            tag.*,
+-            ad,
+-            npub.*,
+-            ctx.key,
+-        ),
+-        .chacha20_poly1305 => crypto.aead.chacha_poly.ChaCha20Poly1305.decrypt(
++    return switch (ctx.*) {
++        .aes_128_gcm => |*gcm| gcm.decrypt(plaintext, ciphertext, tag.*, ad, npub.*),
++        .aes_256_gcm => |*gcm| gcm.decrypt(plaintext, ciphertext, tag.*, ad, npub.*),
++        .chacha20_poly1305 => |*key| crypto.aead.chacha_poly.ChaCha20Poly1305.decrypt(
+             plaintext,
+             ciphertext,
+             tag.*,
+             ad,
+             npub.*,
+-            ctx.key,
++            key.*,
+         ),
+     } catch |err| switch (err) {
+         error.AuthenticationFailed => return error.AuthenticationFailed,
