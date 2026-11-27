@@ -6,6 +6,7 @@ const doNotOptimizeAway = mem.doNotOptimizeAway;
 const testingx = @import("testingx");
 
 const aead = @import("../aead.zig");
+const backend = @import("../crypto/backend.zig");
 const frame = @import("../frame.zig");
 const memx = @import("../memx.zig");
 const NewSessionTicket = @import("../NewSessionTicket.zig");
@@ -241,6 +242,56 @@ fn consumeTicket(ticket: NewSessionTicket) usize {
 
 fn tryRead(comptime T: type, r: *wire.Reader) usize {
     return r.read(T) catch unreachable;
+}
+
+fn benchAeadSeal(comptime size: usize) testingx.Function {
+    return struct {
+        fn f(b: *testingx.B) !void {
+            const key: [32]u8 = @splat(0xab);
+            const nonce: [12]u8 = @splat(0xcd);
+            const plaintext: [size]u8 = @splat(0x42);
+            var ciphertext: [size]u8 = undefined;
+            var tag: [backend.aead.tag_len]u8 = undefined;
+            var ctx = try backend.aead.init(.aes_256_gcm_sha384, &key);
+            defer backend.aead.deinit(&ctx);
+            defer b.keepAlive(ciphertext);
+            defer b.keepAlive(tag);
+
+            b.setBytes(size);
+            while (try b.loop()) {
+                try backend.aead.encrypt(&ctx, &ciphertext, &tag, &plaintext, "header", &nonce);
+            }
+        }
+    }.f;
+}
+
+fn benchAeadOpen(comptime size: usize) testingx.Function {
+    return struct {
+        fn f(b: *testingx.B) !void {
+            const key: [32]u8 = @splat(0xab);
+            const nonce: [12]u8 = @splat(0xcd);
+            const source: [size]u8 = @splat(0x42);
+            var ciphertext: [size]u8 = undefined;
+            var plaintext: [size]u8 = undefined;
+            var tag: [backend.aead.tag_len]u8 = undefined;
+            var ctx = try backend.aead.init(.aes_256_gcm_sha384, &key);
+            defer backend.aead.deinit(&ctx);
+            defer b.keepAlive(plaintext);
+            try backend.aead.encrypt(&ctx, &ciphertext, &tag, &source, "header", &nonce);
+
+            b.setBytes(size);
+            while (try b.loop()) {
+                try backend.aead.decrypt(&ctx, &plaintext, &ciphertext, &tag, "header", &nonce);
+            }
+        }
+    }.f;
+}
+
+pub fn addAeadBenchmarks(b: *testingx.B) !void {
+    inline for ([_]usize{ 4096, 16384 }) |size| {
+        try b.add(std.fmt.comptimePrint("aes256/seal/{d}", .{size}), benchAeadSeal(size));
+        try b.add(std.fmt.comptimePrint("aes256/open/{d}", .{size}), benchAeadOpen(size));
+    }
 }
 
 export fn tlsBenchNonceConstruct() void {
