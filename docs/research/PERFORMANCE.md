@@ -584,6 +584,12 @@ are not host-native Graviton code and need a re-take. After #229 the default
 target is the host CPU, and a new capture records the host model
 (`neoverse_v3` on `launchpad`).
 
+The post-fix launchpad re-take is
+`docs/research/perf/20261127-060603-launchpad-neoverse-v3/`. Its headers record
+`cpu: neoverse_v3`, and its 45 app-data rows were taken at n=10. It covers the
+record and app-data rows, not the handshake or parser rows, and it does not
+replace the `c7g.2xlarge` baseline.
+
 Row-level perf/disassembly evidence for the x86_64 headline AES-GCM row and
 the small-record ChaCha20 row is under
 `docs/research/perf/20260705-215953-ec2-c7i-2xlarge-row-perf/explanations/`.

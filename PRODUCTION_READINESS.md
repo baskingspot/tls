@@ -125,7 +125,10 @@ ChaCha20 records, where rustls's ring path beats OpenSSL EVP.
 The x86_64 capture was built for `sapphirerapids` and the macOS capture for
 `apple_m1`, both matching their hosts. The aarch64 Linux capture was built for
 `apple_m1` on the Graviton host because the build pinned that model until #229.
-Its rows are not a host-native Graviton baseline; a re-take is pending.
+Its rows are not a host-native Graviton baseline. A host-native launchpad
+re-take is committed at
+`docs/research/perf/20261127-060603-launchpad-neoverse-v3/`; the `c7g.2xlarge`
+baseline still needs one.
 
 The row-by-row accounting, including which rows are not comparable across
 implementations and why, is in `docs/research/PERFORMANCE.md`. The raw captures

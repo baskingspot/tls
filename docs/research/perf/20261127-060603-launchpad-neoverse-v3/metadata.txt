@@ -1,0 +1,77 @@
+timestamp_utc=20261127-060603
+git_revision=069cdfadc19a1cef2637ff67a276e135d2fcea41
+git_dirty=false
+zig_version=0.17.0
+zig_optimization_mode=ReleaseFast
+crypto_backend=openssl
+openssl_pkg_config_path=/nix/store/HASH-openssl-3.6.5-dev/lib/pkgconfig
+linked_libcrypto=/nix/store/HASH-openssl-3.6.5/lib/libcrypto.so.3
+tls_linked_libcrypto=/nix/store/HASH-openssl-3.6.5/lib/libcrypto.so.3
+evp_linked_libcrypto=/nix/store/HASH-openssl-3.6.5/lib/libcrypto.so.3
+libssl_linked_libcrypto=/nix/store/HASH-openssl-3.6.5/lib/libcrypto.so.3
+libssl_linked_libssl=/nix/store/HASH-openssl-3.6.5/lib/libssl.so.3
+openssl_cli_version=OpenSSL 3.6.5 29 Sep 2026 (Library: OpenSSL 3.6.5 29 Sep 2026)
+rustls_profile=release
+rustls_version=0.23.45
+rustc_version=rustc 1.99.0 (b940084d7 2026-09-28)
+benchstat_path=/nix/store/HASH-benchstat-unstable-2026-09-29/bin/benchstat
+go_version=go version go1.26.10 linux/arm64
+
+[benchstat]
+/nix/store/HASH-benchstat-unstable-2026-09-29/bin/benchstat: go1.26.10
+	path	golang.org/x/perf/cmd/benchstat
+	mod	golang.org/x/perf	(devel)	
+	dep	github.com/aclements/go-moremath	v0.0.0-20210112150236-f10218a38794	
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	-trimpath=true
+	build	CGO_ENABLED=1
+	build	GOARCH=arm64
+	build	GOOS=linux
+	build	GOARM64=v8.0
+uname=Linux launchpad 7.3.5 #1-NixOS SMP PREEMPT @1794910461 aarch64 GNU/Linux
+
+[lscpu]
+Architecture:                            aarch64
+CPU op-mode(s):                          64-bit
+Byte Order:                              Little Endian
+CPU(s):                                  8
+On-line CPU(s) list:                     0-7
+Vendor ID:                               ARM
+Model name:                              Neoverse-V3
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      8
+Socket(s):                               1
+Stepping:                                r0p1
+BogoMIPS:                                2000.00
+Flags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti ecv afp wfxt
+L1d cache:                               512 KiB (8 instances)
+L1i cache:                               512 KiB (8 instances)
+L2 cache:                                16 MiB (8 instances)
+L3 cache:                                48 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-7
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; CSV2, BHB
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+
+[sysctl]
+
+args=--count=10 --benchtime=500ms --filter BenchmarkRecordEncryptPrepared/\,BenchmarkRecordDecrypt/\,BenchmarkAppClientToServer/\,BenchmarkAppServerToClient/\,BenchmarkAppPingPong/\,BenchmarkEncrypt/\,BenchmarkDecrypt/ 
