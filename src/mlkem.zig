@@ -9,7 +9,6 @@ const assert = std.debug.assert;
 const testing = std.testing;
 const backend = @import("crypto/backend.zig");
 const kem_impl = backend.kem_impl;
-const kex = @import("kex.zig");
 
 pub const ParameterSet = @import("crypto/mlkem_parameters.zig").ParameterSet;
 pub const Error = error{
@@ -152,11 +151,7 @@ test "ML-KEM-1024 encapsulate/decapsulate round-trip" {
 }
 
 fn testRoundTrip(parameter_set: ParameterSet) !void {
-    const group: kex.NamedGroup = switch (parameter_set) {
-        .mlkem768 => .x25519_mlkem768,
-        .mlkem1024 => .secp384r1_mlkem1024,
-    };
-    if (!backend.supportsClientHybridGroup(group)) return error.SkipZigTest;
+    if (!backend.supportsParameterSet(parameter_set)) return error.SkipZigTest;
 
     var client_key = try generate(parameter_set);
     defer client_key.deinit();
@@ -237,7 +232,7 @@ test "ML-KEM rejects non-canonical encapsulation keys" {
 // RFC 10024 §4.2 — the client rejects a ciphertext whose length does not
 // exactly match the selected group's ML-KEM parameter set before decapsulation.
 test "ML-KEM rejects a wrong-length ciphertext" {
-    if (!backend.supportsClientHybridGroup(.x25519_mlkem768))
+    if (!backend.supportsParameterSet(.mlkem768))
         return error.SkipZigTest;
     var key = try generate(.mlkem768);
     defer key.deinit();
@@ -253,7 +248,7 @@ test "ML-KEM rejects a wrong-length ciphertext" {
 // rejection. Success returns a pseudorandom secret, so agreement is the failure
 // signal rather than an error from decapsulation.
 test "ML-KEM tampering and a wrong recipient derive different secrets" {
-    if (!backend.supportsClientHybridGroup(.x25519_mlkem768))
+    if (!backend.supportsParameterSet(.mlkem768))
         return error.SkipZigTest;
     var key = try generate(.mlkem768);
     defer key.deinit();

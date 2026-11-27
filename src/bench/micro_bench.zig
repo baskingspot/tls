@@ -252,7 +252,7 @@ fn benchAeadSeal(comptime size: usize) testingx.Function {
             const plaintext: [size]u8 = @splat(0x42);
             var ciphertext: [size]u8 = undefined;
             var tag: [backend.aead.tag_len]u8 = undefined;
-            var ctx = try backend.aead.init(.aes_256_gcm_sha384, &key);
+            var ctx = try backend.aead.init(.aes_256_gcm, &key);
             defer backend.aead.deinit(&ctx);
             defer b.keepAlive(ciphertext);
             defer b.keepAlive(tag);
@@ -274,7 +274,7 @@ fn benchAeadOpen(comptime size: usize) testingx.Function {
             var ciphertext: [size]u8 = undefined;
             var plaintext: [size]u8 = undefined;
             var tag: [backend.aead.tag_len]u8 = undefined;
-            var ctx = try backend.aead.init(.aes_256_gcm_sha384, &key);
+            var ctx = try backend.aead.init(.aes_256_gcm, &key);
             defer backend.aead.deinit(&ctx);
             defer b.keepAlive(plaintext);
             try backend.aead.encrypt(&ctx, &ciphertext, &tag, &source, "header", &nonce);

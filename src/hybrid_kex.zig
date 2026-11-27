@@ -8,6 +8,7 @@ const assert = std.debug.assert;
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
+const capabilities = @import("capabilities.zig");
 const KeyPairs = @import("handshake_key_pairs.zig").KeyPairs;
 const kex = @import("kex.zig");
 const mlkem = @import("mlkem.zig");
@@ -321,7 +322,7 @@ test "RFC 10024 hybrid groups round-trip" {
         .secp256r1_mlkem768,
         .secp384r1_mlkem1024,
     }) |group| {
-        if (!backend.supportsClientHybridGroup(group)) continue;
+        if (!capabilities.supportsClientHybridGroup(group)) continue;
         var client_key = try ClientKeyPair.generate(group);
         defer client_key.deinit();
 
@@ -356,7 +357,7 @@ test "RFC 10024 hybrid groups round-trip" {
 // RFC 10024 §4.2 — reject a role-wrong or truncated server share before KEM or
 // ECDHE processing.
 test "hybrid decapsulation rejects wrong server share length" {
-    if (!backend.supportsClientHybridGroup(.x25519_mlkem768))
+    if (!capabilities.supportsClientHybridGroup(.x25519_mlkem768))
         return error.SkipZigTest;
     var keys = try KeyPairs.init(.generate());
     defer keys.secureZero();
@@ -379,7 +380,7 @@ test "hybrid decapsulation cannot ignore a tampered ciphertext" {
     var server_keys: KeyPairs = .initWithP256(.generate(), try .generate());
     defer server_keys.secureZero();
     for ([_]NamedGroup{ .x25519_mlkem768, .secp256r1_mlkem768 }) |group| {
-        if (!backend.supportsClientHybridGroup(group)) continue;
+        if (!capabilities.supportsClientHybridGroup(group)) continue;
         var client_key = try ClientKeyPair.generate(group);
         defer client_key.deinit();
         var client_share_buf: [max_client_share_len]u8 = undefined;

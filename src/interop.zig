@@ -13,7 +13,6 @@ const path = Io.Dir.path;
 
 const fixtures = @import("fixtures");
 
-const backend = @import("crypto/backend.zig");
 const entropy = @import("entropy.zig");
 const tls = @import("root.zig");
 
@@ -130,7 +129,7 @@ test "OpenSSL s_server interoperates with tls client" {
 // RFC 8446 §4.2.8.2, §7.4 — OpenSSL independently validates the tls
 // secp384r1 ClientHello share and derives matching handshake/traffic keys.
 test "OpenSSL s_server interoperates with tls P-384 client" {
-    if (!backend.supportsClientP384()) return error.SkipZigTest;
+    if (!tls.capabilities.supportsClientP384()) return error.SkipZigTest;
 
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
@@ -162,7 +161,7 @@ test "OpenSSL s_server interoperates with tls RFC 10024 client groups" {
 
     var tested = false;
     for (hybrid_groups) |group| {
-        if (!backend.supportsClientHybridGroup(group.tls_group)) continue;
+        if (!tls.capabilities.supportsClientHybridGroup(group.tls_group)) continue;
         tested = true;
         try runClientGroup(arena, cert_path, key_path, group);
     }
@@ -233,7 +232,7 @@ test "OpenSSL s_client resumes with tls server-issued ticket" {
 // RFC 8446 §4.2.8.2, §7.4 — OpenSSL independently validates the tls
 // secp384r1 ServerHello share and derives matching handshake/traffic keys.
 test "OpenSSL s_client interoperates with tls P-384 server" {
-    if (!backend.supportsServerP384()) return error.SkipZigTest;
+    if (!tls.capabilities.supportsServerP384()) return error.SkipZigTest;
 
     var arena_allocator: heap.ArenaAllocator = .init(testing.allocator);
     defer arena_allocator.deinit();
@@ -251,7 +250,7 @@ test "OpenSSL s_client interoperates with tls RFC 10024 server groups" {
 
     var tested = false;
     for (hybrid_groups) |group| {
-        if (!backend.supportsServerHybridGroup(group.tls_group)) continue;
+        if (!tls.capabilities.supportsServerHybridGroup(group.tls_group)) continue;
         tested = true;
         try runServerGroup(arena, group);
     }

@@ -401,7 +401,7 @@ pub const Client = struct {
             self.offered_cert_signature_schemes.capture(ch.certificateSignatureSchemes());
         } else |_| {
             self.offered_cert_signature_schemes.captureSchemes(
-                backend.capabilities.certificate_signature_schemes,
+                capabilities.current.certificate_signature_schemes,
             );
         }
         self.suite.update(client_hello_msg);
@@ -584,7 +584,7 @@ pub const Client = struct {
                     msg,
                     self.leaf_pub_key[0..self.leaf_pub_key_len],
                     th.slice(),
-                    backend.capabilities.certificate_verify_schemes,
+                    capabilities.current.certificate_verify_schemes,
                 );
                 self.suite.update(msg);
                 self.state = .wait_finished;
@@ -1843,7 +1843,7 @@ pub const Server = struct {
                     msg,
                     self.client_pub_key[0..self.client_pub_key_len],
                     th.slice(),
-                    backend.capabilities.certificate_verify_schemes,
+                    capabilities.current.certificate_verify_schemes,
                 );
                 self.suite.update(msg);
                 self.state = .wait_client_finished;
@@ -1991,7 +1991,7 @@ pub const Server = struct {
         if (self.client_policy != null) {
             const cr = try certificate_request.encode(
                 out[pos..],
-                backend.capabilities.certificate_verify_schemes,
+                capabilities.current.certificate_verify_schemes,
             );
             try self.queue.push(.{ .message = .{ .level = .handshake, .bytes = cr } });
             pos += cr.len;
@@ -2100,7 +2100,7 @@ pub const Server = struct {
         // Each extension is a type, a length, and its data (RFC 8446 §4.2).
         for (self.send_extensions) |extra| ee += 4 + extra.data.len;
         const cr: usize = if (self.client_policy != null)
-            certificate_request.encodedLen(backend.capabilities.certificate_verify_schemes)
+            certificate_request.encodedLen(capabilities.current.certificate_verify_schemes)
         else
             0;
         // 4 + 2 + 1 + scheme + signature: RSA-4096 is the practical ceiling.
@@ -3440,7 +3440,7 @@ test "core client: signature_algorithms_cert and fallback reject excluded server
 
 // RFC 8446 §4.4.3 — an ECDSA credential cannot answer an RSA-PSS-only offer.
 test "core server: unusable signature offer emits no authentication flight" {
-    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+    if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
     var ch_buf: [rfc8448_client_hello.len]u8 = undefined;
     @memcpy(&ch_buf, &rfc8448_client_hello);

@@ -11,21 +11,15 @@ const assert = std.debug.assert;
 const backend = @import("backend.zig");
 const backend_native = @import("backend_native.zig");
 const certificate = @import("../certificate.zig");
+const tls_signature = @import("../signature.zig");
 const Certificate = @import("../certificate_parser.zig");
-const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
-const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
+const types = @import("types.zig");
+const SignatureAlgorithm = types.SignatureAlgorithm;
 const fixtures = @import("fixtures");
 const fuzz_compat = @import("../fuzz_compat.zig");
 
 test {
-    _ = @import("backend_native_hybrid_tests.zig");
-}
-
-fn keyLenForSuite(suite: CipherSuite) usize {
-    return switch (suite) {
-        .aes_128_gcm_sha256 => 16,
-        .aes_256_gcm_sha384, .chacha20_poly1305_sha256 => 32,
-    };
+    _ = @import("../test/backend_native_hybrid_tests.zig");
 }
 
 // ---------------------------------------------------------------------------
@@ -419,12 +413,16 @@ fn serverSignedContent(buf: []u8, transcript_hash: []const u8) []const u8 {
 /// client verifies a server's proof of possession.
 fn verifyAsServerCertificateVerify(
     sig: []const u8,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     pub_key: []const u8,
     transcript_hash: []const u8,
 ) !void {
     var cv_buf: [640]u8 = undefined;
-    const cv = try certificate.encodeCertificateVerify(&cv_buf, scheme, sig);
+    const cv = try certificate.encodeCertificateVerify(
+        &cv_buf,
+        tls_signature.fromProvider(scheme),
+        sig,
+    );
     try certificate.verifyServerSignature(cv, pub_key, transcript_hash);
 }
 
@@ -452,17 +450,17 @@ fn verifyEcdsaDigestWithLibcrypto(
 /// separate implementation of the ECDSA equation over the same digest.
 fn verifyEcdsaWithLibcrypto(
     key: backend.sign.pkey,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     msg: []const u8,
     sig: []const u8,
 ) !void {
     switch (scheme) {
-        .ecdsa_secp256r1_sha256 => {
+        .ecdsa_p256_sha256 => {
             var digest: [32]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(msg, &digest, .{});
             try verifyEcdsaDigestWithLibcrypto(key, &digest, sig);
         },
-        .ecdsa_secp384r1_sha384 => {
+        .ecdsa_p384_sha384 => {
             var digest: [48]u8 = undefined;
             std.crypto.hash.sha2.Sha384.hash(msg, &digest, .{});
             try verifyEcdsaDigestWithLibcrypto(key, &digest, sig);
@@ -474,7 +472,7 @@ fn verifyEcdsaWithLibcrypto(
 fn verifyEcdsaBoth(
     key: backend.sign.pkey,
     sig: []const u8,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     pub_key: []const u8,
     transcript_hash: []const u8,
     signed_content: []const u8,
@@ -485,16 +483,16 @@ fn verifyEcdsaBoth(
 
 fn verifyRsaPssWithLibcrypto(
     key: backend.sign.pkey,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     msg: []const u8,
     sig: []const u8,
 ) !void {
     _ = c.ERR_set_mark();
     defer _ = c.ERR_pop_to_mark();
     const md = switch (scheme) {
-        .rsa_pss_rsae_sha256 => c.EVP_sha256(),
-        .rsa_pss_rsae_sha384 => c.EVP_sha384(),
-        .rsa_pss_rsae_sha512 => c.EVP_sha512(),
+        .rsa_pss_sha256 => c.EVP_sha256(),
+        .rsa_pss_sha384 => c.EVP_sha384(),
+        .rsa_pss_sha512 => c.EVP_sha512(),
         else => unreachable,
     } orelse return error.LibcryptoFailed;
     const ctx = c.EVP_MD_CTX_new() orelse return error.LibcryptoFailed;
@@ -527,7 +525,7 @@ test "backend.sign: RSA-PSS SHA-256 signature verifies natively" {
     const content = serverSignedContent(&content_buf, &transcript_hash);
 
     var sig_buf: [512]u8 = undefined;
-    const scheme: SignatureScheme = .rsa_pss_rsae_sha256;
+    const scheme: SignatureAlgorithm = .rsa_pss_sha256;
     const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
     try verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash);
     try verifyRsaPssWithLibcrypto(private_key, scheme, content, sig);
@@ -544,7 +542,7 @@ test "backend.sign: RSA-PSS SHA-256 tampered signature is rejected natively" {
     const content = serverSignedContent(&content_buf, &transcript_hash);
 
     var sig_buf: [512]u8 = undefined;
-    const scheme: SignatureScheme = .rsa_pss_rsae_sha256;
+    const scheme: SignatureAlgorithm = .rsa_pss_sha256;
     const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
     sig_buf[sig.len - 1] ^= 0xff;
 
@@ -570,7 +568,7 @@ test "backend.sign: RSA-PSS SHA-384 signature verifies natively and tamper is re
     const content = serverSignedContent(&content_buf, &transcript_hash);
 
     var sig_buf: [512]u8 = undefined;
-    const scheme: SignatureScheme = .rsa_pss_rsae_sha384;
+    const scheme: SignatureAlgorithm = .rsa_pss_sha384;
     const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
     try verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash);
     try verifyRsaPssWithLibcrypto(private_key, scheme, content, sig);
@@ -605,7 +603,7 @@ test "backend.sign: ECDSA P-256 signatures verify natively and through libcrypto
     const content = serverSignedContent(&content_buf, &transcript_hash);
 
     var sig_buf: [128]u8 = undefined;
-    const scheme: SignatureScheme = .ecdsa_secp256r1_sha256;
+    const scheme: SignatureAlgorithm = .ecdsa_p256_sha256;
     const sig = try backend.sign.sign(priv, scheme, content, &sig_buf, .random);
     try verifyEcdsaBoth(priv, sig, scheme, &pub_bytes, &transcript_hash, content);
 
@@ -639,16 +637,16 @@ test "backend.sign: ECDSA P-256 SHA-256 tampered signature is rejected natively"
     const content = serverSignedContent(&content_buf, &transcript_hash);
 
     var sig_buf: [128]u8 = undefined;
-    const sig = try backend.sign.sign(priv, .ecdsa_secp256r1_sha256, content, &sig_buf, .random);
+    const sig = try backend.sign.sign(priv, .ecdsa_p256_sha256, content, &sig_buf, .random);
     sig_buf[0] ^= 0xff;
 
     try testing.expectError(
         error.SignatureVerificationFailed,
-        verifyAsServerCertificateVerify(sig, .ecdsa_secp256r1_sha256, &pub_bytes, &transcript_hash),
+        verifyAsServerCertificateVerify(sig, .ecdsa_p256_sha256, &pub_bytes, &transcript_hash),
     );
     try testing.expectError(
         error.SignatureVerificationFailed,
-        verifyEcdsaWithLibcrypto(priv, .ecdsa_secp256r1_sha256, content, sig),
+        verifyEcdsaWithLibcrypto(priv, .ecdsa_p256_sha256, content, sig),
     );
 }
 
@@ -672,7 +670,7 @@ test "backend.sign: ECDSA P-384 signatures verify natively and through libcrypto
     const content = serverSignedContent(&content_buf, &transcript_hash);
 
     var sig_buf: [160]u8 = undefined;
-    const scheme: SignatureScheme = .ecdsa_secp384r1_sha384;
+    const scheme: SignatureAlgorithm = .ecdsa_p384_sha384;
     const sig = try backend.sign.sign(priv, scheme, content, &sig_buf, .random);
     try verifyEcdsaBoth(priv, sig, scheme, &pub_bytes, &transcript_hash, content);
 
@@ -692,7 +690,7 @@ test "backend.sign: ECDSA P-384 signatures verify natively and through libcrypto
     sig_buf[0] ^= 0xff;
     try testing.expectError(
         error.SignatureVerificationFailed,
-        verifyAsServerCertificateVerify(sig, .ecdsa_secp384r1_sha384, &pub_bytes, &transcript_hash),
+        verifyAsServerCertificateVerify(sig, .ecdsa_p384_sha384, &pub_bytes, &transcript_hash),
     );
 }
 
@@ -722,7 +720,7 @@ fn signEcdsaDigestWithLibcrypto(
 fn expectEcdsaCrossVerification(
     comptime Curve: type,
     comptime Hash: type,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     scalar: *const [Curve.scalar.encoded_length]u8,
 ) !void {
     var linked_private: backend.sign.pkey = if (comptime Curve == std.crypto.ecc.P256)
@@ -789,7 +787,7 @@ test "backend.native differential: ECDSA P-256 and P-384 cross-verify with libcr
     try expectEcdsaCrossVerification(
         std.crypto.ecc.P256,
         std.crypto.hash.sha2.Sha256,
-        .ecdsa_secp256r1_sha256,
+        .ecdsa_p256_sha256,
         &p256_scalar,
     );
     const p384_scalar: [48]u8 = stdx.fmt.comptimeHex(
@@ -800,7 +798,7 @@ test "backend.native differential: ECDSA P-256 and P-384 cross-verify with libcr
     try expectEcdsaCrossVerification(
         std.crypto.ecc.P384,
         std.crypto.hash.sha2.Sha384,
-        .ecdsa_secp384r1_sha384,
+        .ecdsa_p384_sha384,
         &p384_scalar,
     );
 }
@@ -819,7 +817,7 @@ test "backend.sign: RSA-PSS SHA-512 signature verifies natively" {
     const content = serverSignedContent(&content_buf, &transcript_hash);
 
     var sig_buf: [512]u8 = undefined;
-    const scheme: SignatureScheme = .rsa_pss_rsae_sha512;
+    const scheme: SignatureAlgorithm = .rsa_pss_sha512;
     const sig = try backend.sign.sign(private_key, scheme, content, &sig_buf, .random);
     try verifyAsServerCertificateVerify(sig, scheme, pub_key, &transcript_hash);
     try verifyRsaPssWithLibcrypto(private_key, scheme, content, sig);
@@ -844,7 +842,7 @@ test "backend.sign: BufferTooShort on undersized output" {
     var sig_buf: [1]u8 = undefined;
     try testing.expectError(
         error.BufferTooShort,
-        backend.sign.sign(key, .rsa_pss_rsae_sha256, "test message", &sig_buf, .random),
+        backend.sign.sign(key, .rsa_pss_sha256, "test message", &sig_buf, .random),
     );
 }
 
@@ -860,7 +858,7 @@ test "backend.sign: ECDSA curve mismatch is a named failure" {
     var sig_buf: [104]u8 = undefined;
     try testing.expectError(
         error.LibcryptoFailed,
-        backend.sign.sign(priv, .ecdsa_secp384r1_sha384, "test message", &sig_buf, .deterministic),
+        backend.sign.sign(priv, .ecdsa_p384_sha384, "test message", &sig_buf, .deterministic),
     );
 }
 
@@ -876,7 +874,7 @@ test "backend.sign: key/scheme mismatch is a libcrypto failure" {
     var sig_buf: [256]u8 = undefined;
     try testing.expectError(
         error.LibcryptoFailed,
-        backend.sign.sign(priv, .rsa_pss_rsae_sha256, "test message", &sig_buf, .random),
+        backend.sign.sign(priv, .rsa_pss_sha256, "test message", &sig_buf, .random),
     );
 }
 
@@ -895,12 +893,12 @@ test "backend.sign: key/scheme mismatch is a libcrypto failure" {
 // (32 octets for P-256, 48 for P-384; the RSA cases use the fixture key), then
 // the transcript hash, clamped to the 64 octets the signed-content buffer holds.
 // Run with `just fuzz 100K`.
-const differential_schemes = [_]SignatureScheme{
-    .ecdsa_secp256r1_sha256,
-    .ecdsa_secp384r1_sha384,
-    .rsa_pss_rsae_sha256,
-    .rsa_pss_rsae_sha384,
-    .rsa_pss_rsae_sha512,
+const differential_schemes = [_]SignatureAlgorithm{
+    .ecdsa_p256_sha256,
+    .ecdsa_p384_sha384,
+    .rsa_pss_sha256,
+    .rsa_pss_sha384,
+    .rsa_pss_sha512,
 };
 
 /// Transcript-hash octets the verifier's signed-content buffer holds past the
@@ -911,12 +909,12 @@ const differential_transcript_max = 64;
 /// uses its random nonce construction.
 fn signDeterministically(
     key: backend.sign.pkey,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     content: []const u8,
     out: []u8,
 ) backend.sign.SignError![]const u8 {
     const nonce_mode: backend.sign.NonceMode = switch (scheme) {
-        .ecdsa_secp256r1_sha256, .ecdsa_secp384r1_sha384 => .deterministic,
+        .ecdsa_p256_sha256, .ecdsa_p384_sha384 => .deterministic,
         else => .random,
     };
     return backend.sign.sign(key, scheme, content, out, nonce_mode);
@@ -924,7 +922,7 @@ fn signDeterministically(
 
 fn expectSignerVerifierAgreement(
     key: backend.sign.pkey,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     pub_key: []const u8,
     content: []const u8,
     transcript_hash: []const u8,
@@ -946,8 +944,8 @@ fn fuzzSignVerifyDifferential(_: void, input: []const u8) anyerror!void {
     if (input.len == 0) return;
     const scheme = differential_schemes[input[0] % differential_schemes.len];
     const seed_len: usize = switch (scheme) {
-        .ecdsa_secp256r1_sha256 => 32,
-        .ecdsa_secp384r1_sha384 => 48,
+        .ecdsa_p256_sha256 => 32,
+        .ecdsa_p384_sha384 => 48,
         else => 0,
     };
     if (input.len < 1 + seed_len) return;
@@ -960,7 +958,7 @@ fn fuzzSignVerifyDifferential(_: void, input: []const u8) anyerror!void {
 
     var sig_buf: [512]u8 = undefined;
     switch (scheme) {
-        .ecdsa_secp256r1_sha256 => {
+        .ecdsa_p256_sha256 => {
             // Zero and out-of-range scalars cannot form a key. Skip them
             // instead of reporting an expected key-construction error.
             var key = backend.sign.privateKeyFromP256Scalar(input[1..33]) catch return;
@@ -975,7 +973,7 @@ fn fuzzSignVerifyDifferential(_: void, input: []const u8) anyerror!void {
                 &sig_buf,
             );
         },
-        .ecdsa_secp384r1_sha384 => {
+        .ecdsa_p384_sha384 => {
             var key = backend.p384.privateKeyFromSecret(input[1..49]) catch return;
             defer backend.sign.freeKey(&key);
             const pub_key = try backend.p384.rawPublicKeyFromPrivate(key);
@@ -1006,13 +1004,13 @@ fn fuzzSignVerifyDifferential(_: void, input: []const u8) anyerror!void {
 
 fn encodeDifferentialInput(
     buf: []u8,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     key_seed: []const u8,
     transcript_hash: []const u8,
 ) []const u8 {
     const total = 1 + key_seed.len + transcript_hash.len;
     assert(buf.len >= total);
-    const tag = std.mem.findScalar(SignatureScheme, &differential_schemes, scheme) orelse
+    const tag = std.mem.findScalar(SignatureAlgorithm, &differential_schemes, scheme) orelse
         unreachable;
     buf[0] = @intCast(tag);
     @memcpy(buf[1..][0..key_seed.len], key_seed);
@@ -1045,23 +1043,23 @@ test "fuzz: libcrypto-signed CertificateVerify verifies in-tree" {
     var corpus: [9][]const u8 = undefined;
     corpus[0] = encodeDifferentialInput(
         &storage[0],
-        .ecdsa_secp256r1_sha256,
+        .ecdsa_p256_sha256,
         &p256_scalar,
         &sha256_hash,
     );
     corpus[1] = encodeDifferentialInput(
         &storage[1],
-        .ecdsa_secp384r1_sha384,
+        .ecdsa_p384_sha384,
         &p384_scalar,
         &sha384_hash,
     );
-    corpus[2] = encodeDifferentialInput(&storage[2], .rsa_pss_rsae_sha256, "", &sha256_hash);
-    corpus[3] = encodeDifferentialInput(&storage[3], .rsa_pss_rsae_sha384, "", &sha384_hash);
-    corpus[4] = encodeDifferentialInput(&storage[4], .rsa_pss_rsae_sha512, "", &sha512_hash);
-    corpus[5] = encodeDifferentialInput(&storage[5], .ecdsa_secp256r1_sha256, &zero_p256, "");
-    corpus[6] = encodeDifferentialInput(&storage[6], .ecdsa_secp256r1_sha256, &max_p256, "");
-    corpus[7] = encodeDifferentialInput(&storage[7], .ecdsa_secp384r1_sha384, &zero_p384, "");
-    corpus[8] = encodeDifferentialInput(&storage[8], .ecdsa_secp384r1_sha384, &max_p384, "");
+    corpus[2] = encodeDifferentialInput(&storage[2], .rsa_pss_sha256, "", &sha256_hash);
+    corpus[3] = encodeDifferentialInput(&storage[3], .rsa_pss_sha384, "", &sha384_hash);
+    corpus[4] = encodeDifferentialInput(&storage[4], .rsa_pss_sha512, "", &sha512_hash);
+    corpus[5] = encodeDifferentialInput(&storage[5], .ecdsa_p256_sha256, &zero_p256, "");
+    corpus[6] = encodeDifferentialInput(&storage[6], .ecdsa_p256_sha256, &max_p256, "");
+    corpus[7] = encodeDifferentialInput(&storage[7], .ecdsa_p384_sha384, &zero_p384, "");
+    corpus[8] = encodeDifferentialInput(&storage[8], .ecdsa_p384_sha384, &max_p384, "");
 
     try fuzz_compat.fuzzBytes(fuzzSignVerifyDifferential, {}, .{ .corpus = &corpus });
 }
@@ -1213,9 +1211,10 @@ test "backend error-queue hygiene: successful key load preserves caller entries 
 // the guard; OpenSSL's EVP pushes nothing on a bad tag, so there the
 // assertion is vacuous and the fork lanes carry the red.
 test "backend error-queue hygiene: failed record decrypt leaves no residue (#88)" {
-    inline for (backend.capabilities.cipher_suites) |suite| {
+    inline for (types.aead_algorithms) |suite| {
+        if (comptime !backend.supportsAlg(suite)) continue;
         c.ERR_clear_error();
-        const key_bytes: [keyLenForSuite(suite)]u8 = @splat(0xab);
+        const key_bytes: [suite.keyLen()]u8 = @splat(0xab);
         const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
         const ad = "tls-record-header";
         const plaintext = "backend-aead-contract";
@@ -1246,10 +1245,10 @@ test "backend error-queue hygiene: failed decrypt preserves caller entries exact
     c.ERR_clear_error();
     pushCallerQueueEntries();
 
-    const key_bytes: [keyLenForSuite(.aes_128_gcm_sha256)]u8 = @splat(0xab);
+    const key_bytes: [types.AeadAlgorithm.aes_128_gcm.keyLen()]u8 = @splat(0xab);
     const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
     const plaintext = "backend-aead-contract";
-    var ctx: backend.aead.Context = try backend.aead.init(.aes_128_gcm_sha256, &key_bytes);
+    var ctx: backend.aead.Context = try backend.aead.init(.aes_128_gcm, &key_bytes);
     defer backend.aead.deinit(&ctx);
 
     var ciphertext: [plaintext.len]u8 = undefined;
@@ -1300,7 +1299,7 @@ test "backend error-queue hygiene: scheme inference preserves caller entries (#1
     defer backend.sign.freeKey(&key);
 
     const scheme = try backend.sign.keyScheme(key);
-    try testing.expectEqual(SignatureScheme.ecdsa_secp256r1_sha256, scheme);
+    try testing.expectEqual(SignatureAlgorithm.ecdsa_p256_sha256, scheme);
 
     try expectQueueMatchesCallerResidue();
 }

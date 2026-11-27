@@ -4,6 +4,7 @@ const testing = std.testing;
 const assert = std.debug.assert;
 
 const backend = @import("crypto/backend.zig");
+const capabilities = @import("capabilities.zig");
 const compat = @import("compat.zig");
 const memx = @import("memx.zig");
 const signature_scheme = @import("signature_scheme.zig");
@@ -11,14 +12,88 @@ const SignatureScheme = signature_scheme.SignatureScheme;
 pub const OfferedCertificateSchemes = signature_scheme.OfferedCertificateSchemes;
 pub const max_certificate_signature_schemes = signature_scheme.max_certificate_signature_schemes;
 
-pub const SignError = backend.sign.SignError;
+const LegacySignatureError = error{
+    BufferTooShort,
+    InvalidEncoding,
+    LibcryptoFailed,
+    SignatureVerificationFailed,
+    UnsupportedSignatureScheme,
+};
+const NativeSignatureExtras = error{UnsupportedPrimitive};
+const NativeKeyLoadExtras = error{
+    CurveMismatch,
+    EncryptedPrivateKeyUnsupported,
+    InvalidDer,
+    InvalidPemEncoding,
+    InvalidPrivateKey,
+    PemLabelMismatch,
+    PrivateKeyTooLarge,
+    PublicKeyMismatch,
+    RsaUnsupported,
+    UnsupportedCurve,
+    UnsupportedKeyAlgorithm,
+    UnsupportedPemLabel,
+    UnsupportedPointFormat,
+};
+pub const ExplicitLoadError = if (backend.native_selected)
+    LegacySignatureError || NativeSignatureExtras || NativeKeyLoadExtras
+else
+    LegacySignatureError;
+
+pub const SignError = if (backend.native_selected)
+    LegacySignatureError || NativeSignatureExtras || error{DeterministicNonceUnsupported}
+else
+    LegacySignatureError || error{DeterministicNonceUnsupported};
+pub const ScalarKeyError = if (backend.native_selected)
+    LegacySignatureError || NativeSignatureExtras || error{InvalidPrivateKey}
+else
+    LegacySignatureError;
 pub const NonceMode = backend.sign.NonceMode;
+
+const ProviderSchemeError = if (backend.native_selected)
+    error{ UnsupportedPrimitive, LibcryptoFailed, UnsupportedSignatureScheme }
+else
+    error{ LibcryptoFailed, UnsupportedSignatureScheme };
+
+fn toProvider(
+    scheme: SignatureScheme,
+) ProviderSchemeError!backend.SignatureAlgorithm {
+    return switch (scheme) {
+        .ecdsa_secp256r1_sha256 => .ecdsa_p256_sha256,
+        .ecdsa_secp384r1_sha384 => .ecdsa_p384_sha384,
+        .ecdsa_secp521r1_sha512 => .ecdsa_p521_sha512,
+        .rsa_pss_rsae_sha256 => .rsa_pss_sha256,
+        .rsa_pss_rsae_sha384 => .rsa_pss_sha384,
+        .rsa_pss_rsae_sha512 => .rsa_pss_sha512,
+        .ed25519 => .ed25519,
+        .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 => if (backend.native_selected)
+            error.UnsupportedPrimitive
+        else
+            error.UnsupportedSignatureScheme,
+        else => if (backend.native_selected)
+            error.LibcryptoFailed
+        else
+            error.UnsupportedSignatureScheme,
+    };
+}
+
+pub fn fromProvider(scheme: backend.SignatureAlgorithm) SignatureScheme {
+    return switch (scheme) {
+        .ecdsa_p256_sha256 => .ecdsa_secp256r1_sha256,
+        .ecdsa_p384_sha384 => .ecdsa_secp384r1_sha384,
+        .ecdsa_p521_sha512 => .ecdsa_secp521r1_sha512,
+        .rsa_pss_sha256 => .rsa_pss_rsae_sha256,
+        .rsa_pss_sha384 => .rsa_pss_rsae_sha384,
+        .rsa_pss_sha512 => .rsa_pss_rsae_sha512,
+        .ed25519 => .ed25519,
+    };
+}
 
 /// `fromPemAuto` load failure: the explicit loader errors plus the
 /// scheme-inference rejection (#112). `fromPem` and `fromDer` return
 /// `backend.sign.LoadError` directly, so this alias adds
 /// `UnsupportedKeyScheme` only to automatic loading.
-pub const LoadError = backend.sign.LoadError || error{UnsupportedKeyScheme};
+pub const LoadError = ExplicitLoadError || error{UnsupportedKeyScheme};
 
 /// `pairsWith` contract (#113): the leaf parsed but its key does not pair
 /// with the loaded private key (`CertificateKeyMismatch`), or the DER is
@@ -99,20 +174,22 @@ pub const PrivateKey = struct {
     /// the default `.random`, which adds fresh OS entropy (RFC 6979 §3.6).
     nonce_mode: NonceMode,
 
-    pub fn fromDer(scheme: SignatureScheme, der: []const u8) backend.sign.LoadError!PrivateKey {
-        return .{
-            .scheme = scheme,
-            .key = try backend.sign.privateKeyFromDer(der),
-            .nonce_mode = .random,
+    pub fn fromDer(scheme: SignatureScheme, der: []const u8) ExplicitLoadError!PrivateKey {
+        const key = backend.sign.privateKeyFromDer(der) catch |err| {
+            if (err == error.UnsupportedSignatureAlgorithm)
+                return error.UnsupportedSignatureScheme;
+            return @errorCast(err);
         };
+        return .{ .scheme = scheme, .key = key, .nonce_mode = .random };
     }
 
-    pub fn fromPem(scheme: SignatureScheme, pem: []const u8) backend.sign.LoadError!PrivateKey {
-        return .{
-            .scheme = scheme,
-            .key = try backend.sign.privateKeyFromPem(pem),
-            .nonce_mode = .random,
+    pub fn fromPem(scheme: SignatureScheme, pem: []const u8) ExplicitLoadError!PrivateKey {
+        const key = backend.sign.privateKeyFromPem(pem) catch |err| {
+            if (err == error.UnsupportedSignatureAlgorithm)
+                return error.UnsupportedSignatureScheme;
+            return @errorCast(err);
         };
+        return .{ .scheme = scheme, .key = key, .nonce_mode = .random };
     }
 
     /// RFC 8446 §4.2.3 — infer the CertificateVerify scheme from the loaded
@@ -123,19 +200,29 @@ pub const PrivateKey = struct {
     /// today) fails here with `error.UnsupportedKeyScheme`, at load time
     /// instead of at the first handshake signature.
     pub fn fromPemAuto(pem: []const u8) LoadError!PrivateKey {
-        var key = try backend.sign.privateKeyFromPem(pem);
+        var key = backend.sign.privateKeyFromPem(pem) catch |err| {
+            if (err == error.UnsupportedSignatureAlgorithm)
+                return error.UnsupportedSignatureScheme;
+            return @errorCast(err);
+        };
         // Two fallible steps: a scheme-rejected key must not leak the
         // loaded EVP_PKEY.
         errdefer backend.sign.freeKey(&key);
-        const scheme = try backend.sign.keyScheme(key);
-        if (!backend.supportsCertificateVerifyScheme(scheme)) return error.UnsupportedKeyScheme;
+        const scheme = fromProvider(try backend.sign.keyScheme(key));
+        if (!capabilities.supportsCertificateVerifyScheme(scheme))
+            return error.UnsupportedKeyScheme;
         return .{ .scheme = scheme, .key = key, .nonce_mode = .random };
     }
 
-    pub fn fromP256Scalar(scalar: *const [32]u8) backend.sign.ScalarKeyError!PrivateKey {
+    pub fn fromP256Scalar(scalar: *const [32]u8) ScalarKeyError!PrivateKey {
+        const key = backend.sign.privateKeyFromP256Scalar(scalar) catch |err| {
+            if (err == error.UnsupportedSignatureAlgorithm)
+                return error.UnsupportedSignatureScheme;
+            return @errorCast(err);
+        };
         return .{
             .scheme = .ecdsa_secp256r1_sha256,
-            .key = try backend.sign.privateKeyFromP256Scalar(scalar),
+            .key = key,
             .nonce_mode = .random,
         };
     }
@@ -155,7 +242,17 @@ pub const PrivateKey = struct {
     }
 
     pub fn sign(self: *const PrivateKey, msg: []const u8, out: []u8) SignError![]const u8 {
-        return backend.sign.sign(self.key, self.scheme, msg, out, self.nonce_mode);
+        const scheme = try toProvider(self.scheme);
+        return backend.sign.sign(
+            self.key,
+            scheme,
+            msg,
+            out,
+            self.nonce_mode,
+        ) catch |err| switch (err) {
+            error.UnsupportedSignatureAlgorithm => error.UnsupportedSignatureScheme,
+            else => @errorCast(err),
+        };
     }
 
     /// RFC 8446 §4.4.3 — the CertificateVerify signature must be made with
@@ -375,7 +472,7 @@ test "PrivateKey.fromPemAuto: P-521 is rejected at load by the capability gate" 
     var backend_key = try backend.sign.privateKeyFromPem(ec_p521_key_pem);
     defer backend.sign.freeKey(&backend_key);
     try testing.expectEqual(
-        SignatureScheme.ecdsa_secp521r1_sha512,
+        backend.SignatureAlgorithm.ecdsa_p521_sha512,
         try backend.sign.keyScheme(backend_key),
     );
     try testing.expectError(
@@ -392,7 +489,7 @@ test "PrivateKey.fromPemAuto: Ed25519 is rejected at load by the capability gate
     var backend_key = try backend.sign.privateKeyFromPem(ed25519_key_pem);
     defer backend.sign.freeKey(&backend_key);
     try testing.expectEqual(
-        SignatureScheme.ed25519,
+        backend.SignatureAlgorithm.ed25519,
         try backend.sign.keyScheme(backend_key),
     );
     try testing.expectError(

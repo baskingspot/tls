@@ -11,9 +11,10 @@ pub const native_selected = build_options.crypto == .native;
 // ziglint-ignore: Z028 — native must not resolve the libcrypto module import.
 const c_openssl = if (native_selected) struct {} else @import("c_openssl.zig");
 
-const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
-const NamedGroup = @import("../kex.zig").NamedGroup;
-const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
+pub const ParameterSet = @import("mlkem_parameters.zig").ParameterSet;
+pub const AeadAlgorithm = @import("types.zig").AeadAlgorithm;
+pub const CurveId = @import("types.zig").CurveId;
+pub const SignatureAlgorithm = @import("types.zig").SignatureAlgorithm;
 const backend_native = @import("backend_native.zig");
 // ziglint-ignore: Z028 — native must not import any libcrypto backend.
 const backend_aws_lc = if (native_selected) struct {} else @import("backend_aws_lc.zig");
@@ -126,154 +127,24 @@ pub const kem_impl = switch (active) {
     .boringssl => backend_boringssl,
 };
 
-pub const capabilities = switch (active) {
-    .native => backend_native.capabilities,
-    .openssl => backend_openssl.capabilities,
-    .@"openssl-approved" => backend_openssl.capabilities_approved,
-    .@"aws-lc" => backend_aws_lc.capabilities,
-    .@"aws-lc-approved" => backend_aws_lc.capabilities_approved,
-    .boringssl => backend_boringssl.capabilities,
-};
-
-comptime {
-    assert(capabilities.cipher_suites.len > 0);
-    assert(capabilities.client_x25519 or capabilities.client_p256);
-    assert(capabilities.server_x25519 or capabilities.server_p256);
-    assert(capabilities.certificate_verify_schemes.len > 0);
-    // Native pins both ML-KEM-768 hybrids and leaves ML-KEM-1024 unsupported.
-    if (active == .native) {
-        assert(capabilities.client_p256 and capabilities.server_p256);
-        assert(capabilities.client_p384 and capabilities.server_p384);
-        assert(capabilities.client_x25519_mlkem768);
-        assert(capabilities.server_x25519_mlkem768);
-        assert(capabilities.client_secp256r1_mlkem768);
-        assert(capabilities.server_secp256r1_mlkem768);
-        assert(!capabilities.client_secp384r1_mlkem1024);
-        assert(!capabilities.server_secp384r1_mlkem1024);
-    } else {
-        assert(capabilities.certificate_verify_schemes.len > 0);
-    }
-    assert(capabilities.certificate_signature_schemes.len > 0);
-    assert(capabilities.client_p384 == capabilities.server_p384);
-    assert(
-        capabilities.client_x25519_mlkem768 == capabilities.server_x25519_mlkem768,
-    );
-    assert(
-        capabilities.client_secp256r1_mlkem768 ==
-            capabilities.server_secp256r1_mlkem768,
-    );
-    assert(
-        capabilities.client_secp384r1_mlkem1024 ==
-            capabilities.server_secp384r1_mlkem1024,
-    );
-
-    // FIPS capability tables must be a strict subset of their non-FIPS
-    // counterparts. Native has no approved-only profile.
-    if (!native_selected) {
-        assertSubset(
-            backend_openssl.capabilities_approved.cipher_suites,
-            backend_openssl.capabilities.cipher_suites,
-        );
-        assertSubset(
-            backend_openssl.capabilities_approved.certificate_verify_schemes,
-            backend_openssl.capabilities.certificate_verify_schemes,
-        );
-        assertSubset(
-            backend_openssl.capabilities_approved.certificate_signature_schemes,
-            backend_openssl.capabilities.certificate_signature_schemes,
-        );
-        assertSubset(
-            backend_aws_lc.capabilities_approved.cipher_suites,
-            backend_aws_lc.capabilities.cipher_suites,
-        );
-        assertSubset(
-            backend_aws_lc.capabilities_approved.certificate_verify_schemes,
-            backend_aws_lc.capabilities.certificate_verify_schemes,
-        );
-        assertSubset(
-            backend_aws_lc.capabilities_approved.certificate_signature_schemes,
-            backend_aws_lc.capabilities.certificate_signature_schemes,
-        );
-    }
+pub fn supportsAlg(algorithm: AeadAlgorithm) bool {
+    return aead_impl.supportsAlg(algorithm);
 }
 
-fn assertSubset(comptime fips: anytype, comptime base: anytype) void {
-    for (fips) |item| {
-        var found = false;
-        for (base) |b| {
-            if (item == b) {
-                found = true;
-                break;
-            }
-        }
-        assert(found);
-    }
-}
-
-/// Returns the FIPS certificate_signature_schemes for the given backend family.
-fn approvedCertSigSchemes(comptime fam: @TypeOf(active)) []const SignatureScheme {
-    const openssl_approved =
-        backend_openssl.capabilities_approved.certificate_signature_schemes;
-    const aws_lc_approved =
-        backend_aws_lc.capabilities_approved.certificate_signature_schemes;
-    return switch (fam) {
-        .native => &.{},
-        .openssl, .@"openssl-approved" => openssl_approved,
-        .@"aws-lc", .@"aws-lc-approved" => aws_lc_approved,
-        .boringssl => &.{},
+pub fn supportsCurve(curve: CurveId) bool {
+    return switch (curve) {
+        .x25519 => x25519_impl.supportsCurve(curve),
+        .p256 => p256_impl.supportsCurve(curve),
+        .p384 => p384_impl.supportsCurve(curve),
     };
 }
 
-pub fn supportsCipherSuite(suite: CipherSuite) bool {
-    for (capabilities.cipher_suites) |supported| {
-        if (supported == suite) return true;
-    }
-    return false;
+pub fn supportsScheme(scheme: SignatureAlgorithm) bool {
+    return sign_impl.supportsScheme(scheme);
 }
 
-pub fn supportsServerX25519() bool {
-    return capabilities.server_x25519;
-}
-
-pub fn supportsServerP256() bool {
-    return capabilities.server_p256;
-}
-
-pub fn supportsServerP384() bool {
-    return capabilities.server_p384;
-}
-
-pub fn supportsClientP384() bool {
-    return capabilities.client_p384;
-}
-
-pub fn supportsClientHybridGroup(group: NamedGroup) bool {
-    return switch (group) {
-        .x25519_mlkem768 => capabilities.client_x25519_mlkem768,
-        .secp256r1_mlkem768 => capabilities.client_secp256r1_mlkem768,
-        .secp384r1_mlkem1024 => capabilities.client_secp384r1_mlkem1024,
-        else => false,
-    };
-}
-
-pub fn supportsServerHybridGroup(group: NamedGroup) bool {
-    return switch (group) {
-        .x25519_mlkem768 => capabilities.server_x25519_mlkem768,
-        .secp256r1_mlkem768 => capabilities.server_secp256r1_mlkem768,
-        .secp384r1_mlkem1024 => capabilities.server_secp384r1_mlkem1024,
-        else => false,
-    };
-}
-
-pub fn supportsServerX25519Mlkem768() bool {
-    return supportsServerHybridGroup(.x25519_mlkem768);
-}
-
-pub fn supportsCertificateVerifyScheme(scheme: SignatureScheme) bool {
-    for (capabilities.certificate_verify_schemes) |supported| {
-        if (supported == scheme) return true;
-    }
-    return false;
+pub fn supportsParameterSet(parameter_set: ParameterSet) bool {
+    return kem_impl.supportsParameterSet(parameter_set);
 }
 
 pub const x25519 = struct {
@@ -380,7 +251,7 @@ pub const aead = struct {
     pub const tag_len = aead_impl.aead_tag_len;
     pub const nonce_len = aead_impl.aead_nonce_len;
 
-    pub inline fn init(suite: CipherSuite, key_bytes: []const u8) Error!Context {
+    pub inline fn init(suite: AeadAlgorithm, key_bytes: []const u8) Error!Context {
         return aead_impl.aeadInit(suite, key_bytes);
     }
 
@@ -444,7 +315,7 @@ pub const sign = struct {
 
     pub const KeySchemeError = sign_impl.KeySchemeError;
 
-    pub inline fn keyScheme(key: pkey) KeySchemeError!SignatureScheme {
+    pub inline fn keyScheme(key: pkey) KeySchemeError!SignatureAlgorithm {
         return sign_impl.keyScheme(key);
     }
 
@@ -465,7 +336,7 @@ pub const sign = struct {
 
     pub inline fn sign(
         key: pkey,
-        scheme: SignatureScheme,
+        scheme: SignatureAlgorithm,
         msg: []const u8,
         out: []u8,
         nonce_mode: NonceMode,
@@ -503,16 +374,6 @@ test "active backend matches the crypto option and selected libcrypto headers" {
     );
 }
 
-// RFC 8446 §9.1 — TLS 1.3 endpoints need at least one mutually supported
-// cipher suite, key-share group, and CertificateVerify scheme to handshake.
-test "capabilities are non-empty for the active backend" {
-    try testing.expect(capabilities.cipher_suites.len > 0);
-    try testing.expect(capabilities.client_x25519 or capabilities.client_p256);
-    try testing.expect(capabilities.server_x25519 or capabilities.server_p256);
-    try testing.expect(capabilities.certificate_verify_schemes.len > 0);
-    try testing.expect(capabilities.certificate_signature_schemes.len > 0);
-}
-
 // The AWS-LC and BoringSSL X25519 paths use their flat curve25519 API with a
 // value handle; keep it from silently regressing to the OpenSSL EVP_PKEY
 // pointer shape.
@@ -527,14 +388,6 @@ test "x25519 handle shape matches active backend" {
             try testing.expect(@sizeOf(x25519.pkey) > evp_pointer_size);
         },
     }
-}
-
-// Client first-flight key-share plumbing supports X25519 and P-256. An
-// approved-only build carries P-256 only.
-test "client group capabilities match implemented client key-share plumbing" {
-    try testing.expect(capabilities.client_x25519 or capabilities.client_p256);
-    if (active == .native) try testing.expect(capabilities.client_x25519);
-    try testing.expect(capabilities.client_p256);
 }
 
 test "aead context shape matches active backend" {
@@ -559,128 +412,40 @@ test "aws-lc aead deinit clears inline context" {
     if (active != .@"aws-lc" and active != .@"aws-lc-approved") return error.SkipZigTest;
 
     const key: [16]u8 = @splat(0xab);
-    var ctx = try backend_aws_lc.aeadInit(.aes_128_gcm_sha256, &key);
+    var ctx = try backend_aws_lc.aeadInit(.aes_128_gcm, &key);
     backend_aws_lc.aeadDeinit(&ctx);
 
     for (std.mem.asBytes(&ctx)) |byte| try testing.expectEqual(@as(u8, 0), byte);
 }
 
-test "capability helpers recognize advertised algorithms" {
-    for (capabilities.cipher_suites) |suite| try testing.expect(supportsCipherSuite(suite));
-    for (capabilities.certificate_verify_schemes) |scheme| {
-        try testing.expect(supportsCertificateVerifyScheme(scheme));
+test "primitive availability follows the active provider" {
+    const key: [32]u8 = @splat(0xab);
+    for (std.enums.values(AeadAlgorithm)) |algorithm| {
+        try testing.expectEqual(
+            !approved_only or algorithm != .chacha20_poly1305,
+            supportsAlg(algorithm),
+        );
+        if (supportsAlg(algorithm)) {
+            var ctx = try aead.init(algorithm, key[0..algorithm.keyLen()]);
+            defer aead.deinit(&ctx);
+        }
     }
-}
-
-// Approved-algorithm divergence: the approved-only table narrows the default
-// set to algorithms a NIST-approved FIPS policy covers. These tests are
-// comptime-correct regardless of which libcrypto is actually linked.
-
-// ChaCha20-Poly1305 is not a NIST-approved algorithm, so the approved table
-// must not advertise it.
-test "approved: chacha20_poly1305_sha256 excluded from the approved cipher_suites" {
-    const suites = switch (active) {
-        .openssl, .@"openssl-approved" => backend_openssl.capabilities_approved.cipher_suites,
-        .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities_approved.cipher_suites,
-        .boringssl, .native => return error.SkipZigTest,
-    };
-    for (suites) |suite| {
-        try testing.expect(suite != .chacha20_poly1305_sha256);
+    for (std.enums.values(CurveId)) |curve| {
+        try testing.expectEqual(!approved_only or curve != .x25519, supportsCurve(curve));
     }
-}
-
-// X25519 is not approved for key agreement (FIPS 140-3 IG, SP 800-56Arev3),
-// so an approved-only build must not advertise it in either role.
-test "approved: x25519 excluded from the approved group capability" {
-    const caps = switch (active) {
-        .openssl, .@"openssl-approved" => backend_openssl.capabilities_approved,
-        .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities_approved,
-        .boringssl, .native => return error.SkipZigTest,
-    };
-    try testing.expect(!caps.client_x25519);
-    try testing.expect(!caps.server_x25519);
-    try testing.expect(caps.client_p256 and caps.server_p256);
-}
-
-// FIPS 186-5 approves RSASSA-PKCS1-v1_5 and EdDSA alongside ECDSA, so the
-// certificate-chain table keeps them; the approved profile is not a claim
-// that they are prohibited.
-test "approved: certificate_signature_schemes cover the FIPS 186-5 signature families" {
-    const schemes = switch (active) {
-        .openssl, .@"openssl-approved" => approvedCertSigSchemes(.openssl),
-        .@"aws-lc", .@"aws-lc-approved" => approvedCertSigSchemes(.@"aws-lc"),
-        .boringssl, .native => return error.SkipZigTest,
-    };
-    try testing.expect(schemeInList(.rsa_pkcs1_sha256, schemes));
-    try testing.expect(schemeInList(.ecdsa_secp256r1_sha256, schemes));
-    try testing.expect(schemeInList(.ed25519, schemes));
-}
-
-// FIPS 203 approves ML-KEM, but the RFC 10024 hybrid composition is this
-// library's own construction and is not an approved scheme, so the approved
-// table disables every hybrid group.
-test "approved: hybrid groups disabled in the approved capability table" {
-    const fips_caps = switch (active) {
-        .openssl, .@"openssl-approved" => backend_openssl.capabilities_approved,
-        .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities_approved,
-        .boringssl, .native => return error.SkipZigTest,
-    };
-    const hybrid_capabilities = [_]bool{
-        fips_caps.client_x25519_mlkem768,
-        fips_caps.server_x25519_mlkem768,
-        fips_caps.client_secp256r1_mlkem768,
-        fips_caps.server_secp256r1_mlkem768,
-        fips_caps.client_secp384r1_mlkem1024,
-        fips_caps.server_secp384r1_mlkem1024,
-    };
-    for (hybrid_capabilities) |enabled| try testing.expect(!enabled);
-}
-
-// The approved table must be a subset of the default table. The comptime
-// assertion above proves this at build time; this test also checks it for the
-// active backend pair.
-test "approved: approved capabilities are a subset of the default capabilities" {
-    const fips_caps = switch (active) {
-        .openssl, .@"openssl-approved" => backend_openssl.capabilities_approved,
-        .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities_approved,
-        .boringssl, .native => return error.SkipZigTest,
-    };
-    const base_caps = switch (active) {
-        .openssl, .@"openssl-approved" => backend_openssl.capabilities,
-        .@"aws-lc", .@"aws-lc-approved" => backend_aws_lc.capabilities,
-        .boringssl, .native => return error.SkipZigTest,
-    };
-    for (fips_caps.cipher_suites) |suite| {
-        try testing.expect(suiteInList(suite, base_caps.cipher_suites));
+    for (std.enums.values(SignatureAlgorithm)) |scheme| {
+        const expected = switch (scheme) {
+            .ecdsa_p256_sha256, .ecdsa_p384_sha384 => true,
+            .rsa_pss_sha256, .rsa_pss_sha384, .rsa_pss_sha512 => active != .native,
+            else => false,
+        };
+        try testing.expectEqual(expected, supportsScheme(scheme));
     }
-    for (fips_caps.certificate_verify_schemes) |scheme| {
-        try testing.expect(schemeInList(scheme, base_caps.certificate_verify_schemes));
+    for (std.enums.values(ParameterSet)) |parameter_set| {
+        const expected = if (active == .native)
+            parameter_set == .mlkem768
+        else
+            !approved_only;
+        try testing.expectEqual(expected, supportsParameterSet(parameter_set));
     }
-    for (fips_caps.certificate_signature_schemes) |scheme| {
-        try testing.expect(schemeInList(scheme, base_caps.certificate_signature_schemes));
-    }
-}
-
-// An approved-only build must not advertise ChaCha20-Poly1305; a default build
-// must.
-test "approved: active capabilities follow the build policy" {
-    if (approved_only) {
-        try testing.expect(!supportsCipherSuite(.chacha20_poly1305_sha256));
-    } else {
-        try testing.expect(supportsCipherSuite(.chacha20_poly1305_sha256));
-    }
-}
-
-fn suiteInList(suite: CipherSuite, list: []const CipherSuite) bool {
-    for (list) |s| {
-        if (s == suite) return true;
-    }
-    return false;
-}
-
-fn schemeInList(scheme: SignatureScheme, list: []const SignatureScheme) bool {
-    for (list) |s| {
-        if (s == scheme) return true;
-    }
-    return false;
 }

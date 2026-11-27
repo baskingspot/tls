@@ -4,9 +4,9 @@ const crypto = std.crypto;
 const mem = std.mem;
 const testing = std.testing;
 
-const backend = @import("backend.zig");
-const backend_native = @import("backend_native.zig");
-const c_openssl = @import("c_openssl.zig");
+const backend = @import("../crypto/backend.zig");
+const backend_native = @import("../crypto/backend_native.zig");
+const c_openssl = @import("../crypto/c_openssl.zig");
 const c = c_openssl.openssl;
 const hkdf = @import("../hkdf.zig");
 const hybrid_kex = @import("../hybrid_kex.zig");

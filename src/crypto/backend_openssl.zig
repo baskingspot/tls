@@ -5,111 +5,37 @@ const build_options = @import("build_options");
 const c_openssl = @import("c_openssl.zig");
 const c = c_openssl.openssl;
 const ecdsa = @import("ecdsa.zig");
-const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 const ParameterSet = @import("mlkem_parameters.zig").ParameterSet;
-const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
+const AeadAlgorithm = @import("types.zig").AeadAlgorithm;
+const CurveId = @import("types.zig").CurveId;
+const SignatureAlgorithm = @import("types.zig").SignatureAlgorithm;
 
-pub const capabilities = struct {
-    pub const cipher_suites: []const CipherSuite = &.{
-        .aes_128_gcm_sha256,
-        .aes_256_gcm_sha384,
-        .chacha20_poly1305_sha256,
+pub fn supportsAlg(algorithm: AeadAlgorithm) bool {
+    if (build_options.crypto_approved_only) return algorithm != .chacha20_poly1305;
+    return true;
+}
+
+pub fn supportsCurve(curve: CurveId) bool {
+    if (build_options.crypto_approved_only) return curve != .x25519;
+    return true;
+}
+
+pub fn supportsScheme(scheme: SignatureAlgorithm) bool {
+    return switch (scheme) {
+        .ecdsa_p256_sha256,
+        .ecdsa_p384_sha384,
+        .rsa_pss_sha256,
+        .rsa_pss_sha384,
+        .rsa_pss_sha512,
+        => true,
+        else => false,
     };
+}
 
-    pub const client_x25519 = true;
-    pub const client_p256 = true;
-    pub const client_p384 = true;
-    pub const client_x25519_mlkem768 = true;
-    pub const client_secp256r1_mlkem768 = true;
-    pub const client_secp384r1_mlkem1024 = true;
-    pub const server_x25519 = true;
-    pub const server_p256 = true;
-    pub const server_p384 = true;
-    pub const server_x25519_mlkem768 = true;
-    pub const server_secp256r1_mlkem768 = true;
-    pub const server_secp384r1_mlkem1024 = true;
-
-    pub const certificate_verify_schemes: []const SignatureScheme = &.{
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-    };
-
-    // RFC 8446 §4.4.2.2 — signature_algorithms_cert constrains the
-    // certificate-chain signature algorithm (cert-to-cert), which is
-    // independent of the CertificateVerify scheme (§4.4.3). Ed25519 chain
-    // signatures are verified via std.crypto.sign.Ed25519 in
-    // certificate_parser.zig, not the backend seam, so they are advertised
-    // here even though certificate_verify_schemes omits ed25519.
-    pub const certificate_signature_schemes: []const SignatureScheme = &.{
-        .rsa_pkcs1_sha256,
-        .rsa_pkcs1_sha384,
-        .rsa_pkcs1_sha512,
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
-        .ed25519,
-    };
-};
-
-/// Approved-algorithm capability table. `-Dcrypto-approved-only=true` selects
-/// this table when OpenSSL headers are active.
-///
-/// This narrows negotiation to algorithms a NIST-approved FIPS policy covers.
-/// It is not a validation claim: tls is not a FIPS 140-3 validated module, and
-/// signature verification, the TLS key schedule, all randomness, and (on
-/// OpenSSL) the transcript hash and EC key construction run outside the linked
-/// module. `PRODUCTION_READINESS.md` lists what runs where.
-pub const capabilities_approved = struct {
-    // ChaCha20-Poly1305 is not a NIST-approved algorithm.
-    pub const cipher_suites: []const CipherSuite = &.{
-        .aes_128_gcm_sha256,
-        .aes_256_gcm_sha384,
-    };
-
-    pub const client_p256 = true;
-    pub const client_p384 = true;
-    // FIPS 140-3 IG: "Curves that are included in SP 800-186 but not included
-    // in SP 800-56Arev3 are not approved for key agreement". X25519 is one of
-    // them, so an approved-only build must not advertise it.
-    pub const client_x25519 = false;
-    // FIPS 203 approves ML-KEM, but the RFC 10024 hybrid composition is this
-    // library's own construction and is not an approved scheme.
-    pub const client_x25519_mlkem768 = false;
-    pub const client_secp256r1_mlkem768 = false;
-    pub const client_secp384r1_mlkem1024 = false;
-    pub const server_p256 = true;
-    pub const server_p384 = true;
-    pub const server_x25519 = false;
-    pub const server_x25519_mlkem768 = false;
-    pub const server_secp256r1_mlkem768 = false;
-    pub const server_secp384r1_mlkem1024 = false;
-
-    pub const certificate_verify_schemes: []const SignatureScheme = &.{
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-    };
-
-    // FIPS 186-5 approves RSASSA-PKCS1-v1_5 and EdDSA as well as ECDSA, so
-    // certificate-chain signatures accept all three. CertificateVerify above
-    // stays narrower because the engine has no Ed25519 CertificateVerify path.
-    pub const certificate_signature_schemes: []const SignatureScheme = &.{
-        .rsa_pkcs1_sha256,
-        .rsa_pkcs1_sha384,
-        .rsa_pkcs1_sha512,
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
-        .ed25519,
-    };
-};
+pub fn supportsParameterSet(parameter_set: ParameterSet) bool {
+    _ = parameter_set;
+    return !build_options.crypto_approved_only;
+}
 
 pub const Error = error{ LibcryptoFailed, IdentityElement };
 
@@ -613,15 +539,15 @@ pub const AeadContext = struct {
 pub const aead_tag_len = 16;
 pub const aead_nonce_len = 12;
 
-fn aeadCipher(suite: CipherSuite) *const c.EVP_CIPHER {
+fn aeadCipher(suite: AeadAlgorithm) *const c.EVP_CIPHER {
     return switch (suite) {
-        .aes_128_gcm_sha256 => c.EVP_aes_128_gcm(),
-        .aes_256_gcm_sha384 => c.EVP_aes_256_gcm(),
-        .chacha20_poly1305_sha256 => c.EVP_chacha20_poly1305(),
+        .aes_128_gcm => c.EVP_aes_128_gcm(),
+        .aes_256_gcm => c.EVP_aes_256_gcm(),
+        .chacha20_poly1305 => c.EVP_chacha20_poly1305(),
     } orelse unreachable;
 }
 
-pub fn aeadInit(suite: CipherSuite, key_bytes: []const u8) AeadError!AeadContext {
+pub fn aeadInit(suite: AeadAlgorithm, key_bytes: []const u8) AeadError!AeadContext {
     errqEnter();
     defer errqExit();
     const cipher = aeadCipher(suite);
@@ -656,7 +582,7 @@ test "OpenSSL AEAD initialization rejects wrong key length" {
     if (comptime c_openssl.family != .boringssl) {
         const testing = std.testing;
         const wrong_key: [1]u8 = @splat(0);
-        var ctx = aeadInit(.aes_256_gcm_sha384, &wrong_key) catch |err| {
+        var ctx = aeadInit(.aes_256_gcm, &wrong_key) catch |err| {
             try testing.expect(err == error.AeadSetupFailed);
             return;
         };
@@ -743,7 +669,7 @@ pub const SignatureError = error{
     InvalidEncoding,
     LibcryptoFailed,
     SignatureVerificationFailed,
-    UnsupportedSignatureScheme,
+    UnsupportedSignatureAlgorithm,
 };
 
 /// signatureSign-only extension: verification and key loading can never
@@ -755,22 +681,22 @@ pub const SignError = SignatureError || error{DeterministicNonceUnsupported};
 /// `.random` (default) or `.deterministic` RFC 6979 deterministic-k.
 pub const NonceMode = ecdsa.NonceMode;
 
-fn signatureDigest(scheme: SignatureScheme) SignatureError!*const c.EVP_MD {
+fn signatureDigest(scheme: SignatureAlgorithm) SignatureError!*const c.EVP_MD {
     return switch (scheme) {
-        .ecdsa_secp256r1_sha256, .rsa_pss_rsae_sha256 => c.EVP_sha256(),
-        .ecdsa_secp384r1_sha384, .rsa_pss_rsae_sha384 => c.EVP_sha384(),
-        .rsa_pss_rsae_sha512 => c.EVP_sha512(),
-        else => return error.UnsupportedSignatureScheme,
+        .ecdsa_p256_sha256, .rsa_pss_sha256 => c.EVP_sha256(),
+        .ecdsa_p384_sha384, .rsa_pss_sha384 => c.EVP_sha384(),
+        .rsa_pss_sha512 => c.EVP_sha512(),
+        else => return error.UnsupportedSignatureAlgorithm,
     } orelse return error.LibcryptoFailed;
 }
 
 fn configureRsaPss(
     ctx: ?*c.EVP_PKEY_CTX,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     md: *const c.EVP_MD,
 ) SignatureError!void {
     switch (scheme) {
-        .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384, .rsa_pss_rsae_sha512 => {
+        .rsa_pss_sha256, .rsa_pss_sha384, .rsa_pss_sha512 => {
             if (c.EVP_PKEY_CTX_set_rsa_padding(ctx, c.RSA_PKCS1_PSS_PADDING) != 1)
                 return error.LibcryptoFailed;
             if (c.EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, md) != 1)
@@ -825,7 +751,7 @@ pub fn privateKeyFromPem(pem: []const u8) SignatureError!*pkey {
 
 pub const KeySchemeError = error{UnsupportedKeyScheme};
 
-/// Infer the CertificateVerify SignatureScheme from a loaded private key
+/// Infer the CertificateVerify signature algorithm from a loaded private key
 /// (#112). Uses the exact key type (`EVP_PKEY_id`), not the base type. RFC
 /// 8446 §4.2.3 assigns rsassaPss-OID keys to rsa_pss_pss_*, which tls does
 /// not implement or advertise; preserving EVP_PKEY_RSA_PSS therefore rejects
@@ -835,15 +761,15 @@ pub const KeySchemeError = error{UnsupportedKeyScheme};
 /// Outermost guarded wrapper (#88 finding 2): EVP_PKEY_get0_EC_KEY can push
 /// error-queue entries on OpenSSL when a provider-held EC key has no legacy
 /// export, and every mapping failure must leave no residue.
-pub fn keyScheme(key: *const pkey) KeySchemeError!SignatureScheme {
+pub fn keyScheme(key: *const pkey) KeySchemeError!SignatureAlgorithm {
     errqEnter();
     defer errqExit();
     return switch (c.EVP_PKEY_id(key)) {
-        c.EVP_PKEY_RSA => .rsa_pss_rsae_sha256,
+        c.EVP_PKEY_RSA => .rsa_pss_sha256,
         c.EVP_PKEY_EC => switch (ecCurveNid(key) orelse return error.UnsupportedKeyScheme) {
-            c.NID_X9_62_prime256v1 => .ecdsa_secp256r1_sha256,
-            c.NID_secp384r1 => .ecdsa_secp384r1_sha384,
-            c.NID_secp521r1 => .ecdsa_secp521r1_sha512,
+            c.NID_X9_62_prime256v1 => .ecdsa_p256_sha256,
+            c.NID_secp384r1 => .ecdsa_p384_sha384,
+            c.NID_secp521r1 => .ecdsa_p521_sha512,
             else => error.UnsupportedKeyScheme,
         },
         c.EVP_PKEY_ED25519 => .ed25519,
@@ -923,7 +849,7 @@ fn signatureSignEcdsa(
 
 pub fn signatureSign(
     key: *pkey,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     msg: []const u8,
     out: []u8,
     nonce_mode: NonceMode,
@@ -931,7 +857,7 @@ pub fn signatureSign(
     errqEnter();
     defer errqExit();
     switch (scheme) {
-        .ecdsa_secp256r1_sha256 => return signatureSignEcdsa(
+        .ecdsa_p256_sha256 => return signatureSignEcdsa(
             std.crypto.ecc.P256,
             std.crypto.hash.sha2.Sha256,
             c.NID_X9_62_prime256v1,
@@ -940,7 +866,7 @@ pub fn signatureSign(
             out,
             nonce_mode,
         ),
-        .ecdsa_secp384r1_sha384 => return signatureSignEcdsa(
+        .ecdsa_p384_sha384 => return signatureSignEcdsa(
             std.crypto.ecc.P384,
             std.crypto.hash.sha2.Sha384,
             c.NID_secp384r1,
