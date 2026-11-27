@@ -221,6 +221,7 @@ pub fn classify(err: HandshakeError) Class {
         error.PlaintextTooLarge,
         error.RequestContextTooLong,
         error.SequenceNumberOverflow,
+        error.InputAliasesOutput,
         error.SliceLengthMismatch,
         => .internal,
 

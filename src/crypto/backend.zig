@@ -367,8 +367,15 @@ pub const p384 = struct {
     }
 };
 
+fn slicesOverlap(a: []const u8, b: []const u8) bool {
+    if (a.len == 0 or b.len == 0) return false;
+    const a_start = @intFromPtr(a.ptr);
+    const b_start = @intFromPtr(b.ptr);
+    return a_start < b_start + b.len and b_start < a_start + a.len;
+}
+
 pub const aead = struct {
-    pub const Error = aead_impl.AeadError;
+    pub const Error = aead_impl.AeadError || error{InputAliasesOutput};
     pub const Context = aead_impl.AeadContext;
     pub const tag_len = aead_impl.aead_tag_len;
     pub const nonce_len = aead_impl.aead_nonce_len;
@@ -401,6 +408,8 @@ pub const aead = struct {
         ad: []const u8,
         npub: *const [nonce_len]u8,
     ) Error!void {
+        if (plaintext.ptr != ciphertext.ptr and slicesOverlap(plaintext, ciphertext))
+            return error.InputAliasesOutput;
         return aead_impl.aeadDecrypt(ctx, plaintext, ciphertext, tag, ad, npub);
     }
 };

@@ -53,6 +53,7 @@ pub const Error = error{
     AuthenticationFailed,
     AeadSetupFailed,
     AeadEncryptFailed,
+    InputAliasesOutput,
     SliceLengthMismatch,
 };
 
@@ -108,10 +109,9 @@ pub const Aead = union(CipherSuite) {
     /// `plaintext` must be the same length as `ciphertext`.
     ///
     /// Returns `error.AuthenticationFailed` if the tag does not verify.
-    /// On failure the `plaintext` buffer contains backend-owned failure output:
-    /// some backends leave unauthenticated plaintext, while others zero the
-    /// buffer. Callers at the RecordLayer level treat the buffer as poisoned and
-    /// must not inspect it after this error.
+    /// Exact in-place decryption is supported. Any other input/output overlap
+    /// returns `error.InputAliasesOutput`. On authentication failure, the whole
+    /// `plaintext` output slice is securely zeroed. Argument errors leave it unchanged.
     pub fn decrypt(
         self: Aead,
         ctx: *Context,
@@ -173,7 +173,8 @@ test "decrypt: rejects mismatched plaintext and ciphertext lengths" {
     const plaintext: [16]u8 = @splat(0x42);
 
     var ciphertext: [plaintext.len]u8 = undefined;
-    var backing: [64]u8 = @splat(0);
+    const initial: [64]u8 = @splat(0xa5);
+    var backing = initial;
     var tag: Tag = undefined;
     const aead: Aead = .{ .aes_128_gcm_sha256 = key };
     var ctx: Context = try .init(aead);
@@ -184,6 +185,7 @@ test "decrypt: rejects mismatched plaintext and ciphertext lengths" {
         error.SliceLengthMismatch,
         aead.decrypt(&ctx, backing[0..1], &ciphertext, &tag, "", &npub),
     );
+    try testing.expectEqualSlices(u8, &initial, &backing);
 }
 
 test "Aes128Gcm: encrypt/decrypt round-trip" {

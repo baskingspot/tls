@@ -711,15 +711,14 @@ pub fn aeadDecrypt(
 ) AeadError!void {
     errqEnter();
     defer errqExit();
+    // EVP_DecryptUpdate writes unauthenticated plaintext before the tag check.
+    errdefer std.crypto.secureZero(u8, plaintext);
     var len: c_int = 0;
     var out_len: c_int = 0;
     if (c.EVP_DecryptInit_ex(ctx.dec, null, null, null, npub) != 1)
         return error.AuthenticationFailed;
     if (c.EVP_DecryptUpdate(ctx.dec, null, &len, ad.ptr, @intCast(ad.len)) != 1)
         return error.AuthenticationFailed;
-    // EVP_DecryptUpdate writes plaintext to `plaintext` before
-    // EVP_DecryptFinal_ex verifies the tag — the output buffer
-    // holds unauthenticated data until the call succeeds.
     if (c.EVP_DecryptUpdate(
         ctx.dec,
         plaintext.ptr,

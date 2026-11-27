@@ -50,6 +50,12 @@ All notable changes to tls are recorded here. The format follows
 - Servers that request client certificates now accept PSS-signed chains through
   the default certificate policy (#219).
 
+### Fixed
+
+- AEAD decryption securely zeroes the whole output slice on authentication failure
+  on every backend. Exact in-place decryption remains supported. Partial input/output
+  overlap returns `error.InputAliasesOutput` without modifying either slice.
+
 ## [0.4.6] - 2026-11-23
 
 ### Added
