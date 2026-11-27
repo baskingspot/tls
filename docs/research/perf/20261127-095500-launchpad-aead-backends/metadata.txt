@@ -1,0 +1,8 @@
+host=launchpad
+cpu=Neoverse-V3
+arch=aarch64
+kernel=7.3.5
+zig=0.17.0
+revision=94957dba7ab39685c637c7f19f7bb9d143c877c7
+native_command=zig build bench -Dcrypto=native -- --filter aes256 --count=5 --benchtime=500ms
+openssl_command=zig build bench -Dcrypto=openssl -- --filter aes256 --count=5 --benchtime=500ms

@@ -1,0 +1,23 @@
+target: aarch64-linux-gnu
+cpu: neoverse_v3
+mode: fast
+Benchmarkaes256/seal/4096	  899193	       665.0 ns/op	6158.65 MB/s
+Benchmarkaes256/seal/4096	  902978	       665.0 ns/op	6158.97 MB/s
+Benchmarkaes256/seal/4096	  902179	       665.0 ns/op	6158.99 MB/s
+Benchmarkaes256/seal/4096	  902546	       664.0 ns/op	6159.99 MB/s
+Benchmarkaes256/seal/4096	  902659	       665.0 ns/op	6158.47 MB/s
+Benchmarkaes256/open/4096	  899874	       665.0 ns/op	6150.76 MB/s
+Benchmarkaes256/open/4096	  901695	       665.0 ns/op	6154.88 MB/s
+Benchmarkaes256/open/4096	  900062	       666.0 ns/op	6150.02 MB/s
+Benchmarkaes256/open/4096	  903132	       665.0 ns/op	6154.34 MB/s
+Benchmarkaes256/open/4096	  902439	       665.0 ns/op	6151.08 MB/s
+Benchmarkaes256/seal/16384	  257562	      2328 ns/op	7035.95 MB/s
+Benchmarkaes256/seal/16384	  257760	      2328 ns/op	7036.10 MB/s
+Benchmarkaes256/seal/16384	  257626	      2329 ns/op	7034.53 MB/s
+Benchmarkaes256/seal/16384	  257289	      2329 ns/op	7032.81 MB/s
+Benchmarkaes256/seal/16384	  257791	      2328 ns/op	7035.16 MB/s
+Benchmarkaes256/open/16384	  257545	      2329 ns/op	7031.80 MB/s
+Benchmarkaes256/open/16384	  257401	      2329 ns/op	7032.26 MB/s
+Benchmarkaes256/open/16384	  257520	      2330 ns/op	7031.43 MB/s
+Benchmarkaes256/open/16384	  257539	      2329 ns/op	7032.16 MB/s
+Benchmarkaes256/open/16384	  257572	      2329 ns/op	7032.39 MB/s
