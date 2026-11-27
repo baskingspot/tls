@@ -3,9 +3,6 @@ test {
     _ = @import("aead.zig");
     _ = @import("certificate.zig");
     _ = @import("capabilities.zig");
-    _ = @import("crypto/backend.zig");
-    _ = @import("crypto/backend_native.zig");
-    _ = @import("crypto/backend_primitive_tests.zig");
     _ = @import("hkdf.zig");
     _ = @import("hmac.zig");
     _ = @import("hybrid_kex.zig");

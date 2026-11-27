@@ -101,7 +101,7 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const testing = std.testing;
 
-const backend = @import("crypto/backend.zig");
+const backend = @import("crypto");
 const alert = @import("alert.zig");
 const certificate = @import("certificate.zig");
 const NewSessionTicket = @import("NewSessionTicket.zig");

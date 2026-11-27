@@ -6,10 +6,10 @@ const stdx = @import("stdx");
 const assert = std.debug.assert;
 const testing = std.testing;
 
-const backend = @import("crypto/backend.zig");
+const backend = @import("crypto");
 const kex = @import("kex.zig");
 pub const Error = backend.p384.Error;
-const entropy = @import("entropy.zig");
+const entropy = @import("crypto").entropy;
 
 pub fn toProvider(group: kex.NamedGroup) backend.CurveId {
     return switch (group) {

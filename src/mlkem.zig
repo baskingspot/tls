@@ -7,10 +7,10 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
-const backend = @import("crypto/backend.zig");
-const kem_impl = backend.kem_impl;
+const backend = @import("crypto");
+const kem_impl = backend.kem;
 
-pub const ParameterSet = @import("crypto/mlkem_parameters.zig").ParameterSet;
+pub const ParameterSet = @import("crypto").ParameterSet;
 pub const Error = error{
     BufferTooShort,
     IdentityElement,

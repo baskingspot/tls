@@ -3,7 +3,7 @@ const std = @import("std");
 const testing = std.testing;
 const assert = std.debug.assert;
 
-const backend = @import("crypto/backend.zig");
+const backend = @import("crypto");
 const capabilities = @import("capabilities.zig");
 const compat = @import("compat.zig");
 const memx = @import("memx.zig");
@@ -35,22 +35,22 @@ const NativeKeyLoadExtras = error{
     UnsupportedPemLabel,
     UnsupportedPointFormat,
 };
-pub const ExplicitLoadError = if (backend.native_selected)
+pub const ExplicitLoadError = if (backend.active == .native)
     LegacySignatureError || NativeSignatureExtras || NativeKeyLoadExtras
 else
     LegacySignatureError;
 
-pub const SignError = if (backend.native_selected)
+pub const SignError = if (backend.active == .native)
     LegacySignatureError || NativeSignatureExtras || error{DeterministicNonceUnsupported}
 else
     LegacySignatureError || error{DeterministicNonceUnsupported};
-pub const ScalarKeyError = if (backend.native_selected)
+pub const ScalarKeyError = if (backend.active == .native)
     LegacySignatureError || NativeSignatureExtras || error{InvalidPrivateKey}
 else
     LegacySignatureError;
 pub const NonceMode = backend.sign.NonceMode;
 
-const ProviderSchemeError = if (backend.native_selected)
+const ProviderSchemeError = if (backend.active == .native)
     error{ UnsupportedPrimitive, LibcryptoFailed, UnsupportedSignatureScheme }
 else
     error{ LibcryptoFailed, UnsupportedSignatureScheme };
@@ -66,11 +66,11 @@ fn toProvider(
         .rsa_pss_rsae_sha384 => .rsa_pss_sha384,
         .rsa_pss_rsae_sha512 => .rsa_pss_sha512,
         .ed25519 => .ed25519,
-        .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 => if (backend.native_selected)
+        .rsa_pkcs1_sha256, .rsa_pkcs1_sha384, .rsa_pkcs1_sha512 => if (backend.active == .native)
             error.UnsupportedPrimitive
         else
             error.UnsupportedSignatureScheme,
-        else => if (backend.native_selected)
+        else => if (backend.active == .native)
             error.LibcryptoFailed
         else
             error.UnsupportedSignatureScheme,

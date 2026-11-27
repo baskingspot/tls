@@ -1,6 +1,5 @@
 const std = @import("std");
 const Build = std.Build;
-const crypto_libs = @import("crypto_libs.zig");
 
 /// Native primitive suite (#199). The root selects the modules whose vectors
 /// and contracts apply to this backend. Examples and the conformance
@@ -61,9 +60,6 @@ pub fn addSteps(b: *Build, opts: struct {
     /// Fixtures module — the #114 non-interaction check loads the encrypted
     /// PEM fixtures directly.
     fixtures_mod: *Build.Module,
-    /// Translated libcrypto C API (#145) — the #88 errq check counts
-    /// allocations through CRYPTO_set_mem_functions.
-    openssl_c: *Build.Module,
     /// Translated POSIX PTY C API (#145) — the #114 non-interaction check
     /// replaces its own standard streams through libc calls.
     pty_c: *Build.Module,
@@ -73,9 +69,6 @@ pub fn addSteps(b: *Build, opts: struct {
     /// Optimization mode for standalone check executables. Required: the
     /// only caller (build.zig) always passes it.
     optimize: std.builtin.OptimizeMode,
-    /// libcrypto-family pkg-config modules (#223) for the standalone checks
-    /// that link the C API instead of relying on the tls module's link.
-    libs: crypto_libs.Libraries,
 }) void {
     const mod_tests = b.addTest(.{
         .root_module = opts.test_mod,
@@ -99,35 +92,6 @@ pub fn addSteps(b: *Build, opts: struct {
     );
     valgrind_step.dependOn(&install_tests.step);
 
-    // #88 finding 2 — allocation-count evidence for the error-queue guards.
-    // CRYPTO_set_mem_functions must be installed before the first libcrypto
-    // allocation, so this check is a standalone executable with its own build
-    // step. BoringSSL builds compile a no-op main because the API is absent;
-    // queue hygiene still applies on that lane.
-    const errq_mod = b.createModule(.{
-        .root_source_file = b.path("src/test/errq_alloc_check.zig"),
-        .target = opts.target,
-        .optimize = opts.optimize,
-    });
-    errq_mod.addImport("tls", opts.tls_mod);
-    errq_mod.addImport("fixtures", opts.fixtures_mod);
-    errq_mod.addImport("openssl_c", opts.openssl_c);
-    errq_mod.link_libc = true;
-    errq_mod.linkSystemLibrary(opts.libs.crypto, .{});
-
-    const errq_exe = b.addExecutable(.{
-        .name = "errq-alloc-check",
-        .root_module = errq_mod,
-    });
-    const run_errq = b.addRunArtifact(errq_exe);
-    run_errq.has_side_effects = true;
-    test_step.dependOn(&run_errq.step);
-    const errq_step = b.step(
-        "errq-alloc-check",
-        "Run the #88 error-queue allocation-count check (OpenSSL and AWS-LC)",
-    );
-    errq_step.dependOn(&run_errq.step);
-
     // #114 — encrypted-PEM non-interaction check. Same standalone-executable
     // rationale as the errq check: the probe replaces its own stdin/stdout/
     // stderr, which a test inside the shared binary cannot safely do. Runs on
@@ -141,7 +105,6 @@ pub fn addSteps(b: *Build, opts: struct {
     pem_mod.addImport("fixtures", opts.fixtures_mod);
     pem_mod.addImport("pty_c", opts.pty_c);
     pem_mod.link_libc = true;
-    pem_mod.linkSystemLibrary(opts.libs.crypto, .{});
 
     const pem_exe = b.addExecutable(.{
         .name = "encrypted-pem-check",

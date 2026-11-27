@@ -8,7 +8,7 @@ const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 const RecordLayer = @import("RecordLayer.zig");
 const hkdf = @import("hkdf.zig");
 
-const sha2 = @import("crypto/backend.zig").sha2;
+const sha2 = @import("crypto").sha2;
 pub const Sha256 = sha2.Sha256;
 pub const Sha384 = sha2.Sha384;
 

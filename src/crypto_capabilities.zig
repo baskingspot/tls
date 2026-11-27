@@ -2,7 +2,7 @@
 const std = @import("std");
 const testing = std.testing;
 const assert = std.debug.assert;
-const backend = @import("crypto/backend.zig");
+const backend = @import("crypto");
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 
@@ -36,7 +36,7 @@ comptime {
     assert(current.client_secp256r1_mlkem768 == current.server_secp256r1_mlkem768);
     assert(current.client_secp384r1_mlkem1024 == current.server_secp384r1_mlkem1024);
 
-    if (!backend.native_selected) {
+    if (backend.active != .native) {
         assertSubset(openssl_approved.cipher_suites, openssl.cipher_suites);
         assertSubset(
             openssl_approved.certificate_verify_schemes,

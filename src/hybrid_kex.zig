@@ -7,7 +7,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
 
-const backend = @import("crypto/backend.zig");
+const backend = @import("crypto");
 const capabilities = @import("capabilities.zig");
 const KeyPairs = @import("handshake_key_pairs.zig").KeyPairs;
 const kex = @import("kex.zig");
@@ -414,7 +414,7 @@ test "hybrid decapsulation cannot ignore a tampered ciphertext" {
 // RFC 10024 §4 — a native ML-KEM-1024 request remains a named unsupported
 // operation, and no group capability or partial key exists for it.
 test "native rejects the unsupported ML-KEM-1024 hybrid" {
-    if (comptime !backend.native_selected) return error.SkipZigTest;
+    if (comptime backend.active != .native) return error.SkipZigTest;
     try testing.expectError(
         error.UnsupportedPrimitive,
         ClientKeyPair.generate(.secp384r1_mlkem1024),

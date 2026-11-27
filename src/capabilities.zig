@@ -3,7 +3,7 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const testing = std.testing;
 
-const backend = @import("crypto/backend.zig");
+const backend = @import("crypto");
 const provider = @import("crypto_capabilities.zig");
 pub const current = provider.current;
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
@@ -227,7 +227,7 @@ test "hybrid capability queries match the active backend" {
 
     for (hybrid_groups) |group| {
         if (approved_only or
-            (backend.native_selected and group == .secp384r1_mlkem1024))
+            (active_backend == .native and group == .secp384r1_mlkem1024))
         {
             try testing.expect(!supportsHybridGroup(.client, group));
             try testing.expect(!supportsHybridGroup(.server, group));

@@ -73,7 +73,7 @@ pub inline fn wipe(bytes: []u8) void {
 }
 
 const testing = std.testing;
-const sha2 = @import("crypto/backend.zig").sha2;
+const sha2 = @import("crypto").sha2;
 
 const hmac_pairs = .{
     .{ Hmac(sha2.Sha256), crypto.auth.hmac.sha2.HmacSha256 },

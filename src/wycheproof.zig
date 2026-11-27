@@ -8,7 +8,7 @@ const tls = @import("root.zig");
 //
 // This file covers Wycheproof vectors for the public wrapper-level API
 // exposed by tls: x25519.sharedSecret and aead encrypt/decrypt. P-256/P-384
-// ECDH is covered facade-direct in src/crypto/backend_primitive_tests.zig
+// ECDH is covered facade-direct in the crypto package's primitive tests
 // because tls.p256.sharedSecret is a thin wrapper over backend.p256 and the
 // facade tests already exercise the same code path under both the OpenSSL and
 // AWS-LC lanes. Adding wrapper-level duplicates would not increase coverage.

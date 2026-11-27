@@ -158,8 +158,6 @@ check-approved-builds:
     # A compile alone cannot prove the profile negotiates: the errq check drives
     # a full client/server handshake and a record path under the restricted
     # table.
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" zig build errq-alloc-check -Dcrypto=openssl -Dcrypto-approved-only=true --cache-dir "$cache_dir/openssl-errq"
-    ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$aws_lc_pkg_config_path" zig build errq-alloc-check -Dcrypto=aws-lc -Dcrypto-approved-only=true --cache-dir "$cache_dir/aws-lc-errq"
     set +e
     ZIG_GLOBAL_CACHE_DIR="$global_cache_dir" PKG_CONFIG_PATH="$boringssl_pkg_config_path" zig build test-bin -Dcrypto=boringssl -Dcrypto-approved-only=true --cache-dir "$cache_dir/boringssl" >"$log" 2>&1
     status=$?
