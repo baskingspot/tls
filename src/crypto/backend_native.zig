@@ -10,10 +10,11 @@ const mem = std.mem;
 const testing = std.testing;
 const assert = std.debug.assert;
 
-const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 const Certificate = @import("../certificate_parser.zig");
 const ParameterSet = @import("mlkem_parameters.zig").ParameterSet;
-const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
+const AeadAlgorithm = @import("types.zig").AeadAlgorithm;
+const CurveId = @import("types.zig").CurveId;
+const SignatureAlgorithm = @import("types.zig").SignatureAlgorithm;
 const aes_gcm = @import("aes_gcm_native.zig");
 const ecdsa = @import("ecdsa.zig");
 const entropy = @import("../entropy.zig");
@@ -21,49 +22,26 @@ const MlKem768 = crypto.kem.ml_kem.MLKem768;
 const P256 = crypto.ecc.P256;
 const P384 = crypto.ecc.P384;
 
-pub const capabilities = struct {
-    pub const cipher_suites: []const CipherSuite = &.{
-        .aes_128_gcm_sha256,
-        .aes_256_gcm_sha384,
-        .chacha20_poly1305_sha256,
-    };
+pub fn supportsAlg(algorithm: AeadAlgorithm) bool {
+    _ = algorithm;
+    return true;
+}
 
-    pub const client_x25519 = true;
-    pub const client_p256 = true;
-    pub const client_p384 = true;
-    pub const client_x25519_mlkem768 = true;
-    pub const client_secp256r1_mlkem768 = true;
-    pub const client_secp384r1_mlkem1024 = false;
-    pub const server_x25519 = true;
-    pub const server_p256 = true;
-    pub const server_p384 = true;
-    pub const server_x25519_mlkem768 = true;
-    pub const server_secp256r1_mlkem768 = true;
-    pub const server_secp384r1_mlkem1024 = false;
+pub fn supportsCurve(curve: CurveId) bool {
+    _ = curve;
+    return true;
+}
 
-    // CertificateVerify uses in-tree ECDSA and verification-only RSA-PSS.
-    // Chain verification also accepts RSA PKCS#1 v1.5. Ed25519 remains a
-    // chain-signature scheme, not a CertificateVerify scheme.
-    pub const certificate_verify_schemes: []const SignatureScheme = &.{
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
+pub fn supportsScheme(scheme: SignatureAlgorithm) bool {
+    return switch (scheme) {
+        .ecdsa_p256_sha256, .ecdsa_p384_sha384 => true,
+        else => false,
     };
+}
 
-    pub const certificate_signature_schemes: []const SignatureScheme = &.{
-        .rsa_pkcs1_sha256,
-        .rsa_pkcs1_sha384,
-        .rsa_pkcs1_sha512,
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
-        .ed25519,
-    };
-};
+pub fn supportsParameterSet(parameter_set: ParameterSet) bool {
+    return parameter_set == .mlkem768;
+}
 
 pub const sha2 = crypto.hash.sha2;
 const Sha256 = sha2.Sha256;
@@ -120,21 +98,18 @@ pub const AeadError = error{
 
 /// One copied key, no provider state, and no allocation.
 pub const AeadContext = struct {
-    suite: CipherSuite,
+    suite: AeadAlgorithm,
     key: [32]u8,
 };
 
 pub const aead_tag_len = 16;
 pub const aead_nonce_len = 12;
 
-fn aeadKeyLen(suite: CipherSuite) usize {
-    return switch (suite) {
-        .aes_128_gcm_sha256 => 16,
-        .aes_256_gcm_sha384, .chacha20_poly1305_sha256 => 32,
-    };
+fn aeadKeyLen(suite: AeadAlgorithm) usize {
+    return suite.keyLen();
 }
 
-pub fn aeadInit(suite: CipherSuite, key_bytes: []const u8) AeadError!AeadContext {
+pub fn aeadInit(suite: AeadAlgorithm, key_bytes: []const u8) AeadError!AeadContext {
     const key_len = aeadKeyLen(suite);
     if (key_bytes.len != key_len) return error.AeadSetupFailed;
     var ctx: AeadContext = .{ .suite = suite, .key = @splat(0) };
@@ -156,7 +131,7 @@ pub fn aeadEncrypt(
 ) AeadError!void {
     assert(ciphertext.len == plaintext.len);
     switch (ctx.suite) {
-        .aes_128_gcm_sha256 => aes_gcm.Aes128Gcm.encrypt(
+        .aes_128_gcm => aes_gcm.Aes128Gcm.encrypt(
             ciphertext,
             tag,
             plaintext,
@@ -164,7 +139,7 @@ pub fn aeadEncrypt(
             npub.*,
             ctx.key[0..16].*,
         ),
-        .aes_256_gcm_sha384 => aes_gcm.Aes256Gcm.encrypt(
+        .aes_256_gcm => aes_gcm.Aes256Gcm.encrypt(
             ciphertext,
             tag,
             plaintext,
@@ -172,7 +147,7 @@ pub fn aeadEncrypt(
             npub.*,
             ctx.key,
         ),
-        .chacha20_poly1305_sha256 => crypto.aead.chacha_poly.ChaCha20Poly1305.encrypt(
+        .chacha20_poly1305 => crypto.aead.chacha_poly.ChaCha20Poly1305.encrypt(
             ciphertext,
             tag,
             plaintext,
@@ -194,7 +169,7 @@ pub fn aeadDecrypt(
     assert(plaintext.len == ciphertext.len);
     errdefer crypto.secureZero(u8, plaintext);
     return switch (ctx.suite) {
-        .aes_128_gcm_sha256 => aes_gcm.Aes128Gcm.decrypt(
+        .aes_128_gcm => aes_gcm.Aes128Gcm.decrypt(
             plaintext,
             ciphertext,
             tag.*,
@@ -202,7 +177,7 @@ pub fn aeadDecrypt(
             npub.*,
             ctx.key[0..16].*,
         ),
-        .aes_256_gcm_sha384 => aes_gcm.Aes256Gcm.decrypt(
+        .aes_256_gcm => aes_gcm.Aes256Gcm.decrypt(
             plaintext,
             ciphertext,
             tag.*,
@@ -210,7 +185,7 @@ pub fn aeadDecrypt(
             npub.*,
             ctx.key,
         ),
-        .chacha20_poly1305_sha256 => crypto.aead.chacha_poly.ChaCha20Poly1305.decrypt(
+        .chacha20_poly1305 => crypto.aead.chacha_poly.ChaCha20Poly1305.decrypt(
             plaintext,
             ciphertext,
             tag.*,
@@ -483,7 +458,7 @@ pub const SignatureError = error{
     LibcryptoFailed,
     SignatureVerificationFailed,
     UnsupportedPrimitive,
-    UnsupportedSignatureScheme,
+    UnsupportedSignatureAlgorithm,
 };
 
 /// A key constructed from raw scalar bytes: the signing seam's own errors, plus
@@ -835,10 +810,10 @@ pub fn privateKeyFromPem(pem: []const u8) KeyLoadError!pkey {
     return if (position == 0) error.InvalidPemEncoding else error.UnsupportedPemLabel;
 }
 
-pub fn keyScheme(key: pkey) KeySchemeError!SignatureScheme {
+pub fn keyScheme(key: pkey) KeySchemeError!SignatureAlgorithm {
     return switch (key) {
-        .p256_private, .p256_public => .ecdsa_secp256r1_sha256,
-        .p384_private, .p384_public => .ecdsa_secp384r1_sha384,
+        .p256_private, .p256_public => .ecdsa_p256_sha256,
+        .p384_private, .p384_public => .ecdsa_p384_sha384,
         .ed25519_private => .ed25519,
     };
 }
@@ -912,24 +887,21 @@ fn signatureSignEcdsa(
 
 pub fn signatureSign(
     key: pkey,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     msg: []const u8,
     out: []u8,
     nonce_mode: NonceMode,
 ) SignError![]const u8 {
     switch (scheme) {
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
-        .rsa_pkcs1_sha256,
-        .rsa_pkcs1_sha384,
-        .rsa_pkcs1_sha512,
+        .rsa_pss_sha256,
+        .rsa_pss_sha384,
+        .rsa_pss_sha512,
         => return error.UnsupportedPrimitive,
         else => {},
     }
     return switch (key) {
         .p256_private => |*secret| switch (scheme) {
-            .ecdsa_secp256r1_sha256 => signatureSignEcdsa(
+            .ecdsa_p256_sha256 => signatureSignEcdsa(
                 P256,
                 Sha256,
                 secret,
@@ -940,7 +912,7 @@ pub fn signatureSign(
             else => error.LibcryptoFailed,
         },
         .p384_private => |*secret| switch (scheme) {
-            .ecdsa_secp384r1_sha384 => signatureSignEcdsa(
+            .ecdsa_p384_sha384 => signatureSignEcdsa(
                 P384,
                 Sha384,
                 secret,
@@ -956,23 +928,20 @@ pub fn signatureSign(
 
 pub fn signatureVerify(
     key: pkey,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     msg: []const u8,
     signature: []const u8,
 ) SignatureError!void {
     switch (scheme) {
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
-        .rsa_pkcs1_sha256,
-        .rsa_pkcs1_sha384,
-        .rsa_pkcs1_sha512,
+        .rsa_pss_sha256,
+        .rsa_pss_sha384,
+        .rsa_pss_sha512,
         => return error.UnsupportedPrimitive,
         else => {},
     }
     return switch (key) {
         .p256_public => |*public_key| switch (scheme) {
-            .ecdsa_secp256r1_sha256 => ecdsa.Ecdsa(P256, Sha256).verify(
+            .ecdsa_p256_sha256 => ecdsa.Ecdsa(P256, Sha256).verify(
                 public_key,
                 msg,
                 signature,
@@ -980,7 +949,7 @@ pub fn signatureVerify(
             else => error.LibcryptoFailed,
         },
         .p384_public => |*public_key| switch (scheme) {
-            .ecdsa_secp384r1_sha384 => ecdsa.Ecdsa(P384, Sha384).verify(
+            .ecdsa_p384_sha384 => ecdsa.Ecdsa(P384, Sha384).verify(
                 public_key,
                 msg,
                 signature,
@@ -1064,8 +1033,8 @@ test "native ECDSA rejects off-curve, infinity, and wrong-length points" {
 // signature, and a short output buffer are distinct failing controls.
 test "native ECDSA P-256 and P-384 sign, verify, and reject invalid inputs" {
     inline for (.{
-        .{ P256, SignatureScheme.ecdsa_secp256r1_sha256 },
-        .{ P384, SignatureScheme.ecdsa_secp384r1_sha384 },
+        .{ P256, SignatureAlgorithm.ecdsa_p256_sha256 },
+        .{ P384, SignatureAlgorithm.ecdsa_p384_sha384 },
     }) |case| {
         const Curve, const scheme = case;
         const scalar: [Curve.scalar.encoded_length]u8 = @splat(0x42);
@@ -1108,72 +1077,9 @@ test "native ECDSA P-256 and P-384 sign, verify, and reject invalid inputs" {
     }
 }
 
-// RFC 8446 §4.2.3 and RFC 10024 — native verifies RSA-PSS CertificateVerify
-// and chain signatures. RSA signing and ML-KEM-1024 stay off.
-test "native capabilities scope RSA to verification" {
-    const pkcs1_schemes = [_]SignatureScheme{
-        .rsa_pkcs1_sha256,
-        .rsa_pkcs1_sha384,
-        .rsa_pkcs1_sha512,
-    };
-    for (pkcs1_schemes) |scheme| {
-        try testing.expect(mem.findScalar(
-            SignatureScheme,
-            capabilities.certificate_signature_schemes,
-            scheme,
-        ) != null);
-        try testing.expect(mem.findScalar(
-            SignatureScheme,
-            capabilities.certificate_verify_schemes,
-            scheme,
-        ) == null);
-    }
-    const pss_schemes = [_]SignatureScheme{
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
-    };
-    for (pss_schemes) |scheme| {
-        try testing.expect(mem.findScalar(
-            SignatureScheme,
-            capabilities.certificate_verify_schemes,
-            scheme,
-        ) != null);
-        try testing.expect(mem.findScalar(
-            SignatureScheme,
-            capabilities.certificate_signature_schemes,
-            scheme,
-        ) != null);
-    }
-    try testing.expect(capabilities.client_x25519_mlkem768);
-    try testing.expect(capabilities.server_x25519_mlkem768);
-    try testing.expect(capabilities.client_secp256r1_mlkem768);
-    try testing.expect(capabilities.server_secp256r1_mlkem768);
-    try testing.expect(!capabilities.client_secp384r1_mlkem1024);
-    try testing.expect(!capabilities.server_secp384r1_mlkem1024);
-
-    try testing.expectError(error.UnsupportedPrimitive, kemKeygen(.mlkem1024));
-    const seed: [MlKem768.seed_length]u8 = @splat(0x19);
-    try testing.expectError(
-        error.UnsupportedPrimitive,
-        kemKeygenFromSeed(.mlkem1024, &seed),
-    );
-    var key = try kemKeygenFromSeed(.mlkem768, &seed);
-    defer crypto.secureZero(u8, mem.asBytes(&key));
-
-    const scalar: [32]u8 = @splat(0x42);
-    var private = try privateKeyFromP256Scalar(&scalar);
-    defer freeEcKey(&private);
-    var out: [160]u8 = undefined;
-    try testing.expectError(
-        error.UnsupportedPrimitive,
-        signatureSign(private, .rsa_pss_rsae_sha256, "message", &out, .random),
-    );
-}
-
 // The backend boundary rejects slices that cannot satisfy the fixed-size key.
 test "native AEAD initialization rejects wrong key length" {
-    inline for (capabilities.cipher_suites) |suite| {
+    inline for ([_]AeadAlgorithm{ .aes_128_gcm, .aes_256_gcm, .chacha20_poly1305 }) |suite| {
         const wrong_key: [1]u8 = @splat(0);
         try testing.expectError(error.AeadSetupFailed, aeadInit(suite, &wrong_key));
     }
@@ -1181,7 +1087,7 @@ test "native AEAD initialization rejects wrong key length" {
 
 test "native AEAD deinit clears the key and suite" {
     const key: [32]u8 = @splat(0xa5);
-    var ctx = try aeadInit(.aes_256_gcm_sha384, &key);
+    var ctx = try aeadInit(.aes_256_gcm, &key);
     aeadDeinit(&ctx);
     for (mem.asBytes(&ctx)) |byte| try testing.expectEqual(@as(u8, 0), byte);
 }
@@ -1225,7 +1131,7 @@ test "native PKCS#8 loads P-256 and P-384 from PEM and DER" {
     defer freeEcKey(&p256_pem);
     var p256_der = try privateKeyFromDer(&fixtures.native_p256_pkcs8_der);
     defer freeEcKey(&p256_der);
-    try testing.expectEqual(SignatureScheme.ecdsa_secp256r1_sha256, try keyScheme(p256_der));
+    try testing.expectEqual(SignatureAlgorithm.ecdsa_p256_sha256, try keyScheme(p256_der));
     try testing.expect(try privateKeyPairsWithCertificate(
         p256_der,
         &fixtures.server_cert_der,
@@ -1238,7 +1144,7 @@ test "native PKCS#8 loads P-256 and P-384 from PEM and DER" {
     defer freeEcKey(&p384_pem);
     var p384_der = try privateKeyFromDer(&fixtures.native_p384_pkcs8_der);
     defer freeEcKey(&p384_der);
-    try testing.expectEqual(SignatureScheme.ecdsa_secp384r1_sha384, try keyScheme(p384_der));
+    try testing.expectEqual(SignatureAlgorithm.ecdsa_p384_sha384, try keyScheme(p384_der));
     const p384_pem_public = try p384RawPublicKeyFromPrivate(p384_pem);
     const p384_der_public = try p384RawPublicKeyFromPrivate(p384_der);
     try testing.expectEqualSlices(u8, &p384_pem_public, &p384_der_public);
@@ -1279,7 +1185,7 @@ test "native PKCS#8 loads the same Ed25519 seed from PEM and DER" {
     defer freeEcKey(&pem_key);
     var der_key = try privateKeyFromDer(&fixtures.native_ed25519_pkcs8_der);
     defer freeEcKey(&der_key);
-    try testing.expectEqual(SignatureScheme.ed25519, try keyScheme(pem_key));
+    try testing.expectEqual(SignatureAlgorithm.ed25519, try keyScheme(pem_key));
     const pem_public = switch (pem_key) {
         .ed25519_private => |keypair| keypair.public_key.toBytes(),
         else => unreachable,
@@ -1367,7 +1273,7 @@ test "native PEM skips non-key blocks before the first private key" {
     ecparam_pem.add(fixtures.native_p256_sec1_pem);
     var ecparam_key = try privateKeyFromPem(ecparam_pem.text());
     defer freeEcKey(&ecparam_key);
-    try testing.expectEqual(SignatureScheme.ecdsa_secp256r1_sha256, try keyScheme(ecparam_key));
+    try testing.expectEqual(SignatureAlgorithm.ecdsa_p256_sha256, try keyScheme(ecparam_key));
 
     // cat server.crt server.key
     var combined_pem: PemFile = .{};

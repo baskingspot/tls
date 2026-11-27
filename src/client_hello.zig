@@ -19,11 +19,10 @@ const AlpnProtocols = alpn_mod.Protocols;
 const AlpnError = alpn_mod.Error;
 const capabilities = @import("capabilities.zig");
 const CompressionMethod = @import("compression_method.zig").CompressionMethod;
-const backend = @import("crypto/backend.zig");
-const supported_cipher_suites = backend.capabilities.cipher_suites;
+const supported_cipher_suites = capabilities.current.cipher_suites;
 const cipher_suite_count = supported_cipher_suites.len;
-const supported_signature_schemes = backend.capabilities.certificate_verify_schemes;
-const supported_certificate_signature_schemes = backend.capabilities.certificate_signature_schemes;
+const supported_signature_schemes = capabilities.current.certificate_verify_schemes;
+const supported_certificate_signature_schemes = capabilities.current.certificate_signature_schemes;
 const sig_scheme_count = supported_signature_schemes.len;
 const cert_sig_scheme_count = supported_certificate_signature_schemes.len;
 const extension_type = @import("extension_type.zig");
@@ -83,7 +82,7 @@ const ext_sig_algs_cert_len = ext_header_len + 2 + cert_sig_scheme_count * 2;
 /// X25519 is the default first-flight group. An approved-only build does not
 /// advertise it (FIPS 140-3 IG: Curve25519 is not approved for key agreement),
 /// so P-256 carries the first flight there.
-const include_x25519: bool = backend.capabilities.client_x25519;
+const include_x25519: bool = capabilities.current.client_x25519;
 
 /// The group the first flight carries: X25519 by default, P-256 in an
 /// approved-only build, which does not advertise X25519.
@@ -124,7 +123,7 @@ fn encodedLenForTest(server_name: ?[]const u8, alpn_protocols: AlpnProtocols) !u
 }
 
 comptime {
-    assert(include_x25519 or backend.capabilities.client_p256);
+    assert(include_x25519 or capabilities.current.client_p256);
 }
 
 fn alpnExtDataLen(protocols: AlpnProtocols) AlpnError!u16 {
@@ -1219,7 +1218,7 @@ pub fn encodeWithP256(
     server_name: ?[]const u8,
     alpn_protocols: AlpnProtocols,
 ) (error{ BufferTooShort, InvalidServerName, ServerNameTooLong } || AlpnError)![]u8 {
-    assert(backend.capabilities.client_p256);
+    assert(capabilities.current.client_p256);
     return encodeInternalPlain(
         out,
         random,
@@ -1296,8 +1295,8 @@ pub fn encodeWithHybridGroups(
     kem_share: ?KemShare,
 ) (error{ BufferTooShort, InvalidServerName, ServerNameTooLong } ||
     capabilities.HybridPolicyError || AlpnError)![]u8 {
-    assert(backend.capabilities.client_p256);
-    if (public_key_p384 != null) assert(backend.capabilities.client_p384);
+    assert(capabilities.current.client_p256);
+    if (public_key_p384 != null) assert(capabilities.current.client_p384);
     try validateHybridGroups(hybrid_groups, kem_share);
     return encodeInternalPlain(
         out,
@@ -1332,8 +1331,8 @@ pub fn encodeWithHybridGroupsAndExtensions(
 ) (error{ BufferTooShort, InvalidServerName, ServerNameTooLong } ||
     capabilities.HybridPolicyError || AlpnError ||
     extension_type.ExtraExtensionError)![]u8 {
-    assert(backend.capabilities.client_p256);
-    if (public_key_p384 != null) assert(backend.capabilities.client_p384);
+    assert(capabilities.current.client_p256);
+    if (public_key_p384 != null) assert(capabilities.current.client_p384);
     try validateHybridGroups(hybrid_groups, kem_share);
     return encodeInternal(
         out,
@@ -1871,14 +1870,14 @@ pub const SupportedGroups = struct {
     }
 
     fn hasImplemented(self: SupportedGroups) bool {
-        return (backend.supportsServerX25519() and self.contains(.x25519)) or
-            (backend.supportsServerP256() and self.contains(.secp256r1)) or
-            (backend.supportsServerP384() and self.contains(.secp384r1)) or
-            (backend.supportsServerHybridGroup(.x25519_mlkem768) and
+        return (capabilities.supportsServerX25519() and self.contains(.x25519)) or
+            (capabilities.supportsServerP256() and self.contains(.secp256r1)) or
+            (capabilities.supportsServerP384() and self.contains(.secp384r1)) or
+            (capabilities.supportsServerHybridGroup(.x25519_mlkem768) and
                 self.contains(.x25519_mlkem768)) or
-            (backend.supportsServerHybridGroup(.secp256r1_mlkem768) and
+            (capabilities.supportsServerHybridGroup(.secp256r1_mlkem768) and
                 self.contains(.secp256r1_mlkem768)) or
-            (backend.supportsServerHybridGroup(.secp384r1_mlkem1024) and
+            (capabilities.supportsServerHybridGroup(.secp384r1_mlkem1024) and
                 self.contains(.secp384r1_mlkem1024));
     }
 };
@@ -1912,7 +1911,7 @@ fn hasSupportedHandshakeSignatureScheme(schemes: []const u8) bool {
     while (i < schemes.len) : (i += 2) {
         const wire_scheme = memx.readInt(u16, schemes[i..][0..2]);
         const scheme: SignatureScheme = compat.enumFromInt(SignatureScheme, wire_scheme);
-        if (backend.supportsCertificateVerifyScheme(scheme)) return true;
+        if (capabilities.supportsCertificateVerifyScheme(scheme)) return true;
     }
     return false;
 }
@@ -3355,7 +3354,7 @@ test "KEM key_share round-trip: ClientHello encode → parse preserves 1216-byte
     var buf: [4096]u8 = undefined;
     // An approved-only build advertises no hybrid group, so the encoder
     // refuses one instead of building a flight with it.
-    if (comptime !backend.supportsClientHybridGroup(.x25519_mlkem768)) {
+    if (comptime !capabilities.supportsClientHybridGroup(.x25519_mlkem768)) {
         var small: [4096]u8 = undefined;
         try testing.expectError(error.HybridGroupUnavailable, encodeWithKem(
             &small,

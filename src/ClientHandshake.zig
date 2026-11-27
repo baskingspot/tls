@@ -1249,7 +1249,7 @@ pub fn injectClientHello(self: *ClientHandshake, client_hello_msg: []const u8) v
         while (i < ch.signature_schemes.len) : (i += 2) {
             const wire_scheme = memx.readInt(u16, ch.signature_schemes[i..][0..2]);
             const scheme: SignatureScheme = compat.enumFromInt(SignatureScheme, wire_scheme);
-            if (!backend.supportsCertificateVerifyScheme(scheme)) continue;
+            if (!capabilities.supportsCertificateVerifyScheme(scheme)) continue;
             if (mem.findScalar(
                 SignatureScheme,
                 self.offered_signature_schemes.constSlice(),
@@ -1260,10 +1260,10 @@ pub fn injectClientHello(self: *ClientHandshake, client_hello_msg: []const u8) v
         self.offered_cert_signature_schemes.capture(ch.certificateSignatureSchemes());
     } else {
         self.offered_signature_schemes.appendSlice(
-            backend.capabilities.certificate_verify_schemes,
+            capabilities.current.certificate_verify_schemes,
         ) catch unreachable;
         self.offered_cert_signature_schemes.captureSchemes(
-            backend.capabilities.certificate_signature_schemes,
+            capabilities.current.certificate_signature_schemes,
         );
     }
     self.suite.update(client_hello_msg);
@@ -1688,7 +1688,7 @@ pub fn processHelloRetryRequest(
         .secp256r1_mlkem768,
         .secp384r1_mlkem1024,
         => {
-            if (!backend.supportsClientHybridGroup(group) or
+            if (!capabilities.supportsClientHybridGroup(group) or
                 mem.findScalar(
                     NamedGroup,
                     self.hybrid.supported_groups,
@@ -4839,7 +4839,7 @@ test "ClientHello2 encoder rejects oversized PSK extensions" {
 // past the single-record plaintext limit.
 test "processHelloRetryRequest rejects an oversized ClientHello2" {
     const group: NamedGroup = .secp256r1_mlkem768;
-    if (!backend.supportsClientHybridGroup(group)) return error.SkipZigTest;
+    if (!capabilities.supportsClientHybridGroup(group)) return error.SkipZigTest;
     const identity: [16000]u8 = @splat(0x61);
     const psk: [32]u8 = @splat(0x42);
     var hs: ClientHandshake = .init(.{
@@ -4872,7 +4872,7 @@ test "processHelloRetryRequest rejects an oversized ClientHello2" {
 // RFC 8446 §4.2.9, RFC 10024 §4.1 — psk_dhe_ke retains the configured
 // hybrid supported-group and initial key-share policy.
 test "startWithPsk: advertises configured RFC 10024 key share" {
-    if (!backend.supportsClientHybridGroup(.secp256r1_mlkem768))
+    if (!capabilities.supportsClientHybridGroup(.secp256r1_mlkem768))
         return error.SkipZigTest;
 
     const psk: [32]u8 = @splat(0x42);
@@ -6050,7 +6050,7 @@ test "processHelloRetryRequest: transcript collapse matches §4.4.1" {
 // the cipher suite selected by HelloRetryRequest.
 test "processHelloRetryRequest: removes PSK with incompatible hash" {
     const group: NamedGroup = .x25519_mlkem768;
-    if (!backend.supportsClientHybridGroup(group)) return error.SkipZigTest;
+    if (!capabilities.supportsClientHybridGroup(group)) return error.SkipZigTest;
 
     var hs: ClientHandshake = .init(.{
         .keypairs = try hrrTestKeyPairs(),

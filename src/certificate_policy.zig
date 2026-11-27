@@ -3,7 +3,7 @@
 //! RFC 8446 §4.4.2.2
 const std = @import("std");
 const mem = std.mem;
-const backend = @import("crypto/backend.zig");
+const capabilities = @import("capabilities.zig");
 const Certificate = @import("certificate_parser.zig");
 const SignatureScheme = @import("signature_scheme.zig").SignatureScheme;
 
@@ -64,7 +64,7 @@ pub const Policy = struct {
         .now_sec = 0,
         .host_name = null,
         .leaf_usage = .server_auth,
-        .certificate_signature_schemes = backend.capabilities.certificate_signature_schemes,
+        .certificate_signature_schemes = capabilities.current.certificate_signature_schemes,
     };
 };
 
@@ -91,7 +91,7 @@ pub const VerifyClientAuthError = PolicyError || Certificate.ParseError;
 pub fn verifyServerAuth(parsed: Certificate.Parsed) VerifyServerAuthError!void {
     return verifyServerAuthWithSignatureSchemes(
         parsed,
-        backend.capabilities.certificate_signature_schemes,
+        capabilities.current.certificate_signature_schemes,
     );
 }
 
@@ -105,7 +105,7 @@ pub fn verifyServerAuthWithSignatureSchemes(
 pub fn verifyClientAuth(parsed: Certificate.Parsed) VerifyClientAuthError!void {
     return verifyClientAuthWithSignatureSchemes(
         parsed,
-        backend.capabilities.certificate_signature_schemes,
+        capabilities.current.certificate_signature_schemes,
     );
 }
 

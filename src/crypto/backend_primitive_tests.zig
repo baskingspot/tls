@@ -13,7 +13,7 @@ const backend = @import("backend.zig");
 const backend_native = @import("backend_native.zig");
 const hmac = @import("../hmac.zig");
 const Hkdf = @import("../hkdf.zig").Hkdf;
-const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
+const types = @import("types.zig");
 const fixtures = @import("fixtures");
 const P256 = std.crypto.ecc.P256;
 const P384 = std.crypto.ecc.P384;
@@ -179,10 +179,11 @@ test "backend.native: P-256 certificate key pairing accepts a match and rejects 
 
 // RFC 8446 §5.2 — TLS 1.3 record protection uses AEAD with a 16-byte tag and
 // 12-byte nonce. The backend must encrypt/decrypt consistently for every
-// cipher suite advertised in `backend.capabilities.cipher_suites`.
+// AEAD algorithm available through `backend.supportsAlg`.
 test "backend.aead: round-trip for every advertised cipher suite" {
-    inline for (backend.capabilities.cipher_suites) |suite| {
-        const key_bytes: [keyLenForSuite(suite)]u8 = @splat(0xab);
+    inline for (types.aead_algorithms) |suite| {
+        if (comptime !backend.supportsAlg(suite)) continue;
+        const key_bytes: [suite.keyLen()]u8 = @splat(0xab);
         const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
         const ad = "tls-record-header";
         const plaintext = "backend-aead-contract";
@@ -202,8 +203,9 @@ test "backend.aead: round-trip for every advertised cipher suite" {
 
 // RFC 8446 §5.2 — AEAD must reject tag corruption for every advertised suite.
 test "backend.aead: tag corruption is rejected for every advertised cipher suite" {
-    inline for (backend.capabilities.cipher_suites) |suite| {
-        const key_bytes: [keyLenForSuite(suite)]u8 = @splat(0xab);
+    inline for (types.aead_algorithms) |suite| {
+        if (comptime !backend.supportsAlg(suite)) continue;
+        const key_bytes: [suite.keyLen()]u8 = @splat(0xab);
         const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
         const ad = "tls-record-header";
         const plaintext = "backend-aead-contract";
@@ -226,8 +228,9 @@ test "backend.aead: tag corruption is rejected for every advertised cipher suite
 
 // RFC 8446 §5.2 — AEAD must reject ciphertext corruption for every advertised suite.
 test "backend.aead: ciphertext corruption is rejected for every advertised cipher suite" {
-    inline for (backend.capabilities.cipher_suites) |suite| {
-        const key_bytes: [keyLenForSuite(suite)]u8 = @splat(0xab);
+    inline for (types.aead_algorithms) |suite| {
+        if (comptime !backend.supportsAlg(suite)) continue;
+        const key_bytes: [suite.keyLen()]u8 = @splat(0xab);
         const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
         const ad = "tls-record-header";
         const plaintext = "backend-aead-contract";
@@ -252,7 +255,7 @@ const aead_test_key: [16]u8 = @splat(0xab);
 const aead_test_ad = "tls-record-header";
 
 fn aeadTestContext(key: *const [16]u8) backend.aead.Error!backend.aead.Context {
-    return backend.aead.init(.aes_128_gcm_sha256, key);
+    return backend.aead.init(.aes_128_gcm, key);
 }
 
 fn aeadTestEncrypt(
@@ -375,7 +378,7 @@ test "backend.aead: Wycheproof AES-128-GCM tcId 2" {
     const expected_ct = stdx.fmt.comptimeHex("49d8b9783e911913d87094d1f63cc765");
     const expected_tag = stdx.fmt.comptimeHex("1e348ba07cca2cf04c618cb4d43a5b92");
 
-    var ctx: backend.aead.Context = try backend.aead.init(.aes_128_gcm_sha256, &key);
+    var ctx: backend.aead.Context = try backend.aead.init(.aes_128_gcm, &key);
     defer backend.aead.deinit(&ctx);
 
     var ciphertext: [plaintext.len]u8 = undefined;
@@ -407,7 +410,7 @@ test "backend.aead: Wycheproof AES-256-GCM AAD boundary" {
     const expected_ct = stdx.fmt.comptimeHex("471fda38d7620303aac5c2c7124b6165");
     const expected_tag = stdx.fmt.comptimeHex("01af015e2daf8b415dc2027e8d51aa80");
 
-    var ctx: backend.aead.Context = try backend.aead.init(.aes_256_gcm_sha384, &key);
+    var ctx: backend.aead.Context = try backend.aead.init(.aes_256_gcm, &key);
     defer backend.aead.deinit(&ctx);
 
     var ciphertext: [plaintext.len]u8 = undefined;
@@ -439,7 +442,7 @@ test "backend.aead: Wycheproof ChaCha20-Poly1305 AAD boundary" {
     const expected_ct = stdx.fmt.comptimeHex("3a");
     const expected_tag = stdx.fmt.comptimeHex("d7d9204f3da54c5438a2454128a7438e");
 
-    var ctx: backend.aead.Context = try backend.aead.init(.chacha20_poly1305_sha256, &key);
+    var ctx: backend.aead.Context = try backend.aead.init(.chacha20_poly1305, &key);
     defer backend.aead.deinit(&ctx);
 
     var ciphertext: [plaintext.len]u8 = undefined;
@@ -481,7 +484,7 @@ test "backend.aead: ChaCha20-Poly1305 RFC 8439 §2.8.2 known-answer vector" {
     const expected_tag = stdx.fmt.comptimeHex("1ae10b594f09e26a7e902ecbd0600691");
 
     var ctx: backend.aead.Context = try backend.aead.init(
-        .chacha20_poly1305_sha256,
+        .chacha20_poly1305,
         &key,
     );
     defer backend.aead.deinit(&ctx);
@@ -495,13 +498,6 @@ test "backend.aead: ChaCha20-Poly1305 RFC 8439 §2.8.2 known-answer vector" {
     var decrypted: [plaintext.len]u8 = undefined;
     try backend.aead.decrypt(&ctx, &decrypted, &ciphertext, &tag, &ad, &nonce);
     try testing.expectEqualSlices(u8, &plaintext, &decrypted);
-}
-
-fn keyLenForSuite(suite: CipherSuite) usize {
-    return switch (suite) {
-        .aes_128_gcm_sha256 => 16,
-        .aes_256_gcm_sha384, .chacha20_poly1305_sha256 => 32,
-    };
 }
 
 // RFC 7748 §5.2 — with libcrypto active, the native X25519 implementation
@@ -642,9 +638,10 @@ test "backend.native differential: AEAD ciphertext and tags match libcrypto" {
     var source: [300]u8 = undefined;
     for (&source, 0..) |*byte, i| byte.* = @truncate(i);
 
-    inline for (backend_native.capabilities.cipher_suites) |suite| {
+    inline for (types.aead_algorithms) |suite| {
+        if (comptime !backend.supportsAlg(suite)) continue;
         inline for (lengths) |len| {
-            const key: [keyLenForSuite(suite)]u8 = @splat(0xa5);
+            const key: [suite.keyLen()]u8 = @splat(0xa5);
             const nonce: [backend.aead.nonce_len]u8 = @splat(0x5a);
             const plaintext = source[0..len];
             const ad = source[300 - len ..];

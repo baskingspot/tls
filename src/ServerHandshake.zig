@@ -27,7 +27,7 @@ const client_hello = @import("client_hello.zig");
 const ClientHandshake = @import("ClientHandshake.zig");
 const capabilities = @import("capabilities.zig");
 const backend = @import("crypto/backend.zig");
-const default_supported_suites = backend.capabilities.cipher_suites;
+const default_supported_suites = capabilities.current.cipher_suites;
 const encrypted_extensions = @import("encrypted_extensions.zig");
 const finished = @import("finished.zig");
 const frame = @import("frame.zig");
@@ -1323,7 +1323,7 @@ fn resetEarlyDataStateForRetry(self: *ServerHandshake, offered_early_data: bool)
 
 fn supportsHybridGroup(self: *const ServerHandshake, group: NamedGroup) bool {
     const spec = group.hybridSpec() orelse return false;
-    if (!backend.supportsServerHybridGroup(group)) return false;
+    if (!capabilities.supportsServerHybridGroup(group)) return false;
     if (spec.classical_group == .secp384r1 and self.keypairs.p384 == null)
         return false;
     return mem.findScalar(NamedGroup, self.hybrid_groups, group) != null;
@@ -1558,7 +1558,7 @@ fn processClientHelloMessage(
 
     const client_key_share: ClientKeyShare = if (self.retry_selected_group) |selected_group|
         switch (selected_group) {
-            .x25519 => if (backend.supportsServerX25519()) blk: {
+            .x25519 => if (capabilities.supportsServerX25519()) blk: {
                 if (ch.public_key) |public_key| {
                     if (ch.public_key_p256 != null or ch.public_key_p384 != null or
                         ch.hybrid_key_shares.len != 0)
@@ -1569,7 +1569,7 @@ fn processClientHelloMessage(
                 }
                 return error.IllegalParameter;
             } else return error.IllegalParameter,
-            .secp256r1 => if (backend.supportsServerP256()) blk: {
+            .secp256r1 => if (capabilities.supportsServerP256()) blk: {
                 if (ch.public_key_p256) |public_key| {
                     if (ch.public_key != null or ch.public_key_p384 != null or
                         ch.hybrid_key_shares.len != 0)
@@ -1580,7 +1580,9 @@ fn processClientHelloMessage(
                 }
                 return error.IllegalParameter;
             } else return error.IllegalParameter,
-            .secp384r1 => if ((backend.supportsServerP384() and self.keypairs.p384 != null)) blk: {
+            .secp384r1 => if ((capabilities.supportsServerP384() and
+                self.keypairs.p384 != null))
+            blk: {
                 if (ch.public_key_p384) |public_key| {
                     if (ch.public_key != null or ch.public_key_p256 != null or
                         ch.hybrid_key_shares.len != 0)
@@ -1623,14 +1625,14 @@ fn processClientHelloMessage(
         self.resetEarlyDataStateForRetry(ch.offered_early_data);
         self.state = .wait_ch;
         return hrr;
-    } else if (ch.public_key != null and backend.supportsServerX25519())
+    } else if (ch.public_key != null and capabilities.supportsServerX25519())
         .{ .x25519 = ch.public_key.? }
-    else if (ch.public_key_p256 != null and backend.supportsServerP256())
+    else if (ch.public_key_p256 != null and capabilities.supportsServerP256())
         .{ .secp256r1 = ch.public_key_p256.? }
     else if (ch.public_key_p384 != null and
-        (backend.supportsServerP384() and self.keypairs.p384 != null))
+        (capabilities.supportsServerP384() and self.keypairs.p384 != null))
         .{ .secp384r1 = ch.public_key_p384.? }
-    else if (ch.groups.contains(.x25519) and backend.supportsServerX25519()) {
+    else if (ch.groups.contains(.x25519) and capabilities.supportsServerX25519()) {
         const hrr = try self.encodeHelloRetryRequest(
             ch_msg,
             &ch,
@@ -1642,7 +1644,7 @@ fn processClientHelloMessage(
         self.resetEarlyDataStateForRetry(ch.offered_early_data);
         self.state = .wait_ch;
         return hrr;
-    } else if (ch.groups.contains(.secp256r1) and backend.supportsServerP256()) {
+    } else if (ch.groups.contains(.secp256r1) and capabilities.supportsServerP256()) {
         const hrr = try self.encodeHelloRetryRequest(
             ch_msg,
             &ch,
@@ -1655,7 +1657,7 @@ fn processClientHelloMessage(
         self.state = .wait_ch;
         return hrr;
     } else if (ch.groups.contains(.secp384r1) and
-        (backend.supportsServerP384() and self.keypairs.p384 != null))
+        (capabilities.supportsServerP384() and self.keypairs.p384 != null))
     {
         const hrr = try self.encodeHelloRetryRequest(
             ch_msg,
@@ -2288,7 +2290,7 @@ fn encodeAuthenticatedFlightValidated(
     if (self.client_auth != .none) {
         const cr = try certificate_request.encode(
             plaintext[pos..],
-            backend.capabilities.certificate_verify_schemes,
+            capabilities.current.certificate_verify_schemes,
         );
         self.suite_state.update(cr);
         pos += cr.len;
@@ -2486,7 +2488,7 @@ fn processClientFinishedPlaintext(
                 // leaf public key over client_context || transcript_hash
                 // (through the client Certificate, snapshotted here before CV
                 // is absorbed). The scheme MUST be one the server offered in
-                // the CertificateRequest (backend.capabilities.certificate_
+                // the CertificateRequest (capabilities.current.certificate_
                 // verify_schemes).
                 switch (self.suite_state) {
                     inline .sha256, .sha384 => |*s| {
@@ -2495,7 +2497,7 @@ fn processClientFinishedPlaintext(
                             msg.raw,
                             self.client_leaf_pub_key.constSlice(),
                             &th,
-                            backend.capabilities.certificate_verify_schemes,
+                            capabilities.current.certificate_verify_schemes,
                         );
                     },
                     else => unreachable,
@@ -3125,7 +3127,7 @@ pub fn receiveApplicationData(self: *ServerHandshake, record: []u8) ReceiveError
 
 fn chooseSuite(self: *const ServerHandshake, ch: client_hello.Parsed) ?CipherSuite {
     for (self.supported_suites) |suite| {
-        if (backend.supportsCipherSuite(suite) and ch.offersSuite(suite)) return suite;
+        if (capabilities.supportsCipherSuite(suite) and ch.offersSuite(suite)) return suite;
     }
     return null;
 }
@@ -3229,7 +3231,7 @@ fn clientEcdsaScalar() []const u8 {
 fn firstSupportedHrrTriggerGroup() ?NamedGroup {
     const candidates = [_]NamedGroup{ .x25519_mlkem768, .secp256r1_mlkem768 };
     for (candidates) |group| {
-        if (backend.supportsServerHybridGroup(group)) return group;
+        if (capabilities.supportsServerHybridGroup(group)) return group;
     }
     return null;
 }
@@ -6557,7 +6559,7 @@ test "sendPreparedServerFlight: excluded signature_algorithms_cert gets handshak
 test "sendPreparedServerFlight: omitted signature_algorithms_cert falls back" {
     // Native verifies RSA-PSS but deliberately has no RSA private-key signing.
     if (comptime backend.native_selected) return error.SkipZigTest;
-    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+    if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
     var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
     defer signer.deinit();
@@ -6710,7 +6712,7 @@ test "sendPreparedServerFlight: permitted signature_algorithms_cert completes ha
 // preference order, even when signature_algorithms allows both signers.
 test "sendPreparedServerFlight: two-chain server selects the chain the client can verify" {
     if (comptime backend.native_selected) return error.SkipZigTest;
-    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+    if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
     var rsa_key: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
     defer rsa_key.deinit();
@@ -6851,7 +6853,7 @@ test "sendPreparedServerFlight: two-chain server selects the chain the client ca
 // when excluded.
 test "sendPreparedServerFlight: RSASSA-PSS signed certificate matches rsa_pss_rsae_sha256" {
     if (comptime backend.native_selected) return error.SkipZigTest;
-    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+    if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
     var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
     defer signer.deinit();
@@ -6922,7 +6924,7 @@ test "sendPreparedServerFlight: RSASSA-PSS signed certificate matches rsa_pss_rs
 test "client accepts an RSASSA-PSS-signed server certificate by default" {
     // Native verifies RSA-PSS but deliberately has no RSA private-key signing.
     if (comptime backend.native_selected) return error.SkipZigTest;
-    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+    if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
 
     var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
@@ -6964,7 +6966,7 @@ test "client accepts an RSASSA-PSS-signed server certificate by default" {
 // rejects a PSS-signed certificate even if a peer sends it anyway.
 test "client rejects an excluded RSASSA-PSS-signed server certificate" {
     if (comptime backend.native_selected) return error.SkipZigTest;
-    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
+    if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256))
         return error.SkipZigTest;
 
     var signer: signature.PrivateKey = try .fromPem(.rsa_pss_rsae_sha256, serverRsaPssKeyPem());
@@ -7060,7 +7062,7 @@ test "sendPreparedServerFlight: RSA-only offer gets handshake_failure" {
         &sh_out,
     );
 
-    if (comptime !backend.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256)) {
+    if (comptime !capabilities.supportsCertificateVerifyScheme(.rsa_pss_rsae_sha256)) {
         try testing.expectError(error.NoCommonSignatureScheme, accepted);
         try testing.expectEqual(
             alert.Description.handshake_failure,
@@ -9196,7 +9198,7 @@ const ExternalHrrBinderCase = enum { valid, tampered };
 
 fn expectExternalPskHrr(case: ExternalHrrBinderCase) !void {
     const group: NamedGroup = .secp256r1_mlkem768;
-    if (!backend.supportsServerHybridGroup(group)) return error.SkipZigTest;
+    if (!capabilities.supportsServerHybridGroup(group)) return error.SkipZigTest;
     const identity = "nvme0n1";
     const psk: [32]u8 = @splat(0x42);
     var client: ClientHandshake = .init(.{
@@ -9743,7 +9745,7 @@ test "in-memory RFC 10024 PSK resumption matrix reaches app data" {
     };
     var tested = false;
     for (groups) |group| {
-        if (!backend.supportsServerHybridGroup(group)) continue;
+        if (!capabilities.supportsServerHybridGroup(group)) continue;
         tested = true;
         try expectInMemoryPskResumption(group, .direct, .aes_128_gcm_sha256);
     }
@@ -9761,7 +9763,7 @@ test "in-memory RFC 10024 PSK resumption survives HRR" {
     };
     var tested = false;
     for (groups) |group| {
-        if (!backend.supportsServerHybridGroup(group)) continue;
+        if (!capabilities.supportsServerHybridGroup(group)) continue;
         tested = true;
         try expectInMemoryPskResumption(
             group,
@@ -9782,7 +9784,7 @@ test "in-memory RFC 10024 SHA-384 PSK resumption survives HRR" {
     };
     var tested = false;
     for (groups) |group| {
-        if (!backend.supportsServerHybridGroup(group)) continue;
+        if (!capabilities.supportsServerHybridGroup(group)) continue;
         tested = true;
         try expectInMemoryPskResumption(
             group,
@@ -12107,8 +12109,8 @@ test "0-RTT: processClientFinished rejects Finished before EndOfEarlyData" {
 // RFC 8446 §4.2.8 / RFC 10024 §4.1 — when a client sends multiple hybrid
 // shares, the server chooses in its configured preference order.
 test "preferredHybridShare follows server preference" {
-    if (!backend.supportsServerHybridGroup(.x25519_mlkem768) or
-        !backend.supportsServerHybridGroup(.secp256r1_mlkem768))
+    if (!capabilities.supportsServerHybridGroup(.x25519_mlkem768) or
+        !capabilities.supportsServerHybridGroup(.secp256r1_mlkem768))
     {
         return error.SkipZigTest;
     }
@@ -12254,7 +12256,7 @@ test "in-memory RFC 10024 hybrid group matrix reaches app data" {
 
     for (hybrid_derivations) |case| {
         const group = case.group;
-        if (!backend.supportsServerHybridGroup(group)) continue;
+        if (!capabilities.supportsServerHybridGroup(group)) continue;
         tested = true;
 
         const enabled_groups = [_]NamedGroup{group};
@@ -12307,7 +12309,7 @@ test "RFC 10024 hybrid group matrix negotiates through HRR" {
 
     for (hybrid_derivations) |case| {
         const group = case.group;
-        if (!backend.supportsServerHybridGroup(group)) continue;
+        if (!capabilities.supportsServerHybridGroup(group)) continue;
         tested = true;
 
         const enabled_groups = [_]NamedGroup{group};
@@ -12381,7 +12383,7 @@ test "RFC 10024 hybrid group matrix negotiates through HRR" {
 // RFC 8446 §4.2.7, RFC 10024 §4 — a server that has not enabled hybrid
 // groups may ignore a valid hybrid share and select an offered classical share.
 test "hybrid share requires explicit server policy" {
-    if (!backend.supportsClientHybridGroup(.secp256r1_mlkem768))
+    if (!capabilities.supportsClientHybridGroup(.secp256r1_mlkem768))
         return error.SkipZigTest;
 
     var client_keys: KeyPairs = .initWithP256(

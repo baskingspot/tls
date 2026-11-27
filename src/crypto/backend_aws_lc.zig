@@ -16,111 +16,14 @@ const std = @import("std");
 const assert = std.debug.assert;
 const c = @import("c_openssl.zig").openssl;
 const compat = @import("backend_openssl.zig");
-const CipherSuite = @import("../cipher_suite.zig").CipherSuite;
 const ParameterSet = @import("mlkem_parameters.zig").ParameterSet;
-const SignatureScheme = @import("../signature_scheme.zig").SignatureScheme;
+const AeadAlgorithm = @import("types.zig").AeadAlgorithm;
+const SignatureAlgorithm = @import("types.zig").SignatureAlgorithm;
 
-pub const capabilities = struct {
-    pub const cipher_suites: []const CipherSuite = &.{
-        .aes_128_gcm_sha256,
-        .aes_256_gcm_sha384,
-        .chacha20_poly1305_sha256,
-    };
-
-    pub const client_x25519 = true;
-    pub const client_p256 = true;
-    pub const client_p384 = true;
-    pub const client_x25519_mlkem768 = true;
-    pub const client_secp256r1_mlkem768 = true;
-    pub const client_secp384r1_mlkem1024 = true;
-    pub const server_x25519 = true;
-    pub const server_p256 = true;
-    pub const server_p384 = true;
-    pub const server_x25519_mlkem768 = true;
-    pub const server_secp256r1_mlkem768 = true;
-    pub const server_secp384r1_mlkem1024 = true;
-
-    pub const certificate_verify_schemes: []const SignatureScheme = &.{
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-    };
-
-    // RFC 8446 §4.4.2.2 — signature_algorithms_cert constrains the
-    // certificate-chain signature algorithm (cert-to-cert), which is
-    // independent of the CertificateVerify scheme (§4.4.3). Ed25519 chain
-    // signatures are verified via std.crypto.sign.Ed25519 in
-    // certificate_parser.zig, not the backend seam, so they are advertised
-    // here even though certificate_verify_schemes omits ed25519. These are
-    // declared here, not reexported from OpenSSL, so AWS-LC can diverge when
-    // provider/FIPS version probing says it must.
-    pub const certificate_signature_schemes: []const SignatureScheme = &.{
-        .rsa_pkcs1_sha256,
-        .rsa_pkcs1_sha384,
-        .rsa_pkcs1_sha512,
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
-        .ed25519,
-    };
-};
-
-/// FIPS 140-3 narrowed capability table. Signature verification is outside the
-/// validated module: certificate-chain and CertificateVerify signatures verify
-/// in-tree (#183). `-Dcrypto-approved-only=true` selects this
-/// table when AWS-LC headers are active. The caller is responsible for ensuring
-/// the linked AWS-LC libcrypto is actually a FIPS-validated build. No runtime
-/// provider probing is performed by tls.
-pub const capabilities_approved = struct {
-    // ChaCha20-Poly1305 is not a NIST-approved algorithm.
-    pub const cipher_suites: []const CipherSuite = &.{
-        .aes_128_gcm_sha256,
-        .aes_256_gcm_sha384,
-    };
-
-    pub const client_p256 = true;
-    pub const client_p384 = true;
-    // FIPS 140-3 IG: "Curves that are included in SP 800-186 but not included
-    // in SP 800-56Arev3 are not approved for key agreement". X25519 is one of
-    // them, so an approved-only build must not advertise it.
-    pub const client_x25519 = false;
-    // FIPS 203 approves ML-KEM, but the RFC 10024 hybrid composition is this
-    // library's own construction and is not an approved scheme.
-    pub const client_x25519_mlkem768 = false;
-    pub const client_secp256r1_mlkem768 = false;
-    pub const client_secp384r1_mlkem1024 = false;
-    pub const server_p256 = true;
-    pub const server_p384 = true;
-    pub const server_x25519 = false;
-    pub const server_x25519_mlkem768 = false;
-    pub const server_secp256r1_mlkem768 = false;
-    pub const server_secp384r1_mlkem1024 = false;
-
-    pub const certificate_verify_schemes: []const SignatureScheme = &.{
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-    };
-
-    // FIPS 186-5 approves RSASSA-PKCS1-v1_5 and EdDSA as well as ECDSA, so
-    // certificate-chain signatures accept all three. CertificateVerify above
-    // stays narrower because the engine has no Ed25519 CertificateVerify path.
-    pub const certificate_signature_schemes: []const SignatureScheme = &.{
-        .rsa_pkcs1_sha256,
-        .rsa_pkcs1_sha384,
-        .rsa_pkcs1_sha512,
-        .ecdsa_secp256r1_sha256,
-        .ecdsa_secp384r1_sha384,
-        .rsa_pss_rsae_sha256,
-        .rsa_pss_rsae_sha384,
-        .rsa_pss_rsae_sha512,
-        .ed25519,
-    };
-};
+pub const supportsAlg = compat.supportsAlg;
+pub const supportsCurve = compat.supportsCurve;
+pub const supportsScheme = compat.supportsScheme;
+pub const supportsParameterSet = compat.supportsParameterSet;
 
 pub const Error = compat.Error;
 pub const pkey = compat.pkey;
@@ -314,15 +217,15 @@ pub const AeadContext = struct {
 pub const aead_tag_len = compat.aead_tag_len;
 pub const aead_nonce_len = compat.aead_nonce_len;
 
-fn aeadCipher(suite: CipherSuite) *const c.EVP_AEAD {
+fn aeadCipher(suite: AeadAlgorithm) *const c.EVP_AEAD {
     return switch (suite) {
-        .aes_128_gcm_sha256 => c.EVP_aead_aes_128_gcm(),
-        .aes_256_gcm_sha384 => c.EVP_aead_aes_256_gcm(),
-        .chacha20_poly1305_sha256 => c.EVP_aead_chacha20_poly1305(),
+        .aes_128_gcm => c.EVP_aead_aes_128_gcm(),
+        .aes_256_gcm => c.EVP_aead_aes_256_gcm(),
+        .chacha20_poly1305 => c.EVP_aead_chacha20_poly1305(),
     } orelse unreachable;
 }
 
-pub fn aeadInit(suite: CipherSuite, key_bytes: []const u8) AeadError!AeadContext {
+pub fn aeadInit(suite: AeadAlgorithm, key_bytes: []const u8) AeadError!AeadContext {
     // Per key-schedule, not per record: the unconditional guard is free here
     // (#88 finding 2 — see the hygiene comment in backend_openssl.zig).
     compat.errqEnter();
@@ -419,7 +322,7 @@ pub inline fn privateKeyFromPem(pem: []const u8) SignatureError!*pkey {
 
 pub const KeySchemeError = compat.KeySchemeError;
 
-pub inline fn keyScheme(key: *const pkey) KeySchemeError!SignatureScheme {
+pub inline fn keyScheme(key: *const pkey) KeySchemeError!SignatureAlgorithm {
     return compat.keyScheme(key);
 }
 
@@ -436,7 +339,7 @@ pub inline fn privateKeyFromP256Scalar(scalar: *const [32]u8) SignatureError!*pk
 
 pub inline fn signatureSign(
     key: *pkey,
-    scheme: SignatureScheme,
+    scheme: SignatureAlgorithm,
     msg: []const u8,
     out: []u8,
     nonce_mode: NonceMode,

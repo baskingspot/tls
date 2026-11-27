@@ -127,6 +127,14 @@ pub const Aead = union(CipherSuite) {
     }
 };
 
+fn toProvider(suite: CipherSuite) backend.AeadAlgorithm {
+    return switch (suite) {
+        .aes_128_gcm_sha256 => .aes_128_gcm,
+        .aes_256_gcm_sha384 => .aes_256_gcm,
+        .chacha20_poly1305_sha256 => .chacha20_poly1305,
+    };
+}
+
 pub const Context = struct {
     suite: CipherSuite,
     inner: backend.aead.Context,
@@ -134,7 +142,7 @@ pub const Context = struct {
     pub fn init(aead: Aead) Error!Context {
         return .{
             .suite = aead.suite(),
-            .inner = try backend.aead.init(aead.suite(), aead.keyBytes()),
+            .inner = try backend.aead.init(toProvider(aead.suite()), aead.keyBytes()),
         };
     }
 

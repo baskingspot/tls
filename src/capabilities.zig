@@ -4,6 +4,8 @@ const compat = @import("compat.zig");
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
+const provider = @import("crypto_capabilities.zig");
+pub const current = provider.current;
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 const kex = @import("kex.zig");
 const NamedGroup = kex.NamedGroup;
@@ -21,7 +23,7 @@ pub const approved_only: bool = backend.approved_only;
 
 /// TLS 1.3 cipher suites this build advertises. An approved-only build
 /// advertises AES-GCM only.
-pub const cipher_suites = backend.capabilities.cipher_suites;
+pub const cipher_suites = current.cipher_suites;
 
 /// RFC 10024 groups that tls implements. Backend support remains selectable.
 pub const hybrid_groups = [_]NamedGroup{
@@ -47,12 +49,15 @@ pub fn supportsCipherSuite(suite: CipherSuite) bool {
 
 /// Report whether this build advertises `scheme` for CertificateVerify.
 pub fn supportsCertificateVerifyScheme(scheme: SignatureScheme) bool {
-    return backend.supportsCertificateVerifyScheme(scheme);
+    for (current.certificate_verify_schemes) |supported| {
+        if (supported == scheme) return true;
+    }
+    return false;
 }
 
 /// Report whether this build accepts `scheme` in a certificate chain.
 pub fn supportsCertificateSignatureScheme(scheme: SignatureScheme) bool {
-    const schemes = backend.capabilities.certificate_signature_schemes;
+    const schemes = current.certificate_signature_schemes;
     for (schemes) |supported| {
         if (scheme == supported) return true;
     }
@@ -64,16 +69,16 @@ pub fn supportsCertificateSignatureScheme(scheme: SignatureScheme) bool {
 pub fn supportsGroup(role: Role, group: NamedGroup) bool {
     return switch (group) {
         .x25519 => switch (role) {
-            .client => backend.capabilities.client_x25519,
-            .server => backend.capabilities.server_x25519,
+            .client => current.client_x25519,
+            .server => current.server_x25519,
         },
         .secp256r1 => switch (role) {
-            .client => backend.capabilities.client_p256,
-            .server => backend.capabilities.server_p256,
+            .client => current.client_p256,
+            .server => current.server_p256,
         },
         .secp384r1 => switch (role) {
-            .client => backend.capabilities.client_p384,
-            .server => backend.capabilities.server_p384,
+            .client => current.client_p384,
+            .server => current.server_p384,
         },
         else => supportsHybridGroup(role, group),
     };
@@ -82,9 +87,47 @@ pub fn supportsGroup(role: Role, group: NamedGroup) bool {
 /// Report whether one role can use an RFC 10024 group with the active backend.
 pub fn supportsHybridGroup(role: Role, group: NamedGroup) bool {
     return switch (role) {
-        .client => backend.supportsClientHybridGroup(group),
-        .server => backend.supportsServerHybridGroup(group),
+        .client => supportsClientHybridGroup(group),
+        .server => supportsServerHybridGroup(group),
     };
+}
+
+pub fn supportsServerX25519() bool {
+    return current.server_x25519;
+}
+
+pub fn supportsServerP256() bool {
+    return current.server_p256;
+}
+
+pub fn supportsServerP384() bool {
+    return current.server_p384;
+}
+
+pub fn supportsClientP384() bool {
+    return current.client_p384;
+}
+
+pub fn supportsClientHybridGroup(group: NamedGroup) bool {
+    return switch (group) {
+        .x25519_mlkem768 => current.client_x25519_mlkem768,
+        .secp256r1_mlkem768 => current.client_secp256r1_mlkem768,
+        .secp384r1_mlkem1024 => current.client_secp384r1_mlkem1024,
+        else => false,
+    };
+}
+
+pub fn supportsServerHybridGroup(group: NamedGroup) bool {
+    return switch (group) {
+        .x25519_mlkem768 => current.server_x25519_mlkem768,
+        .secp256r1_mlkem768 => current.server_secp256r1_mlkem768,
+        .secp384r1_mlkem1024 => current.server_secp384r1_mlkem1024,
+        else => false,
+    };
+}
+
+pub fn supportsServerX25519Mlkem768() bool {
+    return supportsServerHybridGroup(.x25519_mlkem768);
 }
 
 /// Validate a borrowed RFC 10024 group list before key generation or wire I/O.
@@ -150,14 +193,14 @@ test "active backend identity matches the private provider facade" {
 test "signature capability queries match the active backend" {
     for (SignatureScheme.supported_handshake) |scheme| {
         try testing.expectEqual(
-            backend.supportsCertificateVerifyScheme(scheme),
+            supportsCertificateVerifyScheme(scheme),
             supportsCertificateVerifyScheme(scheme),
         );
     }
     for (SignatureScheme.supported_certificate) |scheme| {
         const advertised = std.mem.findScalar(
             SignatureScheme,
-            backend.capabilities.certificate_signature_schemes,
+            current.certificate_signature_schemes,
             scheme,
         ) != null;
         try testing.expectEqual(advertised, supportsCertificateSignatureScheme(scheme));
@@ -168,11 +211,11 @@ test "signature capability queries match the active backend" {
 test "hybrid capability queries match the active backend" {
     for (hybrid_groups) |group| {
         try testing.expectEqual(
-            backend.supportsClientHybridGroup(group),
+            supportsClientHybridGroup(group),
             supportsHybridGroup(.client, group),
         );
         try testing.expectEqual(
-            backend.supportsServerHybridGroup(group),
+            supportsServerHybridGroup(group),
             supportsHybridGroup(.server, group),
         );
     }
@@ -230,4 +273,19 @@ test "requiresP384 identifies only P-384 hybrid policy" {
     try testing.expect(!requiresP384(&.{.x25519_mlkem768}));
     try testing.expect(!requiresP384(&.{.secp256r1_mlkem768}));
     try testing.expect(requiresP384(&.{.secp384r1_mlkem1024}));
+}
+
+test "capability helpers recognize advertised algorithms" {
+    for (cipher_suites) |suite| try testing.expect(supportsCipherSuite(suite));
+    for (current.certificate_verify_schemes) |scheme| {
+        try testing.expect(supportsCertificateVerifyScheme(scheme));
+    }
+}
+
+test "approved: active capabilities follow the build policy" {
+    if (approved_only) {
+        try testing.expect(!supportsCipherSuite(.chacha20_poly1305_sha256));
+    } else {
+        try testing.expect(supportsCipherSuite(.chacha20_poly1305_sha256));
+    }
 }

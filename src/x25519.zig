@@ -7,8 +7,16 @@ const assert = std.debug.assert;
 const testing = std.testing;
 
 const backend = @import("crypto/backend.zig");
+const kex = @import("kex.zig");
 pub const Error = backend.x25519.Error;
 const entropy = @import("entropy.zig");
+
+pub fn toProvider(group: kex.NamedGroup) backend.CurveId {
+    return switch (group) {
+        .x25519 => .x25519,
+        else => unreachable,
+    };
+}
 
 pub const public_length = 32;
 pub const secret_length = 32;

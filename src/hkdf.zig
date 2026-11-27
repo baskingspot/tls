@@ -11,6 +11,7 @@ const testing = std.testing;
 
 const aead = @import("aead.zig");
 const backend = @import("crypto/backend.zig");
+const capabilities = @import("capabilities.zig");
 const CipherSuite = @import("cipher_suite.zig").CipherSuite;
 const hmac = @import("hmac.zig");
 const Iv = @import("aead.zig").Iv;
@@ -733,7 +734,7 @@ test "batched record layer and finished key match independent HKDF-Expand-Label"
     inline for (hkdf_reference_pairs) |pair| {
         const H, const S, const suites = pair;
         inline for (suites) |suite| {
-            if (backend.supportsCipherSuite(suite))
+            if (capabilities.supportsCipherSuite(suite))
                 try expectBatchedRecordLayer(H, S, suite, prng.random());
         }
     }
