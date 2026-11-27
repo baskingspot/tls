@@ -16,6 +16,9 @@ All notable changes to tls are recorded here. The format follows
 
 ### Changed
 
+- The crypto provider backends moved to `baskingspot/crypto`, which `tls`
+  depends on. `zig fetch --save` resolves it automatically; an existing
+  `pkg-config` setup needs no change.
 - **Breaking:** A known PSK identity whose binder does not verify now aborts
   the handshake with `error.InvalidPskBinder` (`decrypt_error`) instead of
   falling through to certificates, and `ServerHandshake.selectPsk` returns
