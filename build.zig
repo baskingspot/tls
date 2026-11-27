@@ -196,6 +196,13 @@ pub fn build(b: *Build) void {
                 .tls_mod = mod,
                 .fixtures_mod = fixtures,
             });
+            bench_mod.addNativeSteps(b, @This(), .{
+                .target = target,
+                .tls_mod = mod,
+                .build_options = build_options,
+                .fixtures_mod = fixtures,
+                .stdx_mod = stdx_dep.module("stdx"),
+            });
         }
         return;
     }

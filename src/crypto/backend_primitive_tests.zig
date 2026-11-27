@@ -248,6 +248,123 @@ test "backend.aead: ciphertext corruption is rejected for every advertised ciphe
     }
 }
 
+const aead_test_key: [16]u8 = @splat(0xab);
+const aead_test_ad = "tls-record-header";
+
+fn aeadTestContext(key: *const [16]u8) backend.aead.Error!backend.aead.Context {
+    return backend.aead.init(.aes_128_gcm_sha256, key);
+}
+
+fn aeadTestEncrypt(
+    ciphertext: []u8,
+    tag: *[backend.aead.tag_len]u8,
+    plaintext: []const u8,
+) !void {
+    const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
+    var ctx = try aeadTestContext(&aead_test_key);
+    defer backend.aead.deinit(&ctx);
+    try backend.aead.encrypt(&ctx, ciphertext, tag, plaintext, aead_test_ad, &nonce);
+}
+
+fn expectZeroBytes(bytes: []const u8) !void {
+    for (bytes) |byte| try testing.expectEqual(@as(u8, 0), byte);
+}
+
+// RFC 8446 §5.2 — exact in-place decryption is a supported record-buffer shape.
+test "backend.aead: in-place decrypt succeeds" {
+    const source = "backend-aead-in-place";
+    const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
+    var buf: [source.len]u8 = undefined;
+    var tag: [backend.aead.tag_len]u8 = undefined;
+    try aeadTestEncrypt(&buf, &tag, source);
+
+    var ctx = try aeadTestContext(&aead_test_key);
+    defer backend.aead.deinit(&ctx);
+    try backend.aead.decrypt(&ctx, &buf, &buf, &tag, aead_test_ad, &nonce);
+    try testing.expectEqualSlices(u8, source, &buf);
+}
+
+// RFC 8446 §5.2 — ciphertext corruption fails and clears the whole output.
+test "backend.aead: flipped ciphertext byte fails and zeros the output" {
+    const source = "backend-aead-ciphertext";
+    const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
+    var ciphertext: [source.len]u8 = undefined;
+    var tag: [backend.aead.tag_len]u8 = undefined;
+    try aeadTestEncrypt(&ciphertext, &tag, source);
+    ciphertext[source.len - 1] ^= 0x80;
+
+    var ctx = try aeadTestContext(&aead_test_key);
+    defer backend.aead.deinit(&ctx);
+    var decrypted: [source.len]u8 = @splat(0xa5);
+    try testing.expectError(
+        error.AuthenticationFailed,
+        backend.aead.decrypt(&ctx, &decrypted, &ciphertext, &tag, aead_test_ad, &nonce),
+    );
+    try expectZeroBytes(&decrypted);
+}
+
+// RFC 8446 §5.2 — associated data is authenticated and failure clears the output.
+test "backend.aead: wrong AAD fails and zeros the output" {
+    const source = "backend-aead-wrong-aad";
+    const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
+    var ciphertext: [source.len]u8 = undefined;
+    var tag: [backend.aead.tag_len]u8 = undefined;
+    try aeadTestEncrypt(&ciphertext, &tag, source);
+
+    var ctx = try aeadTestContext(&aead_test_key);
+    defer backend.aead.deinit(&ctx);
+    var decrypted: [source.len]u8 = @splat(0xa5);
+    try testing.expectError(
+        error.AuthenticationFailed,
+        backend.aead.decrypt(&ctx, &decrypted, &ciphertext, &tag, "TLS-RECORD-HEADER", &nonce),
+    );
+    try expectZeroBytes(&decrypted);
+}
+
+// RFC 8446 §5.2 — the traffic key authenticates the record and failure clears output.
+test "backend.aead: wrong key fails and zeros the output" {
+    const source = "backend-aead-wrong-key";
+    const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
+    const wrong_key: [16]u8 = @splat(0xac);
+    var ciphertext: [source.len]u8 = undefined;
+    var tag: [backend.aead.tag_len]u8 = undefined;
+    try aeadTestEncrypt(&ciphertext, &tag, source);
+
+    var ctx = try aeadTestContext(&wrong_key);
+    defer backend.aead.deinit(&ctx);
+    var decrypted: [source.len]u8 = @splat(0xa5);
+    try testing.expectError(
+        error.AuthenticationFailed,
+        backend.aead.decrypt(&ctx, &decrypted, &ciphertext, &tag, aead_test_ad, &nonce),
+    );
+    try expectZeroBytes(&decrypted);
+}
+
+// Exact in-place operation is valid, but a shifted overlapping slice is an argument error.
+test "backend.aead: partial input and output overlap is rejected" {
+    const source = "backend-aead-overlap";
+    const nonce: [backend.aead.nonce_len]u8 = @splat(0xcd);
+    var storage: [source.len + 1]u8 = @splat(0xa5);
+    var tag: [backend.aead.tag_len]u8 = undefined;
+    try aeadTestEncrypt(storage[0..source.len], &tag, source);
+    const before = storage;
+
+    var ctx = try aeadTestContext(&aead_test_key);
+    defer backend.aead.deinit(&ctx);
+    try testing.expectError(
+        error.InputAliasesOutput,
+        backend.aead.decrypt(
+            &ctx,
+            storage[1..],
+            storage[0..source.len],
+            &tag,
+            aead_test_ad,
+            &nonce,
+        ),
+    );
+    try testing.expectEqualSlices(u8, &before, &storage);
+}
+
 // Wycheproof v1 (google-wycheproof 0.9rc5) — AES-128-GCM tcId 2, exercised
 // directly through the backend facade with tag corruption rejection.
 test "backend.aead: Wycheproof AES-128-GCM tcId 2" {

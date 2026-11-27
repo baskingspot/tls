@@ -192,6 +192,7 @@ pub fn aeadDecrypt(
     npub: *const [aead_nonce_len]u8,
 ) AeadError!void {
     assert(plaintext.len == ciphertext.len);
+    errdefer crypto.secureZero(u8, plaintext);
     return switch (ctx.suite) {
         .aes_128_gcm_sha256 => aes_gcm.Aes128Gcm.decrypt(
             plaintext,

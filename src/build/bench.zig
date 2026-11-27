@@ -30,10 +30,42 @@ pub fn addSteps(b: *Build, comptime root: type, opts: Options) void {
     }) orelse return;
     const testingx_mod = dep.module("testingx");
 
-    addTlsBenchmarks(b, opts, testingx, testingx_mod);
+    addTlsBenchmarks(b, .{
+        .target = opts.target,
+        .tls_mod = opts.tls_mod,
+        .openssl_c = opts.openssl_c,
+        .build_options = opts.build_options,
+        .fixtures_mod = opts.fixtures_mod,
+        .stdx_mod = opts.stdx_mod,
+        .libs = opts.libs,
+    }, testingx, testingx_mod);
     addEvpBenchmarks(b, opts, testingx, testingx_mod);
     addLibsslBenchmarks(b, opts, testingx, testingx_mod);
     addReplayFixtureGenerator(b, opts);
+}
+
+pub const NativeOptions = struct {
+    target: Build.ResolvedTarget,
+    tls_mod: *Build.Module,
+    build_options: *Build.Step.Options,
+    fixtures_mod: *Build.Module,
+    stdx_mod: *Build.Module,
+};
+
+/// Native registers only the tls rows. It has no libcrypto modules to import or link.
+pub fn addNativeSteps(b: *Build, comptime root: type, opts: NativeOptions) void {
+    const testingx = b.lazyImport(root, "testingx") orelse return;
+    const dep = b.lazyDependency("testingx", .{ .target = opts.target }) orelse return;
+    const testingx_mod = dep.module("testingx");
+    addTlsBenchmarks(b, .{
+        .target = opts.target,
+        .tls_mod = opts.tls_mod,
+        .openssl_c = null,
+        .build_options = opts.build_options,
+        .fixtures_mod = opts.fixtures_mod,
+        .stdx_mod = opts.stdx_mod,
+        .libs = null,
+    }, testingx, testingx_mod);
 }
 
 fn addRunStep(
@@ -51,27 +83,44 @@ fn addRunStep(
     b.step(b.fmt("{s}-bin", .{step_name}), bin_desc).dependOn(&install.step);
 }
 
+const TlsOptions = struct {
+    target: Build.ResolvedTarget,
+    tls_mod: *Build.Module,
+    openssl_c: ?*Build.Module,
+    build_options: *Build.Step.Options,
+    fixtures_mod: *Build.Module,
+    stdx_mod: *Build.Module,
+    libs: ?crypto_libs.Libraries,
+};
+
 fn addTlsBenchmarks(
     b: *Build,
-    opts: Options,
+    opts: TlsOptions,
     comptime testingx: type,
     testingx_mod: *Build.Module,
 ) void {
+    var imports: [5]Build.Module.Import = undefined;
+    imports[0] = .{ .name = "tls", .module = opts.tls_mod };
+    imports[1] = .{ .name = "stdx", .module = opts.stdx_mod };
+    imports[2] = .{ .name = "fixtures", .module = opts.fixtures_mod };
+    imports[3] = .{ .name = "build_options", .module = opts.build_options.createModule() };
+    var import_count: usize = 4;
+    if (opts.openssl_c) |openssl_c| {
+        imports[4] = .{ .name = "openssl_c", .module = openssl_c };
+        import_count = 5;
+    }
     const exe = testingx.addBenchExe(b, .{
         .name = "benchmark",
         .module = testingx_mod,
         .root_source_file = b.path("src/bench.zig"),
         .target = opts.target,
-        .imports = &.{
-            .{ .name = "tls", .module = opts.tls_mod },
-            .{ .name = "stdx", .module = opts.stdx_mod },
-            .{ .name = "fixtures", .module = opts.fixtures_mod },
-            .{ .name = "openssl_c", .module = opts.openssl_c },
-            .{ .name = "build_options", .module = opts.build_options.createModule() },
-        },
+        .optimize = .ReleaseFast,
+        .imports = imports[0..import_count],
     });
-    exe.root_module.link_libc = true;
-    exe.root_module.linkSystemLibrary(opts.libs.crypto, .{});
+    if (opts.libs) |libs| {
+        exe.root_module.link_libc = true;
+        exe.root_module.linkSystemLibrary(libs.crypto, .{});
+    }
 
     addRunStep(
         b,

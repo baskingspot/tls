@@ -44,11 +44,19 @@ All notable changes to tls are recorded here. The format follows
   no certificate credentials. External identities can exceed the 256-byte
   resumption-ticket capacity. Empty identities and keys shorter than 16 bytes
   return `error.EmptyIdentity` and `error.PskTooShort` (#227).
+- Native builds register `zig build bench`, including AES-256-GCM seal/open rows
+  at 4 KiB and 16 KiB, without linking libcrypto.
 - Clients advertise and accept `rsa_pss_rsae_sha256/384/512` in
   `signature_algorithms_cert` on libcrypto and native backends. PSS-signed
   certificate chains can now complete handshakes (#219).
 - Servers that request client certificates now accept PSS-signed chains through
   the default certificate policy (#219).
+
+### Fixed
+
+- AEAD decryption securely zeroes the whole output slice on authentication failure
+  on every backend. Exact in-place decryption remains supported. Partial input/output
+  overlap returns `error.InputAliasesOutput` without modifying either slice.
 
 ## [0.4.6] - 2026-11-23
 

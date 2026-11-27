@@ -154,7 +154,7 @@ fn AesGcm(comptime Aes: anytype) type {
             const valid = crypto.timing_safe.eql([tag_length]u8, computed_tag, tag);
             if (!valid) {
                 crypto.secureZero(u8, &computed_tag);
-                @memset(plaintext, undefined);
+                crypto.secureZero(u8, plaintext);
                 return error.AuthenticationFailed;
             }
 

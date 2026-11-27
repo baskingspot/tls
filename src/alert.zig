@@ -299,6 +299,7 @@ pub fn alertForHandshakeError(err: HandshakeError) ?Description {
         error.PlaintextTooLarge,
         error.RequestContextTooLong,
         error.SequenceNumberOverflow,
+        error.InputAliasesOutput,
         error.SliceLengthMismatch,
         => .internal_error,
     };

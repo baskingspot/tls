@@ -390,6 +390,7 @@ pub fn aeadDecrypt(
     compat.errqEnter();
     defer compat.errqExit();
     assert(plaintext.len == ciphertext.len);
+    errdefer std.crypto.secureZero(u8, plaintext);
     if (c.EVP_AEAD_CTX_open_gather(
         &ctx.ctx,
         plaintext.ptr,
