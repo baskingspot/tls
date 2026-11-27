@@ -799,8 +799,15 @@ linker error.
 
 # Performance
 
-No performance measurement compares native against libcrypto. The captures
-below measure libcrypto builds.
+Native and libcrypto are measured against each other on one primitive: record
+AEAD. Same host, same harness, a keyed context, direct seal and open calls at
+4 KiB and 16 KiB. libcrypto is 5.1x faster at 4 KiB (665 ns against 3375 ns)
+and 5.5x at 16 KiB (2328 ns against 12898 ns). The gap is the composition:
+libcrypto interleaves the AES rounds with GHASH, and the native path runs CTR
+and GHASH as two passes. Native remains the development backend; libcrypto is
+both the production and the throughput choice.
+
+The captures below measure libcrypto builds against libssl and rustls.
 
 It is faster than OpenSSL's libssl on every comparable application-data row
 measured, on x86_64, aarch64, and macOS Apple Silicon. Against rustls it wins on

@@ -8,8 +8,8 @@
 TLS 1.3 in Zig: a sans-I/O engine over caller-owned buffers, with blocking, nonblocking, and kTLS integrations.
 
 **Warning: the default `native` backend is for development and iteration, not
-production.** No performance measurement against libcrypto or independent
-security review exists for native. Production builds must select
+production.** No independent security review exists for native, and its record
+AEAD is about 5x slower than libcrypto at 4 KiB. Production builds must select
 `-Dcrypto=openssl` or `-Dcrypto=aws-lc`.
 
 Native does not support RSA signing, encrypted PEM, or ML-KEM-1024. A native

@@ -548,6 +548,28 @@ captures under `docs/research/perf/` are the raw evidence; the row-perf
 explanations tie wall-time deltas to counters and symbols. This section folds
 those into the claim ztls can make.
 
+### Native against libcrypto
+
+One primitive is measured both ways: record AEAD, direct seal and open over a
+keyed context, no record framing. Host `launchpad` (ARM Neoverse-V3, aarch64),
+Zig 0.17 ReleaseFast, native CPU target, `--count 5 --benchtime 500ms`,
+revision `94957db`. Raw output:
+`docs/research/perf/20261127-095500-launchpad-aead-backends/`.
+
+| row | native | openssl | ratio |
+| --- | ---: | ---: | ---: |
+| aes256/seal/4096 | 3374 ns | 665 ns | 5.07x |
+| aes256/open/4096 | 3394 ns | 665 ns | 5.10x |
+| aes256/seal/16384 | 12898 ns | 2328 ns | 5.54x |
+| aes256/open/16384 | 12915 ns | 2329 ns | 5.55x |
+
+`zig build bench -Dcrypto=native -- --filter aes256 --count=5 --benchtime=500ms`
+reproduces the native rows; the same command with `-Dcrypto=openssl` gives the
+others. The gap is the composition: libcrypto interleaves the AES rounds with
+GHASH, and the native path runs CTR and GHASH as two passes. Caching the key
+schedule and the GHASH table in the context measured 1.8-2.1% at 4 KiB and 0.5%
+at 16 KiB, which is why #230 dropped it.
+
 ### Evidence basis
 
 Three n=10 wall-time captures cover the three platforms:
