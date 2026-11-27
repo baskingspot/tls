@@ -122,6 +122,11 @@ an Apple M1 Max. On every comparable application-data row, tls is faster than
 OpenSSL libssl. Against rustls it wins every AES-GCM row and loses on small
 ChaCha20 records, where rustls's ring path beats OpenSSL EVP.
 
+The x86_64 capture was built for `sapphirerapids` and the macOS capture for
+`apple_m1`, both matching their hosts. The aarch64 Linux capture was built for
+`apple_m1` on the Graviton host because the build pinned that model until #229.
+Its rows are not a host-native Graviton baseline; a re-take is pending.
+
 The row-by-row accounting, including which rows are not comparable across
 implementations and why, is in `docs/research/PERFORMANCE.md`. The raw captures
 and the disassembly are next to it under `docs/research/perf/`. A 15% regression

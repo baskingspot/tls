@@ -7,6 +7,10 @@ All notable changes to tls are recorded here. The format follows
 
 ### Fixed
 
+- Builds on aarch64 Linux target the host CPU again instead of pinning
+  `apple_m1`. The pin dropped host features such as SVE2 and could emit
+  instructions an older core does not implement. A default build now fails if
+  its target is not native; pass `-Dtarget` or `-Dcpu` to cross-compile (#229).
 - Servers reject a known PSK identity with an invalid binder using
   `error.InvalidPskBinder`, which maps to `decrypt_error`. Unknown identities
   still fall through to certificate authentication (#227).
